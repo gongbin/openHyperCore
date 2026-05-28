@@ -1,0 +1,9 @@
+{
+  "name": "openhyprecore",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test packages/*/test/*.test.ts",
+    "cli": "node --experimental-strip-types packages/cli/src/index.ts"
+  }
+}
