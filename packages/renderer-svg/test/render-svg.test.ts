@@ -25,6 +25,17 @@ test("renderSvgFrame emits deterministic SVG for resolved text and shapes", () =
         size: 48,
         color: "#fff",
         transform: { x: 20, y: 80, opacity: 0.75 }
+      },
+      {
+        type: "caption",
+        id: "subtitle",
+        text: "Caption & line",
+        size: 24,
+        color: "#ff0",
+        backgroundColor: "#111",
+        padding: 8,
+        align: "center",
+        transform: { x: 320, y: 320 }
       }
     ]
   });
@@ -35,5 +46,8 @@ test("renderSvgFrame emits deterministic SVG for resolved text and shapes", () =
   assert.match(svg, /width="640"/);
   assert.match(svg, /<rect/);
   assert.match(svg, /Hello &lt;Core&gt;/);
+  assert.match(svg, /Caption &amp; line/);
+  assert.match(svg, /id="subtitle"/);
+  assert.match(svg, /fill="#111"/);
   assert.match(svg, /opacity="0.75"/);
 });

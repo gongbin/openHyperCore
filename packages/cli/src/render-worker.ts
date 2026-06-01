@@ -1,12 +1,15 @@
 import { parentPort } from "node:worker_threads";
 import { performance } from "node:perf_hooks";
-import { renderRgbaFrame } from "../../renderer-skia/src/index.ts";
+import { createVideoFrameCache, renderRgbaFrame } from "../../renderer-skia/src/index.ts";
 import type { ResolvedFrame } from "../../core/src/index.ts";
 
 type RenderWorkerRequest = {
   sourceIndex: number;
   frame: ResolvedFrame;
+  ffmpegPath?: string;
 };
+
+const videoFrameCaches = new Map<string, ReturnType<typeof createVideoFrameCache>>();
 
 if (!parentPort) {
   throw new Error("render-worker must run inside a worker thread");
@@ -15,7 +18,9 @@ if (!parentPort) {
 parentPort.on("message", async (message: RenderWorkerRequest) => {
   try {
     const startedAt = performance.now();
-    const frame = await renderRgbaFrame(message.frame);
+    const frame = await renderRgbaFrame(message.frame, {
+      videoFrameCache: videoFrameCacheFor(message.ffmpegPath)
+    });
     parentPort?.postMessage({
       sourceIndex: message.sourceIndex,
       frame,
@@ -28,3 +33,15 @@ parentPort.on("message", async (message: RenderWorkerRequest) => {
     });
   }
 });
+
+function videoFrameCacheFor(ffmpegPath: string | undefined): ReturnType<typeof createVideoFrameCache> {
+  const key = ffmpegPath ?? "default";
+  const cached = videoFrameCaches.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  const cache = createVideoFrameCache(ffmpegPath ? { ffmpegPath } : {});
+  videoFrameCaches.set(key, cache);
+  return cache;
+}
