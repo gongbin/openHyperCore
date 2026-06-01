@@ -2,7 +2,7 @@
 
 OpenHyperCore 是一个面向低成本 CPU 服务器的视频剪辑渲染引擎原型。它用 TypeScript 描述 Scene Graph，使用 CanvasKit/Skia 做帧渲染，并通过 FFmpeg 输出 H.264/AAC MP4，目标是在不依赖 Chromium、无 GPU 的环境中提供比浏览器渲染链路更轻量、更可控的视频生成能力。
 
-当前项目处于 alpha 阶段，核心 CLI 与渲染管线已经可用，但还不是完整的 HyperFrames 替代品。已实现的能力覆盖图文合成、字幕层、基础转场 preset、PNG still、无音频 MP4、音频合流、多音频混音、基础视频贴图、资产 probe/cache、任务级视频帧缓存、增量帧复用、worker_threads 帧级并行和 AWS 2CPU/2G benchmark 验证；服务化接口和发布打包流程仍在 Roadmap 中。
+当前项目处于 alpha 阶段，核心 CLI 与渲染管线已经可用，但还不是完整的 HyperFrames 替代品。已实现的能力覆盖图文合成、字幕层、基础转场 preset、PNG still、无音频 MP4、音频合流、多音频混音、VideoLayer、本地素材 probe/cache、raw RGBA 视频帧批量解码、增量帧复用、worker_threads 帧级并行和 AWS 2CPU/2G benchmark 验证；服务化接口和发布打包流程仍在 Roadmap 中。
 
 ## 开源
 
@@ -18,7 +18,7 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 - 转场 helper：提供 fade、slide、scale preset，并输出可复用 Scene Graph transform keyframes。
 - FFmpeg 编码后端：通过 raw RGBA stdin pipe 输出 H.264/yuv420p MP4；有音频时输出 AAC。
 - AudioLayer：支持单音频、多音频 amix、start/end、volume、fadeIn/fadeOut。
-- VideoLayer：支持从本地视频按时间点抽帧并贴入 Skia 画布，渲染任务内带视频帧缓存和预取。
+- VideoLayer：支持从本地视频按时间点抽帧并贴入 Skia 画布；有 `width/height` 的视频层会按源视频尺寸批量解码 raw RGBA，绕过 PNG 中间格式与 CanvasKit 每帧图片解码。
 - 资产 probe/cache：提供图片、视频、音频 metadata probe，以及任务级缓存 API。
 - 帧级优化：连续视觉内容相同则复用 RGBA buffer，保持编码帧序和 PTS 不变。
 - worker_threads 并行渲染池：支持 `--workers N`、`--workers auto`、`--worker-window N` 控制并行度与内存窗口。
@@ -27,7 +27,7 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 ## 当前限制
 
 - 仍是 alpha 工程原型，API 可能继续调整。
-- VideoLayer 目前仍以 correctness-first 为主：已具备任务级视频帧缓存和单帧预取，但尚未做跨任务持久缓存、批量 GOP 级解码或基于 probe 的高级调度。
+- VideoLayer 目前仍以 correctness-first 为主：已具备源尺寸探测、任务级 raw RGBA 帧缓存和窗口化批量预取，但尚未做跨任务持久缓存、GOP 级解码调度或 worker 间共享视频帧缓存。
 - `ImageLayer.fit` 与 `VideoLayer.fit` 已预留类型，但当前 Skia 绘制主要按 `width/height` 拉伸绘制。
 - 文本排版仍是基础 Skia font 绘制，尚未补齐复杂断行、字体注册和 emoji fallback。
 - CaptionLayer 当前为单行基础字幕，尚未实现自动换行、复杂排版和 SRT/VTT 导入。
@@ -177,6 +177,19 @@ pnpm cli bench-suite examples/bench/animated-workload.ts \
 - 所有 case 峰值 RSS 均低于 800MB 内存目标。
 - `worker_threads` 现在复用持久渲染池，但在 2CPU/2G 低核数机器上仍慢于单线程，主要受并行 CanvasKit surface、线程通信和内存压力影响；2CPU 部署默认不建议启用 worker。
 
+### 真实视频 demo 对照
+
+以下数据来自同一台 AWS 2CPU/2G 服务器。测试素材为服务器本地 ignored fixture `examples/demo.mp4`，用于模拟“快速下扶梯进入地铁”的真实视频剪辑；素材文件和生成视频不提交到 GitHub。
+
+| renderer | scenario | total | render wall | encode | peak RSS | note |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| OpenHyperCore | PNG batch VideoLayer | 64.07s | 62.86s | 1.21s | 249MB | 已批量抽帧，但仍有 PNG 编码/解码 |
+| OpenHyperCore | raw RGBA source-sized VideoLayer | 52.63s | 51.60s | 1.03s | 235MB | 绕过 PNG，中间帧按源视频 480x272 缓存 |
+| OpenHyperCore | raw RGBA + 2 workers | 63.12s | 62.10s | 1.02s | 487MB | 2CPU 上 worker 路径仍慢于单线程 |
+| HyperFrames | Chromium screenshot fallback | 162.63s | n/a | n/a | 212MB | 当前服务器 Chromium 缺少 beginFrame，走 screenshot fallback |
+
+结论：真实视频剪辑下，raw RGBA VideoLayer 相比 PNG batch 路径约快 18%，相比该服务器上的 HyperFrames fallback 约快 3.1 倍。下一步性能瓶颈主要在 CanvasKit 逐帧合成和 worker 间视频帧缓存无法共享，2CPU 机器默认仍建议 single-thread。
+
 ## Composition 示例
 
 最小命令式 Scene Graph：
@@ -324,7 +337,7 @@ examples/bench/     M4.1 benchmark fixtures
 ## Roadmap
 
 - M3.5：已完成 `packages/assets`，提供图片/视频/音频 probe、尺寸/时长元信息和任务级缓存。
-- M3.6：已完成任务级视频帧缓存与单帧预取，避免同一视频/同一时间点重复 FFmpeg 抽帧。
+- M3.6：已完成任务级视频帧缓存、窗口化批量预取和 raw RGBA VideoLayer 解码，避免同一视频/同一时间点重复 FFmpeg 抽帧，并绕过 PNG 中间格式。
 - M3.7：已完成基础 CaptionLayer，支持时间段文本、样式和位置。
 - M3.8：已完成基础转场 preset：fade、slide、scale，并输出可复用 Scene Graph helper。
 - M4.1：已完成 benchmark fixtures 与 `bench-suite`，对比 single-thread、worker、worker+window、静态复用路径。
