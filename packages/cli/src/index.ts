@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { availableParallelism } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
@@ -10,7 +10,7 @@ import { encodeRawVideoFrames } from "../../encoder-ffmpeg/src/index.ts";
 import type { AudioInput, EncodePngFramesOptions } from "../../encoder-ffmpeg/src/index.ts";
 import { defineComposition, frameCount, resolveFrame, timeForFrame } from "../../core/src/index.ts";
 import type { AudioLayer, Composition, ResolvedFrame } from "../../core/src/index.ts";
-import { renderPngFrame, renderRgbaFrame } from "../../renderer-skia/src/index.ts";
+import { createVideoFrameCache, renderPngFrame, renderRgbaFrame } from "../../renderer-skia/src/index.ts";
 import { renderSvgFrame } from "../../renderer-svg/src/index.ts";
 
 type CliIO = {
@@ -40,6 +40,12 @@ type BenchOptions = Omit<RenderOptions, "out"> & {
   videoOut: string;
 };
 
+type BenchSuiteOptions = Omit<RenderOptions, "out"> & {
+  out: string;
+  staticFile: string;
+  videoDir: string;
+};
+
 type RenderStats = {
   frames: number;
   renderedFrames: number;
@@ -60,6 +66,7 @@ type WorkerSelection = number | "auto";
 type RenderJob = {
   sourceIndex: number;
   frame: ResolvedFrame;
+  ffmpegPath?: string;
 };
 
 type FramePlan = {
@@ -114,6 +121,15 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
     const composition = applyRenderOverrides(await loadComposition(file), options);
     const metrics = await renderVideo(composition, { ...options, out: options.videoOut }, extractAudioInputs(composition));
     await writeFile(options.out, `${JSON.stringify(metrics, null, 2)}\n`, "utf8");
+    stdout(options.out);
+    return;
+  }
+
+  if (command === "bench-suite") {
+    const file = requiredArg(args[1], "composition file");
+    const options = parseBenchSuiteOptions(args.slice(2));
+    const report = await runBenchSuite(file, options);
+    await writeFile(options.out, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     stdout(options.out);
     return;
   }
@@ -342,6 +358,193 @@ function parseBenchOptions(args: string[]): BenchOptions {
   }) as BenchOptions;
 }
 
+function parseBenchSuiteOptions(args: string[]): BenchSuiteOptions {
+  let out: string | undefined;
+  let staticFile: string | undefined;
+  let videoDir: string | undefined;
+  let fps: number | undefined;
+  let width: number | undefined;
+  let height: number | undefined;
+  let ffmpegPath: string | undefined;
+  let workers: WorkerSelection | undefined;
+  let workerWindow: number | undefined;
+  const ffmpegArgsPrefix: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const name = args[index];
+    const value = args[index + 1];
+
+    if (name === "--out") {
+      out = requiredArg(value, "--out value");
+      index += 1;
+      continue;
+    }
+
+    if (name === "--static") {
+      staticFile = requiredArg(value, "--static value");
+      index += 1;
+      continue;
+    }
+
+    if (name === "--video-dir") {
+      videoDir = requiredArg(value, "--video-dir value");
+      index += 1;
+      continue;
+    }
+
+    if (name === "--fps") {
+      fps = parsePositiveNumber(requiredArg(value, "--fps value"), "--fps");
+      index += 1;
+      continue;
+    }
+
+    if (name === "--size") {
+      const parsed = parseSize(requiredArg(value, "--size value"));
+      width = parsed.width;
+      height = parsed.height;
+      index += 1;
+      continue;
+    }
+
+    if (name === "--ffmpeg-path") {
+      ffmpegPath = requiredArg(value, "--ffmpeg-path value");
+      index += 1;
+      continue;
+    }
+
+    if (name === "--ffmpeg-arg-prefix") {
+      ffmpegArgsPrefix.push(requiredArg(value, "--ffmpeg-arg-prefix value"));
+      index += 1;
+      continue;
+    }
+
+    if (name === "--workers") {
+      workers = parseWorkerSelection(requiredArg(value, "--workers value"));
+      index += 1;
+      continue;
+    }
+
+    if (name === "--worker-window") {
+      workerWindow = parsePositiveInteger(requiredArg(value, "--worker-window value"), "--worker-window");
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown option: ${name}`);
+  }
+
+  return omitUndefined({
+    out: requiredArg(out, "--out"),
+    staticFile: requiredArg(staticFile, "--static"),
+    videoDir: requiredArg(videoDir, "--video-dir"),
+    fps,
+    width,
+    height,
+    ffmpegPath,
+    ffmpegArgsPrefix,
+    workers,
+    workerWindow
+  }) as BenchSuiteOptions;
+}
+
+async function runBenchSuite(dynamicFile: string, options: BenchSuiteOptions): Promise<Record<string, unknown>> {
+  await mkdir(options.videoDir, { recursive: true });
+  const dynamicComposition = applyRenderOverrides(await loadComposition(dynamicFile), options);
+  const staticComposition = applyRenderOverrides(await loadComposition(options.staticFile), options);
+  const workerSelection = options.workers ?? 2;
+  const workerWindow = options.workerWindow ?? 2;
+  const baseOptions = omitUndefined({
+    fps: options.fps,
+    width: options.width,
+    height: options.height,
+    ffmpegPath: options.ffmpegPath,
+    ffmpegArgsPrefix: options.ffmpegArgsPrefix
+  }) as Omit<RenderOptions, "out">;
+  const cases = [
+    {
+      name: "single-thread",
+      fixture: dynamicFile,
+      composition: dynamicComposition,
+      options: {}
+    },
+    {
+      name: "worker",
+      fixture: dynamicFile,
+      composition: dynamicComposition,
+      options: { workers: workerSelection }
+    },
+    {
+      name: "worker-window",
+      fixture: dynamicFile,
+      composition: dynamicComposition,
+      options: { workers: workerSelection, workerWindow }
+    },
+    {
+      name: "static-reuse",
+      fixture: options.staticFile,
+      composition: staticComposition,
+      options: {}
+    }
+  ];
+  const results = [];
+
+  for (const benchmarkCase of cases) {
+    const videoOut = join(options.videoDir, `${benchmarkCase.name}.mp4`);
+    const renderOptions = {
+      ...baseOptions,
+      ...benchmarkCase.options,
+      out: videoOut
+    } as RenderOptions;
+    const metrics = await renderVideo(benchmarkCase.composition, renderOptions, extractAudioInputs(benchmarkCase.composition));
+    results.push({
+      name: benchmarkCase.name,
+      fixture: benchmarkCase.fixture,
+      videoOut,
+      metrics
+    });
+  }
+
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    cases: results,
+    summary: summarizeBenchmarkSuite(results)
+  };
+}
+
+function summarizeBenchmarkSuite(results: Array<{ name: string; metrics: Record<string, unknown> }>): Record<string, unknown> {
+  return {
+    totalCases: results.length,
+    bestTotalMsCase: bestCaseName(results, "totalMs"),
+    bestRenderWallMsCase: bestCaseName(results, "renderWallMs"),
+    maxReusedFramesCase: maxCaseName(results, "reusedFrames")
+  };
+}
+
+function bestCaseName(results: Array<{ name: string; metrics: Record<string, unknown> }>, metric: string): string | null {
+  return numericCaseName(results, metric, (current, best) => current < best);
+}
+
+function maxCaseName(results: Array<{ name: string; metrics: Record<string, unknown> }>, metric: string): string | null {
+  return numericCaseName(results, metric, (current, best) => current > best);
+}
+
+function numericCaseName(results: Array<{ name: string; metrics: Record<string, unknown> }>, metric: string, better: (current: number, best: number) => boolean): string | null {
+  let bestName: string | null = null;
+  let bestValue: number | undefined;
+  for (const result of results) {
+    const value = result.metrics[metric];
+    if (typeof value !== "number") {
+      continue;
+    }
+    if (bestValue === undefined || better(value, bestValue)) {
+      bestName = result.name;
+      bestValue = value;
+    }
+  }
+  return bestName;
+}
+
 async function renderVideo(composition: Composition, options: RenderOptions, audio: CompositionAudio = {}): Promise<Record<string, unknown>> {
   const workerSelection = options.workers === "auto" ? "auto" : "manual";
   const workerCount = resolveWorkerCount(options.workers);
@@ -373,7 +576,7 @@ async function renderVideo(composition: Composition, options: RenderOptions, aud
     encodeOptions.audioInputs = audio.audioInputs;
   }
 
-  await encodeRawVideoFrames(renderCompositionRgbaFrames(composition, stats, workerCount, workerWindow), encodeOptions);
+  await encodeRawVideoFrames(renderCompositionRgbaFrames(composition, stats, workerCount, workerWindow, options.ffmpegPath), encodeOptions);
   stats.peakRssBytes = Math.max(stats.peakRssBytes, process.memoryUsage().rss);
   const totalMs = performance.now() - startedAt;
 
@@ -424,14 +627,15 @@ function extractAudioInputs(composition: Composition): CompositionAudio {
   return { audioInputs };
 }
 
-async function* renderCompositionRgbaFrames(composition: Composition, stats?: RenderStats, workerCount = 1, workerWindow = workerCount * 2): AsyncIterable<Buffer> {
+async function* renderCompositionRgbaFrames(composition: Composition, stats?: RenderStats, workerCount = 1, workerWindow = workerCount * 2, ffmpegPath?: string): AsyncIterable<Buffer> {
   if (workerCount > 1) {
-    yield* renderCompositionRgbaFramesWithWorkers(composition, workerCount, workerWindow, stats);
+    yield* renderCompositionRgbaFramesWithWorkers(composition, workerCount, workerWindow, stats, ffmpegPath);
     return;
   }
 
   let previousKey: string | undefined;
   let previousFrame: Buffer | undefined;
+  const videoFrameCache = createVideoFrameCache(ffmpegPath ? { ffmpegPath } : {});
 
   for (let frameIndex = 0; frameIndex < frameCount(composition); frameIndex += 1) {
     const timeMs = timeForFrame(composition, frameIndex);
@@ -449,7 +653,7 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
     }
 
     const startedAt = performance.now();
-    const frame = await renderRgbaFrame(resolvedFrame);
+    const frame = await renderRgbaFrame(resolvedFrame, { videoFrameCache });
     if (stats) {
       stats.frames += 1;
       stats.renderedFrames += 1;
@@ -464,7 +668,7 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
   }
 }
 
-async function* renderCompositionRgbaFramesWithWorkers(composition: Composition, workerCount: number, workerWindow: number, stats?: RenderStats): AsyncIterable<Buffer> {
+async function* renderCompositionRgbaFramesWithWorkers(composition: Composition, workerCount: number, workerWindow: number, stats?: RenderStats, ffmpegPath?: string): AsyncIterable<Buffer> {
   const totalFrames = frameCount(composition);
   let frameIndex = 0;
   let sourceIndex = 0;
@@ -489,7 +693,7 @@ async function* renderCompositionRgbaFramesWithWorkers(composition: Composition,
 
       const currentSourceIndex = sourceIndex;
       sourceIndex += 1;
-      jobs.push({ sourceIndex: currentSourceIndex, frame: resolvedFrame });
+      jobs.push(omitUndefined({ sourceIndex: currentSourceIndex, frame: resolvedFrame, ffmpegPath }) as RenderJob);
       plans.push({ sourceIndex: currentSourceIndex, reused: false });
       previousKey = frameKey;
       previousSourceIndex = currentSourceIndex;

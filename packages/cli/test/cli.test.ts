@@ -422,6 +422,101 @@ export default defineComposition({
   assert.ok(report.workerCount >= 1);
 });
 
+test("runCli bench-suite writes comparison metrics for benchmark variants", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "openhyper-cli-suite-"));
+  const fakeFfmpeg = join(dir, "fake-ffmpeg.mjs");
+  const dynamicComposition = join(dir, "dynamic.ts");
+  const staticComposition = join(dir, "static.ts");
+  const reportFile = join(dir, "suite.json");
+  const videoDir = join(dir, "videos");
+
+  await writeFile(
+    fakeFfmpeg,
+    `import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const out = process.argv[process.argv.length - 1];
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, "fake mp4");
+});
+`,
+    "utf8"
+  );
+
+  await writeFile(
+    dynamicComposition,
+    `import { defineComposition } from "${pathToFileURL(process.cwd() + "/packages/core/src/index.ts").href}";
+export default defineComposition({
+  fps: 4,
+  width: 8,
+  height: 6,
+  durationMs: 1000,
+  layers: [
+    { type: "shape", shape: "rect", width: 8, height: 6, fill: "#101820" },
+    { type: "shape", shape: "circle", radius: 2, fill: "#f2aa4c", transform: { x: [{ timeMs: 0, value: 1 }, { timeMs: 1000, value: 6 }], y: 1 } }
+  ]
+});
+`,
+    "utf8"
+  );
+
+  await writeFile(
+    staticComposition,
+    `import { defineComposition } from "${pathToFileURL(process.cwd() + "/packages/core/src/index.ts").href}";
+export default defineComposition({
+  fps: 4,
+  width: 8,
+  height: 6,
+  durationMs: 1000,
+  layers: [
+    { type: "shape", shape: "rect", width: 8, height: 6, fill: "#101820" },
+    { type: "text", text: "Static", size: 8, color: "#ffffff", transform: { x: 1, y: 5 } }
+  ]
+});
+`,
+    "utf8"
+  );
+
+  await runCli(
+    [
+      "bench-suite",
+      dynamicComposition,
+      "--static",
+      staticComposition,
+      "--out",
+      reportFile,
+      "--video-dir",
+      videoDir,
+      "--workers",
+      "2",
+      "--worker-window",
+      "2",
+      "--ffmpeg-path",
+      process.execPath,
+      "--ffmpeg-arg-prefix",
+      fakeFfmpeg
+    ],
+    { stdout: () => undefined }
+  );
+
+  const report = JSON.parse(await readFile(reportFile, "utf8"));
+  assert.equal(report.version, 1);
+  assert.deepEqual(report.cases.map((entry: { name: string }) => entry.name), [
+    "single-thread",
+    "worker",
+    "worker-window",
+    "static-reuse"
+  ]);
+  assert.equal(report.cases[0].metrics.renderMode, "single_thread");
+  assert.equal(report.cases[1].metrics.renderMode, "worker_threads");
+  assert.equal(report.cases[2].metrics.workerWindow, 2);
+  assert.ok(report.cases[3].metrics.reusedFrames > 0);
+  assert.equal(report.summary.totalCases, 4);
+  assert.equal(typeof report.summary.bestTotalMsCase, "string");
+  assert.ok((await stat(join(videoDir, "single-thread.mp4"))).size > 0);
+});
+
 test("runCli render passes the first AudioLayer source to ffmpeg as AAC audio", async () => {
   const dir = await mkdtemp(join(tmpdir(), "openhyper-cli-"));
   const fakeFfmpeg = join(dir, "fake-ffmpeg.mjs");

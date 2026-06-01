@@ -38,6 +38,19 @@ export type TextLayer = BaseLayer & {
   lineHeight?: number;
 };
 
+export type CaptionLayer = BaseLayer & {
+  type: "caption";
+  text: string;
+  font?: string;
+  size?: number;
+  color?: string;
+  backgroundColor?: string;
+  padding?: number;
+  align?: "left" | "center" | "right";
+  lineHeight?: number;
+  maxWidth?: number;
+};
+
 export type ShapeLayer = BaseLayer & {
   type: "shape";
   shape: "rect" | "circle" | "path";
@@ -77,7 +90,7 @@ export type AudioLayer = BaseLayer & {
   fadeOutMs?: number;
 };
 
-export type Layer = TextLayer | ShapeLayer | ImageLayer | VideoLayer | AudioLayer;
+export type Layer = TextLayer | CaptionLayer | ShapeLayer | ImageLayer | VideoLayer | AudioLayer;
 
 export type Composition = {
   type: "composition";

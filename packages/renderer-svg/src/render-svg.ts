@@ -21,6 +21,8 @@ function renderLayerContent(layer: ResolvedLayer): string {
   switch (layer.type) {
     case "text":
       return `<text x="0" y="0" font-family="${escapeAttribute(layer.font ?? "sans-serif")}" font-size="${layer.size ?? 16}" fill="${escapeAttribute(layer.color ?? "#000")}" text-anchor="${textAnchor(layer.align)}">${escapeText(layer.text)}</text>`;
+    case "caption":
+      return renderCaption(layer);
     case "shape":
       return renderShape(layer);
     case "image":
@@ -28,6 +30,19 @@ function renderLayerContent(layer: ResolvedLayer): string {
     default:
       return "";
   }
+}
+
+function renderCaption(layer: Extract<ResolvedLayer, { type: "caption" }>): string {
+  const size = layer.size ?? 32;
+  const lineHeight = layer.lineHeight ?? size * 1.2;
+  const padding = layer.padding ?? 8;
+  const textWidth = layer.maxWidth ?? estimateTextWidth(layer.text, size);
+  const x = alignedX(layer.align, textWidth);
+  const background = layer.backgroundColor
+    ? `<rect x="${formatNumber(x - padding)}" y="${formatNumber(-lineHeight - padding)}" width="${formatNumber(textWidth + padding * 2)}" height="${formatNumber(lineHeight + padding * 2)}" fill="${escapeAttribute(layer.backgroundColor)}" />`
+    : "";
+  const text = `<text x="0" y="0" font-family="${escapeAttribute(layer.font ?? "sans-serif")}" font-size="${size}" fill="${escapeAttribute(layer.color ?? "#fff")}" text-anchor="${textAnchor(layer.align)}">${escapeText(layer.text)}</text>`;
+  return [background, text].filter(Boolean).join("");
 }
 
 function renderShape(layer: Extract<ResolvedLayer, { type: "shape" }>): string {
@@ -62,7 +77,7 @@ function shapeAttributes(layer: Extract<ResolvedLayer, { type: "shape" }>): stri
   return ` ${attrs.join(" ")}`;
 }
 
-function textAnchor(align: Extract<ResolvedLayer, { type: "text" }>["align"]): string {
+function textAnchor(align: Extract<ResolvedLayer, { type: "text" | "caption" }>["align"]): string {
   if (align === "center") {
     return "middle";
   }
@@ -70,6 +85,20 @@ function textAnchor(align: Extract<ResolvedLayer, { type: "text" }>["align"]): s
     return "end";
   }
   return "start";
+}
+
+function alignedX(align: Extract<ResolvedLayer, { type: "text" | "caption" }>["align"], width: number): number {
+  if (align === "center") {
+    return -width / 2;
+  }
+  if (align === "right") {
+    return -width;
+  }
+  return 0;
+}
+
+function estimateTextWidth(text: string, size: number): number {
+  return text.length * size * 0.6;
 }
 
 function preserveAspectRatio(fit: Extract<ResolvedLayer, { type: "image" }>["fit"]): string {

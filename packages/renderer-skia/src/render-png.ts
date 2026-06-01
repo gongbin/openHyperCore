@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { dirname, resolve } from "node:path";
@@ -13,8 +13,57 @@ const CanvasKitInit = CanvasKitInitModule as unknown as CanvasKitInitFn;
 
 let canvasKitPromise: Promise<CanvasKit> | undefined;
 
-export async function renderPngFrame(frame: ResolvedFrame): Promise<Buffer> {
-  const { CanvasKit, surface } = await renderFrameSurface(frame);
+export type RenderFrameOptions = {
+  videoFrameCache?: VideoFrameCache;
+};
+
+export type VideoFrameCacheOptions = {
+  ffmpegPath?: string;
+  ffmpegArgsPrefix?: string[];
+};
+
+export class VideoFrameCache {
+  readonly #entries = new Map<string, Promise<Buffer>>();
+  readonly #options: VideoFrameCacheOptions;
+
+  constructor(options: VideoFrameCacheOptions = {}) {
+    this.#options = options;
+  }
+
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  clear(): void {
+    this.#entries.clear();
+  }
+
+  async getFrame(src: string, timeMs: number): Promise<Buffer> {
+    const key = await buildVideoFrameCacheKey(src, timeMs);
+    const cached = this.#entries.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    const pending = extractVideoFramePng(src, timeMs, this.#options).catch((error: unknown) => {
+      this.#entries.delete(key);
+      throw error;
+    });
+    this.#entries.set(key, pending);
+    return pending;
+  }
+
+  async prefetch(src: string, timeMs: number): Promise<Buffer> {
+    return await this.getFrame(src, timeMs);
+  }
+}
+
+export function createVideoFrameCache(options: VideoFrameCacheOptions = {}): VideoFrameCache {
+  return new VideoFrameCache(options);
+}
+
+export async function renderPngFrame(frame: ResolvedFrame, options: RenderFrameOptions = {}): Promise<Buffer> {
+  const { CanvasKit, surface } = await renderFrameSurface(frame, options);
 
   try {
     const image = surface.makeImageSnapshot();
@@ -37,8 +86,8 @@ export async function renderPngFrame(frame: ResolvedFrame): Promise<Buffer> {
   }
 }
 
-export async function renderRgbaFrame(frame: ResolvedFrame): Promise<Buffer> {
-  const { CanvasKit, surface, canvas } = await renderFrameSurface(frame);
+export async function renderRgbaFrame(frame: ResolvedFrame, options: RenderFrameOptions = {}): Promise<Buffer> {
+  const { CanvasKit, surface, canvas } = await renderFrameSurface(frame, options);
 
   try {
     const pixels = canvas.readPixels(0, 0, {
@@ -59,7 +108,7 @@ export async function renderRgbaFrame(frame: ResolvedFrame): Promise<Buffer> {
   }
 }
 
-async function renderFrameSurface(frame: ResolvedFrame): Promise<{ CanvasKit: CanvasKit; surface: NonNullable<ReturnType<CanvasKit["MakeSurface"]>>; canvas: Canvas }> {
+async function renderFrameSurface(frame: ResolvedFrame, options: RenderFrameOptions): Promise<{ CanvasKit: CanvasKit; surface: NonNullable<ReturnType<CanvasKit["MakeSurface"]>>; canvas: Canvas }> {
   const CanvasKit = await loadCanvasKit();
   const surface = CanvasKit.MakeSurface(frame.composition.width, frame.composition.height);
   if (!surface) {
@@ -70,8 +119,11 @@ async function renderFrameSurface(frame: ResolvedFrame): Promise<{ CanvasKit: Ca
   canvas.clear(CanvasKit.TRANSPARENT);
 
   try {
+    if (options.videoFrameCache) {
+      await prefetchVideoFrames(frame, options.videoFrameCache);
+    }
     for (const layer of frame.layers) {
-      await drawLayer(CanvasKit, canvas, layer, frame.timeMs);
+      await drawLayer(CanvasKit, canvas, layer, frame.timeMs, options);
     }
 
     surface.flush();
@@ -95,7 +147,7 @@ async function loadCanvasKit(): Promise<CanvasKit> {
   return canvasKitPromise;
 }
 
-async function drawLayer(CanvasKit: CanvasKit, canvas: Canvas, layer: ResolvedLayer, frameTimeMs: number): Promise<void> {
+async function drawLayer(CanvasKit: CanvasKit, canvas: Canvas, layer: ResolvedLayer, frameTimeMs: number, options: RenderFrameOptions): Promise<void> {
   canvas.save();
   canvas.translate(layer.transform.x, layer.transform.y);
   canvas.scale(layer.transform.scale, layer.transform.scale);
@@ -109,11 +161,14 @@ async function drawLayer(CanvasKit: CanvasKit, canvas: Canvas, layer: ResolvedLa
       case "text":
         drawText(CanvasKit, canvas, layer);
         return;
+      case "caption":
+        drawCaption(CanvasKit, canvas, layer);
+        return;
       case "image":
         await drawImage(CanvasKit, canvas, layer);
         return;
       case "video":
-        await drawVideo(CanvasKit, canvas, layer, frameTimeMs);
+        await drawVideo(CanvasKit, canvas, layer, frameTimeMs, options);
         return;
       default:
         return;
@@ -169,6 +224,36 @@ function drawText(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedL
   }
 }
 
+function drawCaption(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "caption" }>): void {
+  const size = layer.size ?? 32;
+  const lineHeight = layer.lineHeight ?? size * 1.2;
+  const padding = layer.padding ?? 8;
+  const textWidth = layer.maxWidth ?? estimateTextWidth(layer.text, size);
+  const x = alignedX(layer.align, textWidth);
+
+  if (layer.backgroundColor) {
+    const backgroundPaint = makePaint(CanvasKit, layer.backgroundColor, layer.transform.opacity);
+    try {
+      canvas.drawRect(
+        CanvasKit.XYWHRect(x - padding, -lineHeight - padding, textWidth + padding * 2, lineHeight + padding * 2),
+        backgroundPaint
+      );
+    } finally {
+      backgroundPaint.delete();
+    }
+  }
+
+  const textPaint = makePaint(CanvasKit, layer.color ?? "#fff", layer.transform.opacity);
+  const font = new CanvasKit.Font(null, size);
+  try {
+    font.setEdging(CanvasKit.FontEdging.AntiAlias);
+    canvas.drawText(layer.text, 0, 0, textPaint, font);
+  } finally {
+    font.delete();
+    textPaint.delete();
+  }
+}
+
 async function drawImage(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "image" }>): Promise<void> {
   const src = resolve(layer.src);
   const encoded = await readFile(src);
@@ -188,9 +273,11 @@ async function drawImage(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Re
   }
 }
 
-async function drawVideo(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "video" }>, frameTimeMs: number): Promise<void> {
-  const videoTimeMs = Math.max(0, frameTimeMs - (layer.startMs ?? 0) + (layer.trimStartMs ?? 0));
-  const encoded = await extractVideoFramePng(layer.src, videoTimeMs);
+async function drawVideo(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "video" }>, frameTimeMs: number, options: RenderFrameOptions): Promise<void> {
+  const videoTimeMs = videoTimeForLayer(layer, frameTimeMs);
+  const encoded = options.videoFrameCache
+    ? await options.videoFrameCache.getFrame(layer.src, videoTimeMs)
+    : await extractVideoFramePng(layer.src, videoTimeMs);
   const image = CanvasKit.MakeImageFromEncoded(encoded);
   if (!image) {
     throw new Error(`CanvasKit failed to decode video frame: ${layer.src}`);
@@ -207,9 +294,34 @@ async function drawVideo(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Re
   }
 }
 
-async function extractVideoFramePng(src: string, timeMs: number): Promise<Buffer> {
-  const ffmpegPath = await resolveDefaultFfmpegPath();
+export async function prefetchVideoFrames(frame: ResolvedFrame, cache: VideoFrameCache): Promise<void> {
+  await Promise.all(frame.layers.flatMap((layer) => {
+    if (layer.type !== "video") {
+      return [];
+    }
+    return [cache.prefetch(layer.src, videoTimeForLayer(layer, frame.timeMs))];
+  }));
+}
+
+function videoTimeForLayer(layer: Extract<ResolvedLayer, { type: "video" }>, frameTimeMs: number): number {
+  return Math.max(0, frameTimeMs - (layer.startMs ?? 0) + (layer.trimStartMs ?? 0));
+}
+
+async function buildVideoFrameCacheKey(src: string, timeMs: number): Promise<string> {
+  const resolvedSrc = resolve(src);
+  const info = await stat(resolvedSrc);
+  return [
+    resolvedSrc,
+    Math.max(0, Math.round(timeMs)),
+    info.size,
+    info.mtimeMs
+  ].join("|");
+}
+
+async function extractVideoFramePng(src: string, timeMs: number, options: VideoFrameCacheOptions = {}): Promise<Buffer> {
+  const ffmpegPath = options.ffmpegPath ?? await resolveDefaultFfmpegPath();
   const child = spawn(ffmpegPath, [
+    ...(options.ffmpegArgsPrefix ?? []),
     "-hide_banner",
     "-loglevel",
     "error",
@@ -262,6 +374,20 @@ async function resolveDefaultFfmpegPath(): Promise<string> {
 
 function formatSeconds(value: number): string {
   return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+}
+
+function alignedX(align: Extract<ResolvedLayer, { type: "caption" }>["align"], width: number): number {
+  if (align === "center") {
+    return -width / 2;
+  }
+  if (align === "right") {
+    return -width;
+  }
+  return 0;
+}
+
+function estimateTextWidth(text: string, size: number): number {
+  return text.length * size * 0.6;
 }
 
 function makePaint(CanvasKit: CanvasKit, color: string, opacity: number): Paint {

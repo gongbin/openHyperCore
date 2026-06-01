@@ -1,5 +1,5 @@
 import { defineComposition } from "../../core/src/index.ts";
-import type { Composition as CompositionIR, ImageLayer as ImageLayerIR, Layer, ShapeLayer as ShapeLayerIR, TextLayer as TextLayerIR } from "../../core/src/index.ts";
+import type { CaptionLayer as CaptionLayerIR, Composition as CompositionIR, ImageLayer as ImageLayerIR, Layer, ShapeLayer as ShapeLayerIR, TextLayer as TextLayerIR } from "../../core/src/index.ts";
 
 type Props = Record<string, unknown>;
 type Component<T = unknown> = (props: Props) => T;
@@ -44,6 +44,25 @@ export function TextLayer(props: Props): TextLayerIR {
     endMs: optionalNumberAlias(props, "endMs", "to"),
     transform: props.transform as TextLayerIR["transform"]
   }) as TextLayerIR;
+}
+
+export function CaptionLayer(props: Props): CaptionLayerIR {
+  return omitUndefined({
+    type: "caption",
+    id: optionalStringProp(props, "id"),
+    text: stringProp(props, "text"),
+    font: optionalStringProp(props, "font"),
+    size: optionalNumberProp(props, "size"),
+    color: optionalStringProp(props, "color"),
+    backgroundColor: optionalStringProp(props, "backgroundColor"),
+    padding: optionalNumberProp(props, "padding"),
+    align: props.align as CaptionLayerIR["align"],
+    lineHeight: optionalNumberProp(props, "lineHeight"),
+    maxWidth: optionalNumberProp(props, "maxWidth"),
+    startMs: optionalNumberAlias(props, "startMs", "from"),
+    endMs: optionalNumberAlias(props, "endMs", "to"),
+    transform: props.transform as CaptionLayerIR["transform"]
+  }) as CaptionLayerIR;
 }
 
 export function ShapeLayer(props: Props): ShapeLayerIR {
