@@ -1,5 +1,6 @@
 node_modules/
 dist/
 docs/
+Plans.md
 .DS_Store
 *.log
