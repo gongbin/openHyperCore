@@ -9,7 +9,7 @@ import { encodeRawVideoFrames } from "../../encoder-ffmpeg/src/index.ts";
 import type { AudioInput, EncodePngFramesOptions } from "../../encoder-ffmpeg/src/index.ts";
 import { defineComposition, frameCount, resolveFrame, timeForFrame } from "../../core/src/index.ts";
 import type { AudioLayer, Composition, ResolvedFrame } from "../../core/src/index.ts";
-import { createRgbaFrameRenderer, createVideoFrameCache, renderPngFrame } from "../../renderer-skia/src/index.ts";
+import { createRgbaFrameRenderer, createVideoFrameCache, prefetchVideoFrameBatch, renderPngFrame } from "../../renderer-skia/src/index.ts";
 import { renderSvgFrame } from "../../renderer-svg/src/index.ts";
 
 type CliIO = {
@@ -80,6 +80,8 @@ type RenderWorkerResponse = {
   renderMs?: number;
   error?: string;
 };
+
+const VIDEO_PREFETCH_WINDOW_FRAMES = 256;
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
   const stdout = io.stdout ?? ((line: string) => console.log(line));
@@ -637,11 +639,13 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
 
   let previousKey: string | undefined;
   let previousFrame: Buffer | undefined;
+  let prefetchedUntilFrameIndex = 0;
+  const totalFrames = frameCount(composition);
   const videoFrameCache = createVideoFrameCache(ffmpegPath ? { ffmpegPath } : {});
   const rgbaRenderer = createRgbaFrameRenderer();
 
   try {
-    for (let frameIndex = 0; frameIndex < frameCount(composition); frameIndex += 1) {
+    for (let frameIndex = 0; frameIndex < totalFrames; frameIndex += 1) {
       const timeMs = timeForFrame(composition, frameIndex);
       const resolvedFrame = resolveFrame(composition, timeMs);
       const frameKey = visualFrameKey(resolvedFrame);
@@ -657,6 +661,11 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
       }
 
       const startedAt = performance.now();
+      if (frameIndex >= prefetchedUntilFrameIndex && frameHasVideoLayer(resolvedFrame)) {
+        const prefetchEndFrameIndex = Math.min(totalFrames, frameIndex + VIDEO_PREFETCH_WINDOW_FRAMES);
+        await prefetchVideoFrameBatch(resolveFrameWindow(composition, frameIndex, prefetchEndFrameIndex, resolvedFrame), videoFrameCache);
+        prefetchedUntilFrameIndex = prefetchEndFrameIndex;
+      }
       const frame = await rgbaRenderer.render(resolvedFrame, { videoFrameCache });
       if (stats) {
         stats.frames += 1;
@@ -879,6 +888,18 @@ function summarizeAudioTimeline(audio: CompositionAudio, compositionDurationMs: 
     audioTimelineEndMs: endMs,
     audioTimelineDurationMs: Math.max(0, endMs - startMs)
   };
+}
+
+function frameHasVideoLayer(frame: ResolvedFrame): boolean {
+  return frame.layers.some((layer) => layer.type === "video");
+}
+
+function resolveFrameWindow(composition: Composition, startFrameIndex: number, endFrameIndex: number, firstFrame: ResolvedFrame): ResolvedFrame[] {
+  const frames = [firstFrame];
+  for (let frameIndex = startFrameIndex + 1; frameIndex < endFrameIndex; frameIndex += 1) {
+    frames.push(resolveFrame(composition, timeForFrame(composition, frameIndex)));
+  }
+  return frames;
 }
 
 function visualFrameKey(frame: ReturnType<typeof resolveFrame>): string {

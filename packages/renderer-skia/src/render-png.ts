@@ -58,6 +58,50 @@ export class VideoFrameCache {
   async prefetch(src: string, timeMs: number): Promise<Buffer> {
     return await this.getFrame(src, timeMs);
   }
+
+  async prefetchFrames(src: string, timeMsList: number[]): Promise<void> {
+    const uniqueTimes = uniqueRoundedTimes(timeMsList);
+    if (uniqueTimes.length === 0) {
+      return;
+    }
+
+    const missing: Array<{ key: string; timeMs: number }> = [];
+    for (const timeMs of uniqueTimes) {
+      const key = await buildVideoFrameCacheKey(src, timeMs);
+      if (!this.#entries.has(key)) {
+        missing.push({ key, timeMs });
+      }
+    }
+
+    if (missing.length === 0) {
+      return;
+    }
+
+    if (!isUniformFrameSequence(missing.map((entry) => entry.timeMs))) {
+      await Promise.all(missing.map((entry) => this.getFrame(src, entry.timeMs)));
+      return;
+    }
+
+    const pendingFrames = extractVideoFramesPng(src, missing.map((entry) => entry.timeMs), this.#options)
+      .catch((error: unknown) => {
+        for (const entry of missing) {
+          this.#entries.delete(entry.key);
+        }
+        throw error;
+      });
+
+    for (const [index, entry] of missing.entries()) {
+      this.#entries.set(entry.key, pendingFrames.then((frames) => {
+        const frame = frames[index];
+        if (!frame) {
+          throw new Error(`ffmpeg returned no video frame for time ${entry.timeMs}ms`);
+        }
+        return frame;
+      }));
+    }
+
+    await Promise.all(missing.map((entry) => this.#entries.get(entry.key)));
+  }
 }
 
 export function createVideoFrameCache(options: VideoFrameCacheOptions = {}): VideoFrameCache {
@@ -391,8 +435,41 @@ export async function prefetchVideoFrames(frame: ResolvedFrame, cache: VideoFram
   }));
 }
 
+export async function prefetchVideoFrameBatch(frames: ResolvedFrame[], cache: VideoFrameCache): Promise<void> {
+  const timesBySource = new Map<string, number[]>();
+  for (const frame of frames) {
+    for (const layer of frame.layers) {
+      if (layer.type !== "video") {
+        continue;
+      }
+      const times = timesBySource.get(layer.src) ?? [];
+      times.push(videoTimeForLayer(layer, frame.timeMs));
+      timesBySource.set(layer.src, times);
+    }
+  }
+
+  await Promise.all([...timesBySource].map(([src, timeMsList]) => cache.prefetchFrames(src, timeMsList)));
+}
+
 function videoTimeForLayer(layer: Extract<ResolvedLayer, { type: "video" }>, frameTimeMs: number): number {
   return Math.max(0, frameTimeMs - (layer.startMs ?? 0) + (layer.trimStartMs ?? 0));
+}
+
+function uniqueRoundedTimes(timeMsList: number[]): number[] {
+  return [...new Set(timeMsList.map((timeMs) => Math.max(0, Math.round(timeMs))))].sort((a, b) => a - b);
+}
+
+function isUniformFrameSequence(timeMsList: number[]): boolean {
+  if (timeMsList.length <= 1) {
+    return true;
+  }
+
+  const stepMs = timeMsList[1]! - timeMsList[0]!;
+  if (stepMs <= 0) {
+    return false;
+  }
+
+  return timeMsList.every((timeMs, index) => index === 0 || Math.abs((timeMs - timeMsList[index - 1]!) - stepMs) <= 1);
 }
 
 async function buildVideoFrameCacheKey(src: string, timeMs: number): Promise<string> {
@@ -447,6 +524,89 @@ async function extractVideoFramePng(src: string, timeMs: number, options: VideoF
   return png;
 }
 
+async function extractVideoFramesPng(src: string, timeMsList: number[], options: VideoFrameCacheOptions = {}): Promise<Buffer[]> {
+  if (timeMsList.length === 0) {
+    return [];
+  }
+  if (timeMsList.length === 1) {
+    return [await extractVideoFramePng(src, timeMsList[0]!, options)];
+  }
+
+  const stepMs = timeMsList[1]! - timeMsList[0]!;
+  const ffmpegPath = options.ffmpegPath ?? await resolveDefaultFfmpegPath();
+  const child = spawn(ffmpegPath, [
+    ...(options.ffmpegArgsPrefix ?? []),
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-ss",
+    formatSeconds(timeMsList[0]! / 1000),
+    "-i",
+    resolve(src),
+    "-frames:v",
+    String(timeMsList.length),
+    "-vf",
+    `fps=${formatNumber(1000 / stepMs)}`,
+    "-f",
+    "image2pipe",
+    "-vcodec",
+    "png",
+    "pipe:1"
+  ], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+  child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+
+  const [exitCode, signal] = await once(child, "close") as [number | null, NodeJS.Signals | null];
+  if (exitCode !== 0) {
+    const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
+    const suffix = stderr ? `: ${stderr}` : signal ? `: signal ${signal}` : "";
+    throw new Error(`ffmpeg video frame batch extraction failed with code ${exitCode}${suffix}`);
+  }
+
+  const frames = splitPngStream(Buffer.concat(stdoutChunks));
+  if (frames.length !== timeMsList.length) {
+    throw new Error(`ffmpeg returned ${frames.length} video frames, expected ${timeMsList.length}`);
+  }
+  return frames;
+}
+
+function splitPngStream(stream: Buffer): Buffer[] {
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const frames: Buffer[] = [];
+  let offset = 0;
+
+  while (offset < stream.length) {
+    const start = stream.indexOf(signature, offset);
+    if (start < 0) {
+      break;
+    }
+
+    let cursor = start + signature.length;
+    while (cursor + 12 <= stream.length) {
+      const length = stream.readUInt32BE(cursor);
+      const typeStart = cursor + 4;
+      const type = stream.toString("ascii", typeStart, typeStart + 4);
+      cursor += 8 + length + 4;
+      if (type === "IEND") {
+        frames.push(stream.subarray(start, cursor));
+        offset = cursor;
+        break;
+      }
+    }
+
+    if (cursor > stream.length) {
+      break;
+    }
+  }
+
+  return frames;
+}
+
 async function resolveDefaultFfmpegPath(): Promise<string> {
   try {
     const ffmpegInstaller = await import("@ffmpeg-installer/ffmpeg");
@@ -461,6 +621,10 @@ async function resolveDefaultFfmpegPath(): Promise<string> {
 }
 
 function formatSeconds(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+}
+
+function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
 }
 

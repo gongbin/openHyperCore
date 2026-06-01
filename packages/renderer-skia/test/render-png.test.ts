@@ -224,6 +224,18 @@ test("VideoFrameCache prefetch stores frames for later rendering", async () => {
   assert.equal(count, "x");
 });
 
+test("VideoFrameCache prefetchFrames batches sequential video times", async () => {
+  const { cache, countFile, videoFile } = await createFakeVideoFrameCache();
+
+  await cache.prefetchFrames(videoFile, [0, 500, 1000]);
+  await cache.getFrame(videoFile, 0);
+  await cache.getFrame(videoFile, 500);
+  await cache.getFrame(videoFile, 1000);
+  const count = await readFile(countFile, "utf8");
+
+  assert.equal(count, "x");
+});
+
 test("renderRgbaFrame shares cached VideoLayer frames within a render task", async () => {
   const { cache, countFile, videoFile } = await createFakeVideoFrameCache();
   const composition = defineComposition({
@@ -266,7 +278,12 @@ async function createFakeVideoFrameCache() {
     fakeFfmpeg,
     `import { appendFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(countFile)}, "x");
-process.stdout.write(Buffer.from(${JSON.stringify(redPngBase64)}, "base64"));
+const framesIndex = process.argv.indexOf("-frames:v");
+const frames = framesIndex >= 0 ? Number(process.argv[framesIndex + 1]) : 1;
+const png = Buffer.from(${JSON.stringify(redPngBase64)}, "base64");
+for (let index = 0; index < frames; index += 1) {
+  process.stdout.write(png);
+}
 `,
     "utf8"
   );
