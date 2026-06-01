@@ -2,7 +2,11 @@
 
 OpenHyperCore 是一个面向低成本 CPU 服务器的视频剪辑渲染引擎原型。它用 TypeScript 描述 Scene Graph，使用 CanvasKit/Skia 做帧渲染，并通过 FFmpeg 输出 H.264/AAC MP4，目标是在不依赖 Chromium、无 GPU 的环境中提供比浏览器渲染链路更轻量、更可控的视频生成能力。
 
-当前项目处于 alpha 阶段，核心 CLI 与渲染管线已经可用，但还不是完整的 HyperFrames 替代品。已实现的能力覆盖图文合成、字幕层、基础转场 preset、PNG still、无音频 MP4、音频合流、多音频混音、基础视频贴图、资产 probe/cache、任务级视频帧缓存、增量帧复用和 worker_threads 帧级并行；服务化接口和生产级 benchmark 仍在 Roadmap 中。
+当前项目处于 alpha 阶段，核心 CLI 与渲染管线已经可用，但还不是完整的 HyperFrames 替代品。已实现的能力覆盖图文合成、字幕层、基础转场 preset、PNG still、无音频 MP4、音频合流、多音频混音、基础视频贴图、资产 probe/cache、任务级视频帧缓存、增量帧复用、worker_threads 帧级并行和 AWS 2CPU/2G benchmark 验证；服务化接口和发布打包流程仍在 Roadmap 中。
+
+## 开源
+
+OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板视频生成、批量剪辑、服务端渲染和自动化内容生产链路中。项目采用 MIT License，详见仓库根目录 `LICENSE` 文件。
 
 ## 功能特点
 
@@ -141,6 +145,37 @@ pnpm cli bench-suite examples/bench/animated-workload.ts \
 ```bash
 pnpm bench:fixtures
 ```
+
+## Benchmark
+
+M4.2 在 AWS 服务器上完成 1080p30 / 5s benchmark。测试机器为 2 vCPU、约 2GiB RAM、2GiB swap，无 GPU；输出均为 H.264、1920x1080、30fps、5.000s。
+
+测试命令：
+
+```bash
+pnpm cli bench-suite examples/bench/animated-workload.ts \
+  --static examples/bench/static-reuse.ts \
+  --out bench-results/m4.2/suite-1080p30-2cpu2g.json \
+  --video-dir bench-results/m4.2/videos \
+  --fps 30 \
+  --size 1920x1080 \
+  --workers 2 \
+  --worker-window 2
+```
+
+| case | total | render wall | encode | peak RSS | frame result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `single-thread` | 7.27s | 4.13s | 3.14s | 237MB | 150 rendered / 0 reused |
+| `worker` | 23.36s | 19.74s | 3.62s | 489MB | 150 rendered / 0 reused |
+| `worker-window` | 38.19s | 34.79s | 3.40s | 423MB | 150 rendered / 0 reused |
+| `static-reuse` | 6.69s | 0.03s | 6.65s | 263MB | 1 rendered / 149 reused |
+
+结论：
+
+- 在 2CPU/2G 机器上，`single-thread` 是动态图文 workload 的推荐路径，5 秒 1080p30 视频约 7.27 秒完成。
+- 静态复用路径有效，150 帧只渲染 1 帧，其余 149 帧复用。
+- 所有 case 峰值 RSS 均低于 800MB 内存目标。
+- `worker_threads` 在该低核数机器上明显慢于单线程，主要受 worker 启动、CanvasKit 初始化和内存压力影响；2CPU 部署默认不建议启用 worker。
 
 ## Composition 示例
 
@@ -293,7 +328,7 @@ examples/bench/     M4.1 benchmark fixtures
 - M3.7：已完成基础 CaptionLayer，支持时间段文本、样式和位置。
 - M3.8：已完成基础转场 preset：fade、slide、scale，并输出可复用 Scene Graph helper。
 - M4.1：已完成 benchmark fixtures 与 `bench-suite`，对比 single-thread、worker、worker+window、静态复用路径。
-- M4.2：在 AWS Lightsail 2vCPU/4GB 上运行 benchmark，验证 1080p30/5s 与内存目标。
+- M4.2：已在 AWS 2CPU/2G 服务器上运行 benchmark，验证 1080p30/5s 与 <800MB 内存目标。
 - M4.3：输出 benchmark 对比摘要 JSON，便于 CI 和服务器验收。
 - M5：补齐项目模板、用户文档、错误提示和发布打包流程。
 
