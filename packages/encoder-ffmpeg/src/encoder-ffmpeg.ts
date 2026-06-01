@@ -207,7 +207,7 @@ function audioFilters(audio: AudioInput): string[] {
 }
 
 function codecArgs(audioInputs: AudioInput[]): string[] {
-  const videoArgs = ["-c:v", "libx264", "-pix_fmt", "yuv420p"];
+  const videoArgs = ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"];
   if (audioInputs.length === 0) {
     return ["-an", ...videoArgs];
   }

@@ -1,37 +1,48 @@
 # OpenHyperCore
 
-OpenHyperCore 是一个面向低成本 CPU 服务器的视频剪辑渲染引擎原型。它用 TypeScript 描述 Scene Graph，使用 CanvasKit/Skia 做帧渲染，并通过 FFmpeg 输出 H.264/AAC MP4，目标是在不依赖 Chromium、无 GPU 的环境中提供比浏览器渲染链路更轻量、更可控的视频生成能力。
+[中文文档](README.zh-CN.md)
 
-当前项目处于 alpha 阶段，核心 CLI 与渲染管线已经可用，但还不是完整的 HyperFrames 替代品。已实现的能力覆盖图文合成、PNG still、无音频 MP4、音频合流、多音频混音、基础视频贴图、增量帧复用和 worker_threads 帧级并行；素材缓存、字幕层、转场 preset、服务化接口和生产级 benchmark 仍在 Roadmap 中。
+OpenHyperCore is a lightweight video editing and rendering engine prototype for low-cost CPU servers. It describes video compositions as a TypeScript scene graph, renders frames with CanvasKit/Skia, and writes H.264/AAC MP4 output through FFmpeg. The goal is to provide a rendering pipeline that is lighter, more controllable, and easier to deploy than browser-based renderers, without requiring Chromium or a GPU.
 
-## 功能特点
+The project is currently in alpha. The core CLI and rendering pipeline are usable, but OpenHyperCore is not yet a complete HyperFrames replacement. Implemented capabilities include graphic/text composition, captions, basic transition helpers, PNG still export, silent MP4 rendering, audio muxing, multi-audio mixing, VideoLayer, local asset probe/cache, batched raw RGBA video-frame decoding, incremental frame reuse, worker_threads frame rendering, and AWS 2CPU/2G benchmark validation. HTTP service APIs and release packaging remain on the roadmap.
 
-- Scene Graph IR：用纯数据描述 Composition、Layer、Transform、Keyframe，便于缓存、测试和后续服务化。
-- TypeScript API 与轻量 JSX runtime：不引入 React，JSX/命令式写法最终都落到 Composition IR。
-- CanvasKit/Skia 渲染后端：支持文本、矩形/圆形/path、图片和第一版本地 VideoLayer。
-- SVG debug still 与 PNG still：可快速检查单帧布局，也可生成真实 CanvasKit PNG。
-- FFmpeg 编码后端：通过 raw RGBA stdin pipe 输出 H.264/yuv420p MP4；有音频时输出 AAC。
-- AudioLayer：支持单音频、多音频 amix、start/end、volume、fadeIn/fadeOut。
-- VideoLayer：支持从本地视频按时间点抽帧并贴入 Skia 画布。
-- 帧级优化：连续视觉帧 hash 相同则复用 RGBA buffer，保持编码帧序和 PTS 不变。
-- worker_threads 并行渲染池：支持 `--workers N`、`--workers auto`、`--worker-window N` 控制并行度与内存窗口。
-- Benchmark：输出帧数、复用帧、worker 配置、音频 timeline、渲染耗时、编码耗时、峰值 RSS 等指标。
+## Open Source
 
-## 当前限制
+OpenHyperCore is an open-source TypeScript video rendering core for template video generation, batch editing, server-side rendering, and automated content production pipelines. The project is released under the MIT License. See [LICENSE](LICENSE).
 
-- 仍是 alpha 工程原型，API 可能继续调整。
-- VideoLayer 目前是 correctness-first：每个需要的视频帧会调用 FFmpeg 抽帧，尚未实现视频帧缓存、probe 和批量预取。
-- `ImageLayer.fit` 与 `VideoLayer.fit` 已预留类型，但当前 Skia 绘制主要按 `width/height` 拉伸绘制。
-- 文本排版仍是基础 Skia font 绘制，尚未补齐复杂断行、字体注册和 emoji fallback。
-- 尚未实现 `packages/assets`、CaptionLayer、转场 helper、HTTP 服务、可视化编辑器和发布打包流程。
+## Features
 
-## 环境要求
+- Scene Graph IR: describes compositions, layers, transforms, and keyframes as plain data for caching, testing, and future service integration.
+- TypeScript API and lightweight JSX runtime: no React dependency; JSX and imperative APIs both compile into the same Composition IR.
+- CanvasKit/Skia renderer: supports text, rectangles, circles, paths, images, and the first local VideoLayer implementation.
+- SVG debug stills and PNG stills: quickly inspect layout as SVG or render a real CanvasKit PNG frame.
+- CaptionLayer: supports timed captions, font size, color, background color, padding, alignment, and transform position.
+- Transition helpers: fade, slide, and scale presets that return reusable transform keyframes.
+- FFmpeg encoder backend: pipes raw RGBA frames to FFmpeg and outputs H.264/yuv420p MP4; with audio layers it outputs AAC audio.
+- AudioLayer: supports single audio, multi-audio `amix`, start/end timing, volume, fade in, and fade out.
+- VideoLayer: extracts frames from local video by timeline time and draws them into the Skia canvas. Video layers with `width/height` use source-sized batched raw RGBA decoding, bypassing the PNG intermediate format and CanvasKit per-frame image decoding.
+- Asset probe/cache: provides metadata probing and task-level cache APIs for images, video, and audio.
+- Frame-level reuse: visually identical consecutive frames reuse the same RGBA buffer while preserving encoded frame order and PTS.
+- worker_threads render pool: supports `--workers N`, `--workers auto`, and `--worker-window N` to control parallelism and memory buffering.
+- Benchmark output: reports frame count, rendered/reused frames, worker settings, audio timeline, render time, encode time, total time, and peak RSS.
 
-- Node.js 24+，当前测试命令使用 `node --experimental-strip-types` 直接运行 TypeScript。
-- pnpm。
-- FFmpeg。项目依赖 `@ffmpeg-installer/ffmpeg`，多数本地场景无需额外安装；也可以通过 CLI 的 `--ffmpeg-path` 指定系统 FFmpeg。
+## Current Limits
 
-## 安装与验证
+- This is still an alpha prototype, and APIs may continue to change.
+- VideoLayer is still correctness-first: it supports source-size probing, task-level raw RGBA frame caching, and windowed batched prefetch, but does not yet implement cross-task persistent cache, GOP-level decode scheduling, or shared video-frame cache across workers.
+- `ImageLayer.fit` and `VideoLayer.fit` are reserved in the type system, but the current Skia renderer primarily stretches to `width/height`.
+- Text layout is still basic Skia font drawing. Complex line breaking, font registration, and emoji fallback are not complete.
+- CaptionLayer currently supports basic single-line captions. Automatic wrapping, advanced layout, and SRT/VTT import are not implemented yet.
+- Transition helpers currently output basic transform keyframes. Easing presets, a composed timeline DSL, and complex entrance/exit choreography are still future work.
+- HTTP service APIs, visual editor, and release packaging are not implemented yet.
+
+## Requirements
+
+- Node.js 24+. The current test commands run TypeScript directly with `node --experimental-strip-types`.
+- pnpm.
+- FFmpeg. The project depends on `@ffmpeg-installer/ffmpeg`, so most local runs do not need a separate FFmpeg installation. You can also pass a system FFmpeg path with `--ffmpeg-path`.
+
+## Install And Verify
 
 ```bash
 pnpm install
@@ -40,7 +51,7 @@ pnpm build
 pnpm test
 ```
 
-常用开发命令：
+Common development commands:
 
 ```bash
 pnpm cli probe examples/simple-video.ts
@@ -48,20 +59,21 @@ pnpm cli still examples/simple-video.ts --t 1 --out /tmp/openhyper-frame.svg
 pnpm cli still examples/simple-video.ts --t 1 --out /tmp/openhyper-frame.png --format png
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4
 pnpm cli bench examples/simple-video.ts --out /tmp/openhyper-bench.json --video-out /tmp/openhyper-bench.mp4
+pnpm cli bench-suite examples/bench/animated-workload.ts --static examples/bench/static-reuse.ts --out /tmp/openhyper-bench-suite.json --video-dir /tmp/openhyper-bench-suite
 ```
 
-构建后也可以直接运行编译产物：
+After building, you can also run the compiled output directly:
 
 ```bash
 node dist/packages/cli/src/index.js probe examples/simple-video.ts
 node dist/packages/cli/src/index.js render examples/simple-video.ts --out /tmp/openhyper.mp4
 ```
 
-## CLI 使用
+## CLI Usage
 
 ### probe
 
-打印 Composition 的基础信息，包括 fps、尺寸、时长、帧数和 layer 数量。
+Prints basic composition metadata, including fps, size, duration, frame count, and layer count.
 
 ```bash
 pnpm cli probe examples/simple-video.ts
@@ -69,7 +81,7 @@ pnpm cli probe examples/simple-video.ts
 
 ### still
 
-导出指定时间点的单帧。默认输出 SVG debug still；加 `--format png` 后使用 CanvasKit 输出 PNG。
+Exports a single frame at a given timestamp. The default output is an SVG debug still. Add `--format png` to render a real CanvasKit PNG.
 
 ```bash
 pnpm cli still examples/simple-video.ts --t 1 --out /tmp/frame.svg
@@ -78,7 +90,7 @@ pnpm cli still examples/simple-video.ts --t 1 --out /tmp/frame.png --format png
 
 ### render
 
-渲染 MP4。默认走 raw RGBA pipe 到 FFmpeg；无音频时输出 H.264 MP4，有 AudioLayer 时输出 H.264 + AAC MP4。
+Renders an MP4. The default pipeline sends raw RGBA frames to FFmpeg. Without audio it outputs H.264 MP4; with AudioLayer it outputs H.264 + AAC MP4.
 
 ```bash
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4
@@ -86,7 +98,7 @@ pnpm cli render examples/simple-video.ts --out /tmp/openhyper-720p.mp4 --fps 24 
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper-worker.mp4 --workers auto --worker-window 4
 ```
 
-可指定 FFmpeg 路径或额外前置参数：
+You can specify an FFmpeg binary or extra prefix arguments:
 
 ```bash
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --ffmpeg-path /usr/local/bin/ffmpeg
@@ -95,7 +107,7 @@ pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --ffmpeg-arg-p
 
 ### bench
 
-渲染视频并输出 JSON 指标，适合比较单线程、worker 和窗口大小配置。
+Renders a video and writes JSON metrics. This is useful for comparing single-thread, worker, and worker-window configurations.
 
 ```bash
 pnpm cli bench examples/simple-video.ts \
@@ -104,17 +116,85 @@ pnpm cli bench examples/simple-video.ts \
   --workers auto
 ```
 
-典型指标包括：
+Typical metrics include:
 
-- `renderMode`、`workerSelection`、`workerCount`、`workerWindow`
-- `frames`、`renderedFrames`、`reusedFrames`、`maxBufferedFrames`
-- `durationMs`、`frameDurationMs`、`encodedVideoDurationMs`
-- `audioInputs`、`audioTimelineStartMs`、`audioTimelineEndMs`
-- `renderWallMs`、`renderCpuMs`、`encodeMs`、`totalMs`、`peakRssBytes`
+- `renderMode`, `workerSelection`, `workerCount`, `workerWindow`
+- `frames`, `renderedFrames`, `reusedFrames`, `maxBufferedFrames`
+- `durationMs`, `frameDurationMs`, `encodedVideoDurationMs`
+- `audioInputs`, `audioTimelineStartMs`, `audioTimelineEndMs`
+- `renderWallMs`, `renderCpuMs`, `encodeMs`, `totalMs`, `peakRssBytes`
 
-## Composition 示例
+### bench-suite
 
-最小命令式 Scene Graph：
+Runs the M4.1 benchmark comparison suite and generates four cases:
+
+- `single-thread`: dynamic workload, single-thread rendering
+- `worker`: dynamic workload, worker_threads rendering
+- `worker-window`: dynamic workload, worker_threads with a bounded buffer window
+- `static-reuse`: static fixture, used to verify frame reuse
+
+```bash
+pnpm cli bench-suite examples/bench/animated-workload.ts \
+  --static examples/bench/static-reuse.ts \
+  --out /tmp/openhyper-bench-suite.json \
+  --video-dir /tmp/openhyper-bench-suite \
+  --workers 2 \
+  --worker-window 4
+```
+
+You can also run the built-in fixture script:
+
+```bash
+pnpm bench:fixtures
+```
+
+## Benchmark
+
+M4.2/M4.3 pre-optimization benchmarks were run on an AWS server with 2 vCPU, about 2GiB RAM, 2GiB swap, and no GPU. Output was H.264, 1920x1080, 30fps, 5.000s.
+
+Benchmark command:
+
+```bash
+pnpm cli bench-suite examples/bench/animated-workload.ts \
+  --static examples/bench/static-reuse.ts \
+  --out bench-results/m4.3-pre/suite-1080p30-2cpu2g-final.json \
+  --video-dir bench-results/m4.3-pre/videos-final \
+  --fps 30 \
+  --size 1920x1080 \
+  --workers 2 \
+  --worker-window 2
+```
+
+| case | total | render wall | encode | peak RSS | frame result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `single-thread` | 4.99s | 3.30s | 1.69s | 236MB | 150 rendered / 0 reused |
+| `worker` | 6.42s | 4.28s | 2.15s | 600MB | 150 rendered / 0 reused |
+| `worker-window` | 6.59s | 4.76s | 1.83s | 561MB | 150 rendered / 0 reused |
+| `static-reuse` | 2.85s | 0.02s | 2.83s | 291MB | 1 rendered / 149 reused |
+
+Conclusions:
+
+- On a 2CPU/2G machine, `single-thread` is the recommended path for dynamic graphic workloads. A 5-second 1080p30 video completed in about 4.99s, meeting the 5s design target.
+- Static frame reuse is effective: only 1 of 150 frames is rendered, and the other 149 frames are reused. Total time was about 2.85s.
+- All cases stayed below the 800MB peak RSS target.
+- `worker_threads` now reuses a persistent render pool, but on low-core 2CPU/2G machines it is still slower than single-thread rendering due to parallel CanvasKit surfaces, thread communication, and memory pressure. Worker rendering is not recommended as the default for 2CPU deployments.
+
+### Real Video Demo Comparison
+
+The following data was collected on the same AWS 2CPU/2G server. The test asset was a server-local ignored fixture, `examples/demo.mp4`, used to simulate a real "fast escalator descent into a subway" edit. The source asset and generated videos are not committed to GitHub.
+
+| renderer | scenario | total | render wall | encode | peak RSS | note |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| OpenHyperCore | PNG batch VideoLayer | 64.07s | 62.86s | 1.21s | 249MB | Batched extraction, but still uses PNG encode/decode |
+| OpenHyperCore | raw RGBA source-sized VideoLayer | 52.63s | 51.60s | 1.03s | 235MB | Bypasses PNG; intermediate frames are cached at the source video size, 480x272 |
+| OpenHyperCore | raw RGBA + 2 workers | 63.12s | 62.10s | 1.02s | 487MB | Worker path is still slower than single-thread on 2CPU |
+| HyperFrames | Chromium screenshot fallback | 162.63s | n/a | n/a | 212MB | Server Chromium lacked beginFrame support, so HyperFrames used screenshot fallback |
+
+Conclusion: on the real video edit, raw RGBA VideoLayer is about 18% faster than the PNG batch path and about 3.1x faster than the HyperFrames fallback observed on this server. The next major bottlenecks are per-frame CanvasKit composition and the lack of shared video-frame cache across workers. On 2CPU machines, single-thread rendering remains the recommended default.
+
+## Composition Examples
+
+Minimal imperative scene graph:
 
 ```ts
 import { defineComposition } from "../packages/core/src/index.ts";
@@ -150,7 +230,7 @@ export default defineComposition({
 });
 ```
 
-音频示例：
+Audio example:
 
 ```ts
 {
@@ -164,7 +244,7 @@ export default defineComposition({
 }
 ```
 
-视频贴图示例：
+Video layer example:
 
 ```ts
 {
@@ -178,31 +258,95 @@ export default defineComposition({
 }
 ```
 
-## 仓库结构
+Caption example:
+
+```ts
+{
+  type: "caption",
+  text: "This line is shown near the bottom of the frame",
+  startMs: 500,
+  endMs: 2500,
+  size: 42,
+  color: "#ffffff",
+  backgroundColor: "#000000",
+  padding: 12,
+  align: "center",
+  transform: { x: 640, y: 660 }
+}
+```
+
+Transition helper example:
+
+```ts
+import {
+  fadeTransition,
+  mergeTransforms,
+  scaleTransition,
+  slideTransition
+} from "openhypercore/core";
+
+{
+  type: "text",
+  text: "Animated title",
+  transform: mergeTransforms(
+    fadeTransition({ startMs: 0, durationMs: 600 }),
+    slideTransition({
+      startMs: 0,
+      durationMs: 600,
+      from: { y: 40 },
+      to: { y: 0 }
+    }),
+    scaleTransition({ startMs: 0, durationMs: 600, from: 0.92, to: 1 })
+  )
+}
+```
+
+Asset probe/cache example:
+
+```ts
+import { createAssetProbeCache } from "openhypercore/assets";
+
+const cache = createAssetProbeCache();
+const clip = await cache.probe("./assets/clip.mp4");
+
+console.log(clip.width, clip.height, clip.durationMs);
+```
+
+Video frame cache example:
+
+```ts
+import { createVideoFrameCache, renderRgbaFrame } from "openhypercore/renderer-skia";
+
+const videoFrameCache = createVideoFrameCache();
+const rgba = await renderRgbaFrame(frame, { videoFrameCache });
+```
+
+## Repository Layout
 
 ```text
 packages/
-  core/             Scene Graph IR、Composition 校验、调度器、关键帧求值
-  jsx-runtime/      自定义 JSX runtime，输出 IR
-  renderer-svg/     SVG debug still 后端
-  renderer-skia/    CanvasKit PNG/RGBA 渲染后端
-  encoder-ffmpeg/   FFmpeg rawvideo/image pipe、H.264/AAC 编码、音频 filter graph
-  cli/              openhyper CLI、render/bench、worker_threads 调度
-examples/           示例 Composition
-docs/               开发计划与实施记录
+  core/             Scene Graph IR, composition validation, scheduler, keyframe evaluation
+  jsx-runtime/      Custom JSX runtime that emits IR
+  renderer-svg/     SVG debug still backend
+  renderer-skia/    CanvasKit PNG/RGBA renderer backend
+  encoder-ffmpeg/   FFmpeg rawvideo/image pipe, H.264/AAC encoding, audio filter graph
+  assets/           Image/video/audio probe and task-level cache
+  cli/              openhyper CLI, render/bench commands, worker_threads scheduling
+examples/           Example compositions
+examples/bench/     M4.1 benchmark fixtures
 ```
 
 ## Roadmap
 
-- M3.5：新增 `packages/assets`，提供图片/视频/音频 probe、尺寸/时长元信息和任务级缓存。
-- M3.6：实现视频帧缓存与预取，避免同一视频/同一时间点重复 FFmpeg 抽帧。
-- M3.7：实现 CaptionLayer，支持时间段文本、样式和位置。
-- M3.8：实现基础转场 preset：fade、slide、scale。
-- M4.1：增加真实 workload benchmark fixtures，对比 single-thread、worker、worker+window、静态复用路径。
-- M4.2：在 AWS Lightsail 2vCPU/4GB 上运行 benchmark，验证 1080p30/5s 与内存目标。
-- M4.3：输出 benchmark 对比摘要 JSON，便于 CI 和服务器验收。
-- M5：补齐项目模板、用户文档、错误提示和发布打包流程。
+- M3.5: completed `packages/assets`, with image/video/audio probe, size/duration metadata, and task-level cache.
+- M3.6: completed task-level video frame cache, windowed batch prefetch, and raw RGBA VideoLayer decoding to avoid repeated FFmpeg extraction and bypass the PNG intermediate format.
+- M3.7: completed basic CaptionLayer with timed text, style, and position.
+- M3.8: completed basic transition presets: fade, slide, scale, and reusable scene-graph helpers.
+- M4.1: completed benchmark fixtures and `bench-suite`, comparing single-thread, worker, worker+window, and static-reuse paths.
+- M4.2: completed AWS 2CPU/2G benchmark validation for the 1080p30/5s and <800MB memory targets.
+- M4.3: completed benchmark summary JSON output for CI and server acceptance checks.
+- M5: fill in project templates, user documentation, error messages, and release packaging.
 
-## 目标
+## Goal
 
-OpenHyperCore 的长期目标是成为一个轻量、可编程、易部署的视频剪辑渲染内核：在低规格服务器上完成图文、图片、视频片段和音频的批量合成，并为后续 HTTP 服务、模板系统和可视化编辑器提供稳定的底层渲染能力。
+OpenHyperCore aims to become a lightweight, programmable, easy-to-deploy video editing and rendering core. It should support batch composition of graphics, images, video clips, and audio on low-spec servers, while providing a stable rendering foundation for future HTTP services, template systems, and visual editors.

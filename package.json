@@ -6,6 +6,7 @@
     "openhyper": "./dist/packages/cli/src/index.js"
   },
   "exports": {
+    "./assets": "./dist/packages/assets/src/index.js",
     "./core": "./dist/packages/core/src/index.js",
     "./encoder-ffmpeg": "./dist/packages/encoder-ffmpeg/src/index.js",
     "./jsx-runtime": "./dist/packages/jsx-runtime/src/index.js",
@@ -15,14 +16,14 @@
   },
   "files": [
     "dist",
-    "README.md",
-    "Plans.md"
+    "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "node --experimental-strip-types --test packages/*/test/*.test.ts",
-    "cli": "node --experimental-strip-types packages/cli/src/index.ts"
+    "cli": "node --experimental-strip-types packages/cli/src/index.ts",
+    "bench:fixtures": "node --experimental-strip-types packages/cli/src/index.ts bench-suite examples/bench/animated-workload.ts --static examples/bench/static-reuse.ts --out /tmp/openhyper-bench-suite.json --video-dir /tmp/openhyper-bench-suite"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
