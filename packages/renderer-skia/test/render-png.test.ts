@@ -236,6 +236,22 @@ test("VideoFrameCache prefetchFrames batches sequential video times", async () =
   assert.equal(count, "x");
 });
 
+test("VideoFrameCache prefetchRgbaFrames batches raw RGBA video times", async () => {
+  const { cache, countFile, videoFile } = await createFakeVideoFrameCache();
+
+  await cache.prefetchRgbaFrames(videoFile, [0, 500, 1000], 2, 2);
+  const first = await cache.getRgbaFrame(videoFile, 0, 2, 2);
+  const second = await cache.getRgbaFrame(videoFile, 500, 2, 2);
+  const third = await cache.getRgbaFrame(videoFile, 1000, 2, 2);
+  const count = await readFile(countFile, "utf8");
+
+  assert.equal(first.pixels.length, 2 * 2 * 4);
+  assert.equal(second.pixels.length, 2 * 2 * 4);
+  assert.equal(third.pixels.length, 2 * 2 * 4);
+  assert.deepEqual([...first.pixels.subarray(0, 4)], [255, 0, 0, 255]);
+  assert.equal(count, "x");
+});
+
 test("renderRgbaFrame shares cached VideoLayer frames within a render task", async () => {
   const { cache, countFile, videoFile } = await createFakeVideoFrameCache();
   const composition = defineComposition({
@@ -277,9 +293,28 @@ async function createFakeVideoFrameCache() {
   await writeFile(
     fakeFfmpeg,
     `import { appendFileSync } from "node:fs";
+if (process.argv.includes("null")) {
+  process.stderr.write("Stream #0:0: Video: h264, yuv420p, 2x2, 25 fps\\n");
+  process.exit(0);
+}
 appendFileSync(${JSON.stringify(countFile)}, "x");
 const framesIndex = process.argv.indexOf("-frames:v");
 const frames = framesIndex >= 0 ? Number(process.argv[framesIndex + 1]) : 1;
+if (process.argv.includes("rawvideo")) {
+  const scaleArg = process.argv.find((arg) => arg.includes("scale=")) ?? "scale=1:1";
+  const match = /scale=(\\d+):(\\d+)/.exec(scaleArg);
+  const width = match ? Number(match[1]) : 1;
+  const height = match ? Number(match[2]) : 1;
+  const frame = Buffer.alloc(width * height * 4);
+  for (let offset = 0; offset < frame.length; offset += 4) {
+    frame[offset] = 255;
+    frame[offset + 3] = 255;
+  }
+  for (let index = 0; index < frames; index += 1) {
+    process.stdout.write(frame);
+  }
+  process.exit(0);
+}
 const png = Buffer.from(${JSON.stringify(redPngBase64)}, "base64");
 for (let index = 0; index < frames; index += 1) {
   process.stdout.write(png);

@@ -81,7 +81,7 @@ type RenderWorkerResponse = {
   error?: string;
 };
 
-const VIDEO_PREFETCH_WINDOW_FRAMES = 256;
+const VIDEO_PREFETCH_WINDOW_FRAMES = 32;
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
   const stdout = io.stdout ?? ((line: string) => console.log(line));
@@ -663,6 +663,7 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
       const startedAt = performance.now();
       if (frameIndex >= prefetchedUntilFrameIndex && frameHasVideoLayer(resolvedFrame)) {
         const prefetchEndFrameIndex = Math.min(totalFrames, frameIndex + VIDEO_PREFETCH_WINDOW_FRAMES);
+        videoFrameCache.clear();
         await prefetchVideoFrameBatch(resolveFrameWindow(composition, frameIndex, prefetchEndFrameIndex, resolvedFrame), videoFrameCache);
         prefetchedUntilFrameIndex = prefetchEndFrameIndex;
       }
