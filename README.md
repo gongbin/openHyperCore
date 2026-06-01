@@ -20,7 +20,7 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 - AudioLayer：支持单音频、多音频 amix、start/end、volume、fadeIn/fadeOut。
 - VideoLayer：支持从本地视频按时间点抽帧并贴入 Skia 画布，渲染任务内带视频帧缓存和预取。
 - 资产 probe/cache：提供图片、视频、音频 metadata probe，以及任务级缓存 API。
-- 帧级优化：连续视觉帧 hash 相同则复用 RGBA buffer，保持编码帧序和 PTS 不变。
+- 帧级优化：连续视觉内容相同则复用 RGBA buffer，保持编码帧序和 PTS 不变。
 - worker_threads 并行渲染池：支持 `--workers N`、`--workers auto`、`--worker-window N` 控制并行度与内存窗口。
 - Benchmark：输出帧数、复用帧、worker 配置、音频 timeline、渲染耗时、编码耗时、峰值 RSS 等指标。
 
@@ -148,15 +148,15 @@ pnpm bench:fixtures
 
 ## Benchmark
 
-M4.2 在 AWS 服务器上完成 1080p30 / 5s benchmark。测试机器为 2 vCPU、约 2GiB RAM、2GiB swap，无 GPU；输出均为 H.264、1920x1080、30fps、5.000s。
+M4.2/M4.3 前置优化在 AWS 服务器上完成 1080p30 / 5s benchmark。测试机器为 2 vCPU、约 2GiB RAM、2GiB swap，无 GPU；输出均为 H.264、1920x1080、30fps、5.000s。
 
 测试命令：
 
 ```bash
 pnpm cli bench-suite examples/bench/animated-workload.ts \
   --static examples/bench/static-reuse.ts \
-  --out bench-results/m4.2/suite-1080p30-2cpu2g.json \
-  --video-dir bench-results/m4.2/videos \
+  --out bench-results/m4.3-pre/suite-1080p30-2cpu2g-final.json \
+  --video-dir bench-results/m4.3-pre/videos-final \
   --fps 30 \
   --size 1920x1080 \
   --workers 2 \
@@ -165,17 +165,17 @@ pnpm cli bench-suite examples/bench/animated-workload.ts \
 
 | case | total | render wall | encode | peak RSS | frame result |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `single-thread` | 7.27s | 4.13s | 3.14s | 237MB | 150 rendered / 0 reused |
-| `worker` | 23.36s | 19.74s | 3.62s | 489MB | 150 rendered / 0 reused |
-| `worker-window` | 38.19s | 34.79s | 3.40s | 423MB | 150 rendered / 0 reused |
-| `static-reuse` | 6.69s | 0.03s | 6.65s | 263MB | 1 rendered / 149 reused |
+| `single-thread` | 4.99s | 3.30s | 1.69s | 236MB | 150 rendered / 0 reused |
+| `worker` | 6.42s | 4.28s | 2.15s | 600MB | 150 rendered / 0 reused |
+| `worker-window` | 6.59s | 4.76s | 1.83s | 561MB | 150 rendered / 0 reused |
+| `static-reuse` | 2.85s | 0.02s | 2.83s | 291MB | 1 rendered / 149 reused |
 
 结论：
 
-- 在 2CPU/2G 机器上，`single-thread` 是动态图文 workload 的推荐路径，5 秒 1080p30 视频约 7.27 秒完成。
-- 静态复用路径有效，150 帧只渲染 1 帧，其余 149 帧复用。
+- 在 2CPU/2G 机器上，`single-thread` 是动态图文 workload 的推荐路径，5 秒 1080p30 视频约 4.99 秒完成，达到 5s 设计目标。
+- 静态复用路径有效，150 帧只渲染 1 帧，其余 149 帧复用，总耗时约 2.85 秒。
 - 所有 case 峰值 RSS 均低于 800MB 内存目标。
-- `worker_threads` 在该低核数机器上明显慢于单线程，主要受 worker 启动、CanvasKit 初始化和内存压力影响；2CPU 部署默认不建议启用 worker。
+- `worker_threads` 现在复用持久渲染池，但在 2CPU/2G 低核数机器上仍慢于单线程，主要受并行 CanvasKit surface、线程通信和内存压力影响；2CPU 部署默认不建议启用 worker。
 
 ## Composition 示例
 
