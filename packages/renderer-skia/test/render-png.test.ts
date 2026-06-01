@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ffmpeg from "@ffmpeg-installer/ffmpeg";
 import { defineComposition, resolveFrame } from "../../core/src/index.ts";
-import { createVideoFrameCache, renderPngFrame, renderRgbaFrame } from "../src/index.ts";
+import { createRgbaFrameRenderer, createVideoFrameCache, renderPngFrame, renderRgbaFrame } from "../src/index.ts";
 
 test("renderPngFrame emits a PNG buffer for resolved text and shapes", async () => {
   const composition = defineComposition({
@@ -68,6 +68,72 @@ test("renderRgbaFrame emits width x height x 4 raw bytes", async () => {
   assert.ok(Buffer.isBuffer(rgba));
   assert.equal(rgba.length, 4 * 3 * 4);
   assert.deepEqual([...rgba.subarray(0, 4)], [255, 0, 0, 255]);
+});
+
+test("renderRgbaFrame draws visible text glyphs", async () => {
+  const composition = defineComposition({
+    fps: 30,
+    width: 96,
+    height: 48,
+    durationMs: 1000,
+    layers: [
+      {
+        type: "text",
+        text: "TEXT",
+        size: 28,
+        color: "#ffffff",
+        transform: { x: 4, y: 34 }
+      }
+    ]
+  });
+
+  const rgba = await renderRgbaFrame(resolveFrame(composition, 0));
+  const paintedPixels = countPixelsWithAlpha(rgba);
+
+  assert.ok(paintedPixels > 0);
+});
+
+test("RgbaFrameRenderer reuses a renderer across frames", async () => {
+  const composition = defineComposition({
+    fps: 2,
+    width: 4,
+    height: 3,
+    durationMs: 1000,
+    layers: [
+      {
+        type: "shape",
+        shape: "rect",
+        width: 4,
+        height: 3,
+        fill: "#ff0000"
+      },
+      {
+        type: "shape",
+        shape: "rect",
+        width: 4,
+        height: 3,
+        fill: "#0000ff",
+        transform: {
+          opacity: [
+            { timeMs: 0, value: 0 },
+            { timeMs: 500, value: 1 }
+          ]
+        }
+      }
+    ]
+  });
+  const renderer = createRgbaFrameRenderer();
+
+  try {
+    const first = await renderer.render(resolveFrame(composition, 0));
+    const second = await renderer.render(resolveFrame(composition, 500));
+
+    assert.equal(first.length, 4 * 3 * 4);
+    assert.equal(second.length, 4 * 3 * 4);
+    assert.notDeepEqual([...first.subarray(0, 4)], [...second.subarray(0, 4)]);
+  } finally {
+    renderer.dispose();
+  }
 });
 
 test("renderRgbaFrame draws a CaptionLayer background", async () => {
@@ -158,6 +224,18 @@ test("VideoFrameCache prefetch stores frames for later rendering", async () => {
   assert.equal(count, "x");
 });
 
+test("VideoFrameCache prefetchFrames batches sequential video times", async () => {
+  const { cache, countFile, videoFile } = await createFakeVideoFrameCache();
+
+  await cache.prefetchFrames(videoFile, [0, 500, 1000]);
+  await cache.getFrame(videoFile, 0);
+  await cache.getFrame(videoFile, 500);
+  await cache.getFrame(videoFile, 1000);
+  const count = await readFile(countFile, "utf8");
+
+  assert.equal(count, "x");
+});
+
 test("renderRgbaFrame shares cached VideoLayer frames within a render task", async () => {
   const { cache, countFile, videoFile } = await createFakeVideoFrameCache();
   const composition = defineComposition({
@@ -200,7 +278,12 @@ async function createFakeVideoFrameCache() {
     fakeFfmpeg,
     `import { appendFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(countFile)}, "x");
-process.stdout.write(Buffer.from(${JSON.stringify(redPngBase64)}, "base64"));
+const framesIndex = process.argv.indexOf("-frames:v");
+const frames = framesIndex >= 0 ? Number(process.argv[framesIndex + 1]) : 1;
+const png = Buffer.from(${JSON.stringify(redPngBase64)}, "base64");
+for (let index = 0; index < frames; index += 1) {
+  process.stdout.write(png);
+}
 `,
     "utf8"
   );
@@ -216,3 +299,13 @@ process.stdout.write(Buffer.from(${JSON.stringify(redPngBase64)}, "base64"));
 }
 
 const redPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lRY6mAAAAABJRU5ErkJggg==";
+
+function countPixelsWithAlpha(rgba: Buffer): number {
+  let count = 0;
+  for (let index = 3; index < rgba.length; index += 4) {
+    if (rgba[index] !== 0) {
+      count += 1;
+    }
+  }
+  return count;
+}

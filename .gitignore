@@ -4,3 +4,8 @@ docs/
 Plans.md
 .DS_Store
 *.log
+*.mp4
+*.mov
+*.webm
+bench-results/
+renders/
