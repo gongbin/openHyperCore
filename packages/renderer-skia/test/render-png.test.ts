@@ -70,6 +70,29 @@ test("renderRgbaFrame emits width x height x 4 raw bytes", async () => {
   assert.deepEqual([...rgba.subarray(0, 4)], [255, 0, 0, 255]);
 });
 
+test("renderRgbaFrame draws visible text glyphs", async () => {
+  const composition = defineComposition({
+    fps: 30,
+    width: 96,
+    height: 48,
+    durationMs: 1000,
+    layers: [
+      {
+        type: "text",
+        text: "TEXT",
+        size: 28,
+        color: "#ffffff",
+        transform: { x: 4, y: 34 }
+      }
+    ]
+  });
+
+  const rgba = await renderRgbaFrame(resolveFrame(composition, 0));
+  const paintedPixels = countPixelsWithAlpha(rgba);
+
+  assert.ok(paintedPixels > 0);
+});
+
 test("RgbaFrameRenderer reuses a renderer across frames", async () => {
   const composition = defineComposition({
     fps: 2,
@@ -259,3 +282,13 @@ process.stdout.write(Buffer.from(${JSON.stringify(redPngBase64)}, "base64"));
 }
 
 const redPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lRY6mAAAAABJRU5ErkJggg==";
+
+function countPixelsWithAlpha(rgba: Buffer): number {
+  let count = 0;
+  for (let index = 3; index < rgba.length; index += 4) {
+    if (rgba[index] !== 0) {
+      count += 1;
+    }
+  }
+  return count;
+}

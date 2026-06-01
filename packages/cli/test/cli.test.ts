@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import ffmpeg from "@ffmpeg-installer/ffmpeg";
 import { runCli } from "../src/index.ts";
 
 test("runCli probe returns composition metadata JSON", async () => {
@@ -282,6 +284,49 @@ export default defineComposition({
   assert.equal(report.audioTimelineStartMs, 250);
   assert.equal(report.audioTimelineEndMs, 1250);
   assert.equal(report.audioTimelineDurationMs, 1000);
+});
+
+test("runCli bench does not reuse active VideoLayer frames across time", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "openhyper-cli-video-"));
+  const videoSource = join(dir, "source.mp4");
+  const compositionFile = join(dir, "video.ts");
+  const reportFile = join(dir, "bench.json");
+  const videoFile = join(dir, "bench.mp4");
+  const generated = spawnSync(ffmpeg.path, [
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    "testsrc=size=4x4:rate=2:duration=1",
+    "-pix_fmt",
+    "yuv420p",
+    videoSource
+  ], { encoding: "utf8" });
+
+  assert.equal(generated.status, 0, generated.stderr);
+  await writeFile(
+    compositionFile,
+    `import { defineComposition } from "${pathToFileURL(process.cwd() + "/packages/core/src/index.ts").href}";
+export default defineComposition({
+  fps: 2,
+  width: 4,
+  height: 4,
+  durationMs: 1000,
+  layers: [{ type: "video", src: ${JSON.stringify(videoSource)}, width: 4, height: 4 }]
+});
+`,
+    "utf8"
+  );
+
+  await runCli(
+    ["bench", compositionFile, "--out", reportFile, "--video-out", videoFile, "--ffmpeg-path", ffmpeg.path],
+    { stdout: () => undefined }
+  );
+
+  const report = JSON.parse(await readFile(reportFile, "utf8"));
+  assert.equal(report.frames, 2);
+  assert.equal(report.renderedFrames, 2);
+  assert.equal(report.reusedFrames, 0);
 });
 
 test("runCli bench renders non-reused frames through a worker pool when --workers is set", async () => {

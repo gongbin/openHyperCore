@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { dirname, resolve } from "node:path";
 import { createRequire } from "node:module";
 import CanvasKitInitModule from "canvaskit-wasm";
-import type { Canvas, CanvasKit, CanvasKitInitOptions, Paint } from "canvaskit-wasm";
+import type { Canvas, CanvasKit, CanvasKitInitOptions, Paint, Typeface } from "canvaskit-wasm";
 import type { ResolvedFrame, ResolvedLayer } from "../../core/src/index.ts";
 
 type CanvasKitInitFn = (opts?: CanvasKitInitOptions) => Promise<CanvasKit>;
@@ -13,6 +13,7 @@ type SkSurface = NonNullable<ReturnType<CanvasKit["MakeSurface"]>>;
 const CanvasKitInit = CanvasKitInitModule as unknown as CanvasKitInitFn;
 
 let canvasKitPromise: Promise<CanvasKit> | undefined;
+let defaultTypefacePromise: Promise<Typeface | null> | undefined;
 
 export type RenderFrameOptions = {
   videoFrameCache?: VideoFrameCache;
@@ -202,6 +203,38 @@ async function loadCanvasKit(): Promise<CanvasKit> {
   return canvasKitPromise;
 }
 
+async function loadDefaultTypeface(CanvasKit: CanvasKit): Promise<Typeface | null> {
+  if (!defaultTypefacePromise) {
+    defaultTypefacePromise = loadTypefaceFromCandidates(CanvasKit);
+  }
+  return await defaultTypefacePromise;
+}
+
+async function loadTypefaceFromCandidates(CanvasKit: CanvasKit): Promise<Typeface | null> {
+  const candidates = [
+    process.env.OPENHYPERCORE_FONT,
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/SFNS.ttf"
+  ].filter((path): path is string => Boolean(path));
+
+  for (const candidate of candidates) {
+    try {
+      const fontData = await readFile(candidate);
+      const typeface = CanvasKit.Typeface.MakeTypefaceFromData(fontData.buffer.slice(fontData.byteOffset, fontData.byteOffset + fontData.byteLength));
+      if (typeface) {
+        return typeface;
+      }
+    } catch {
+      // Try the next platform-specific candidate.
+    }
+  }
+
+  return CanvasKit.Typeface.GetDefault();
+}
+
 async function drawLayer(CanvasKit: CanvasKit, canvas: Canvas, layer: ResolvedLayer, frameTimeMs: number, options: RenderFrameOptions): Promise<void> {
   canvas.save();
   canvas.translate(layer.transform.x, layer.transform.y);
@@ -214,10 +247,10 @@ async function drawLayer(CanvasKit: CanvasKit, canvas: Canvas, layer: ResolvedLa
         drawShape(CanvasKit, canvas, layer);
         return;
       case "text":
-        drawText(CanvasKit, canvas, layer);
+        await drawText(CanvasKit, canvas, layer);
         return;
       case "caption":
-        drawCaption(CanvasKit, canvas, layer);
+        await drawCaption(CanvasKit, canvas, layer);
         return;
       case "image":
         await drawImage(CanvasKit, canvas, layer);
@@ -266,9 +299,9 @@ function drawShape(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Resolved
   }
 }
 
-function drawText(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "text" }>): void {
+async function drawText(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "text" }>): Promise<void> {
   const paint = makePaint(CanvasKit, layer.color ?? "#000", layer.transform.opacity);
-  const font = new CanvasKit.Font(null, layer.size ?? 16);
+  const font = new CanvasKit.Font(await loadDefaultTypeface(CanvasKit), layer.size ?? 16);
 
   try {
     font.setEdging(CanvasKit.FontEdging.AntiAlias);
@@ -279,7 +312,7 @@ function drawText(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedL
   }
 }
 
-function drawCaption(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "caption" }>): void {
+async function drawCaption(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "caption" }>): Promise<void> {
   const size = layer.size ?? 32;
   const lineHeight = layer.lineHeight ?? size * 1.2;
   const padding = layer.padding ?? 8;
@@ -299,10 +332,10 @@ function drawCaption(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Resolv
   }
 
   const textPaint = makePaint(CanvasKit, layer.color ?? "#fff", layer.transform.opacity);
-  const font = new CanvasKit.Font(null, size);
+  const font = new CanvasKit.Font(await loadDefaultTypeface(CanvasKit), size);
   try {
     font.setEdging(CanvasKit.FontEdging.AntiAlias);
-    canvas.drawText(layer.text, 0, 0, textPaint, font);
+    canvas.drawText(layer.text, x, 0, textPaint, font);
   } finally {
     font.delete();
     textPaint.delete();

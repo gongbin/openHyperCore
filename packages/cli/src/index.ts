@@ -882,7 +882,9 @@ function summarizeAudioTimeline(audio: CompositionAudio, compositionDurationMs: 
 }
 
 function visualFrameKey(frame: ReturnType<typeof resolveFrame>): string {
+  const hasVideoLayer = frame.layers.some((layer) => layer.type === "video");
   return JSON.stringify({
+    timeMs: hasVideoLayer ? frame.timeMs : null,
     composition: frame.composition,
     layers: frame.layers.filter((layer) => layer.type !== "audio")
   });
