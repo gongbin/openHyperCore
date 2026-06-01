@@ -50,6 +50,7 @@ type RenderStats = {
   frames: number;
   renderedFrames: number;
   reusedFrames: number;
+  workerPoolStarts: number;
   maxBufferedFrames: number;
   renderWallMs: number;
   renderCpuMs: number;
@@ -553,6 +554,7 @@ async function renderVideo(composition: Composition, options: RenderOptions, aud
     frames: 0,
     renderedFrames: 0,
     reusedFrames: 0,
+    workerPoolStarts: 0,
     maxBufferedFrames: 0,
     renderWallMs: 0,
     renderCpuMs: 0,
@@ -589,6 +591,7 @@ async function renderVideo(composition: Composition, options: RenderOptions, aud
     frames: stats.frames,
     renderedFrames: stats.renderedFrames,
     reusedFrames: stats.reusedFrames,
+    workerPoolStarts: stats.workerPoolStarts,
     maxBufferedFrames: stats.maxBufferedFrames,
     fps: composition.fps,
     width: composition.width,
@@ -675,141 +678,179 @@ async function* renderCompositionRgbaFramesWithWorkers(composition: Composition,
   let previousKey: string | undefined;
   let previousSourceIndex: number | undefined;
   const carriedFrames = new Map<number, Buffer>();
+  const pool = new RenderWorkerPool(Math.min(workerCount, totalFrames), stats);
 
-  while (frameIndex < totalFrames) {
-    const jobs: RenderJob[] = [];
-    const plans: FramePlan[] = [];
+  try {
+    while (frameIndex < totalFrames) {
+      const jobs: RenderJob[] = [];
+      const plans: FramePlan[] = [];
 
-    while (frameIndex < totalFrames && jobs.length < workerWindow) {
-      const timeMs = timeForFrame(composition, frameIndex);
-      const resolvedFrame = resolveFrame(composition, timeMs);
-      const frameKey = visualFrameKey(resolvedFrame);
+      while (frameIndex < totalFrames && jobs.length < workerWindow) {
+        const timeMs = timeForFrame(composition, frameIndex);
+        const resolvedFrame = resolveFrame(composition, timeMs);
+        const frameKey = visualFrameKey(resolvedFrame);
 
-      if (previousKey === frameKey && previousSourceIndex !== undefined) {
-        plans.push({ sourceIndex: previousSourceIndex, reused: true });
-        frameIndex += 1;
-        continue;
-      }
-
-      const currentSourceIndex = sourceIndex;
-      sourceIndex += 1;
-      jobs.push(omitUndefined({ sourceIndex: currentSourceIndex, frame: resolvedFrame, ffmpegPath }) as RenderJob);
-      plans.push({ sourceIndex: currentSourceIndex, reused: false });
-      previousKey = frameKey;
-      previousSourceIndex = currentSourceIndex;
-      frameIndex += 1;
-    }
-
-    if (stats) {
-      stats.maxBufferedFrames = Math.max(stats.maxBufferedFrames, jobs.length);
-    }
-    const startedAt = performance.now();
-    const renderedFrames = await renderFramesWithWorkerPool(jobs, workerCount, stats);
-    if (stats) {
-      stats.renderWallMs += performance.now() - startedAt;
-    }
-    for (const [renderedSourceIndex, frame] of renderedFrames) {
-      carriedFrames.set(renderedSourceIndex, frame);
-    }
-
-    let lastSourceIndex: number | undefined;
-    for (const plan of plans) {
-      const frame = carriedFrames.get(plan.sourceIndex);
-      if (!frame) {
-        throw new Error(`Missing rendered frame for source index ${plan.sourceIndex}`);
-      }
-      if (stats) {
-        stats.frames += 1;
-        if (plan.reused) {
-          stats.reusedFrames += 1;
+        if (previousKey === frameKey && previousSourceIndex !== undefined) {
+          plans.push({ sourceIndex: previousSourceIndex, reused: true });
+          frameIndex += 1;
+          continue;
         }
-        stats.peakRssBytes = Math.max(stats.peakRssBytes, process.memoryUsage().rss);
-      }
-      lastSourceIndex = plan.sourceIndex;
-      yield frame;
-    }
 
-    for (const renderedSourceIndex of carriedFrames.keys()) {
-      if (renderedSourceIndex !== lastSourceIndex) {
-        carriedFrames.delete(renderedSourceIndex);
+        const currentSourceIndex = sourceIndex;
+        sourceIndex += 1;
+        jobs.push(omitUndefined({ sourceIndex: currentSourceIndex, frame: resolvedFrame, ffmpegPath }) as RenderJob);
+        plans.push({ sourceIndex: currentSourceIndex, reused: false });
+        previousKey = frameKey;
+        previousSourceIndex = currentSourceIndex;
+        frameIndex += 1;
+      }
+
+      if (stats) {
+        stats.maxBufferedFrames = Math.max(stats.maxBufferedFrames, jobs.length);
+      }
+      const startedAt = performance.now();
+      const renderedFrames = await pool.render(jobs, stats);
+      if (stats) {
+        stats.renderWallMs += performance.now() - startedAt;
+      }
+      for (const [renderedSourceIndex, frame] of renderedFrames) {
+        carriedFrames.set(renderedSourceIndex, frame);
+      }
+
+      let lastSourceIndex: number | undefined;
+      for (const plan of plans) {
+        const frame = carriedFrames.get(plan.sourceIndex);
+        if (!frame) {
+          throw new Error(`Missing rendered frame for source index ${plan.sourceIndex}`);
+        }
+        if (stats) {
+          stats.frames += 1;
+          if (plan.reused) {
+            stats.reusedFrames += 1;
+          }
+          stats.peakRssBytes = Math.max(stats.peakRssBytes, process.memoryUsage().rss);
+        }
+        lastSourceIndex = plan.sourceIndex;
+        yield frame;
+      }
+
+      for (const renderedSourceIndex of carriedFrames.keys()) {
+        if (renderedSourceIndex !== lastSourceIndex) {
+          carriedFrames.delete(renderedSourceIndex);
+        }
       }
     }
+  } finally {
+    pool.terminate();
   }
 }
 
-async function renderFramesWithWorkerPool(jobs: RenderJob[], workerCount: number, stats?: RenderStats): Promise<Map<number, Buffer>> {
-  if (jobs.length === 0) {
-    return new Map();
+class RenderWorkerPool {
+  private readonly workers: Worker[];
+
+  constructor(workerCount: number, stats?: RenderStats) {
+    this.workers = Array.from({ length: workerCount }, () => new Worker(renderWorkerUrl()));
+    if (stats && this.workers.length > 0) {
+      stats.workerPoolStarts += 1;
+    }
   }
 
-  const results = new Map<number, Buffer>();
-  const workers = Array.from({ length: Math.min(workerCount, jobs.length) }, () => new Worker(renderWorkerUrl()));
-  let nextJobIndex = 0;
-  let completedJobs = 0;
-  let settled = false;
+  async render(jobs: RenderJob[], stats?: RenderStats): Promise<Map<number, Buffer>> {
+    if (jobs.length === 0) {
+      return new Map();
+    }
+    if (this.workers.length === 0) {
+      throw new Error("Render worker pool has no workers");
+    }
 
-  return await new Promise((resolvePool, rejectPool) => {
-    const cleanup = (): void => {
-      for (const worker of workers) {
-        void worker.terminate();
-      }
-    };
-    const fail = (error: unknown): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      rejectPool(error);
-    };
-    const dispatch = (worker: Worker): void => {
-      const job = jobs[nextJobIndex];
-      nextJobIndex += 1;
-      if (!job) {
-        return;
-      }
-      worker.postMessage(job);
-    };
+    const results = new Map<number, Buffer>();
+    const activeWorkers = this.workers.slice(0, Math.min(this.workers.length, jobs.length));
+    const handlers = new Map<Worker, {
+      message: (message: RenderWorkerResponse) => void;
+      error: (error: Error) => void;
+      exit: (code: number) => void;
+    }>();
+    let nextJobIndex = 0;
+    let completedJobs = 0;
+    let settled = false;
 
-    for (const worker of workers) {
-      worker.on("message", (message: RenderWorkerResponse) => {
+    return await new Promise((resolvePool, rejectPool) => {
+      const cleanup = (): void => {
+        for (const [worker, handler] of handlers) {
+          worker.off("message", handler.message);
+          worker.off("error", handler.error);
+          worker.off("exit", handler.exit);
+        }
+        handlers.clear();
+      };
+      const fail = (error: unknown): void => {
         if (settled) {
           return;
         }
-        if (message.error) {
-          fail(new Error(message.error));
+        settled = true;
+        cleanup();
+        rejectPool(error);
+      };
+      const dispatch = (worker: Worker): void => {
+        const job = jobs[nextJobIndex];
+        nextJobIndex += 1;
+        if (!job) {
           return;
         }
-        if (!message.frame) {
-          fail(new Error(`Worker returned no frame for source index ${message.sourceIndex}`));
-          return;
-        }
+        worker.postMessage(job);
+      };
 
-        results.set(message.sourceIndex, Buffer.from(message.frame));
-        completedJobs += 1;
-        if (stats) {
-          stats.renderedFrames += 1;
-          stats.renderCpuMs += message.renderMs ?? 0;
-        }
+      for (const worker of activeWorkers) {
+        const onMessage = (message: RenderWorkerResponse): void => {
+          if (settled) {
+            return;
+          }
+          if (message.error) {
+            fail(new Error(message.error));
+            return;
+          }
+          if (!message.frame) {
+            fail(new Error(`Worker returned no frame for source index ${message.sourceIndex}`));
+            return;
+          }
 
-        if (completedJobs === jobs.length) {
-          settled = true;
-          cleanup();
-          resolvePool(results);
-          return;
-        }
+          results.set(message.sourceIndex, Buffer.from(message.frame));
+          completedJobs += 1;
+          if (stats) {
+            stats.renderedFrames += 1;
+            stats.renderCpuMs += message.renderMs ?? 0;
+          }
 
+          if (completedJobs === jobs.length) {
+            settled = true;
+            cleanup();
+            resolvePool(results);
+            return;
+          }
+
+          dispatch(worker);
+        };
+        const onError = (error: Error): void => fail(error);
+        const onExit = (code: number): void => {
+          if (!settled && code !== 0) {
+            fail(new Error(`Render worker exited with code ${code}`));
+          }
+        };
+
+        handlers.set(worker, { message: onMessage, error: onError, exit: onExit });
+        worker.on("message", onMessage);
+        worker.on("error", onError);
+        worker.on("exit", onExit);
         dispatch(worker);
-      });
-      worker.on("error", fail);
-      worker.on("exit", (code) => {
-        if (!settled && code !== 0) {
-          fail(new Error(`Render worker exited with code ${code}`));
-        }
-      });
-      dispatch(worker);
+      }
+    });
+  }
+
+  terminate(): void {
+    for (const worker of this.workers) {
+      void worker.terminate();
     }
-  });
+  }
 }
 
 function summarizeAudioTimeline(audio: CompositionAudio, compositionDurationMs: number): Record<string, number | null> {

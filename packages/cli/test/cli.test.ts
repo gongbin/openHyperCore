@@ -378,6 +378,7 @@ export default defineComposition({
   assert.equal(report.workerWindow, 3);
   assert.equal(report.frames, 10);
   assert.equal(report.renderedFrames, 10);
+  assert.equal(report.workerPoolStarts, 1);
   assert.ok(report.maxBufferedFrames <= 3);
 });
 
