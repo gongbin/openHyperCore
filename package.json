@@ -1,9 +1,35 @@
 {
-  "name": "openhyprecore",
+  "name": "openhypercore",
   "private": true,
   "type": "module",
+  "bin": {
+    "openhyper": "./dist/packages/cli/src/index.js"
+  },
+  "exports": {
+    "./core": "./dist/packages/core/src/index.js",
+    "./encoder-ffmpeg": "./dist/packages/encoder-ffmpeg/src/index.js",
+    "./jsx-runtime": "./dist/packages/jsx-runtime/src/index.js",
+    "./renderer-skia": "./dist/packages/renderer-skia/src/index.js",
+    "./renderer-svg": "./dist/packages/renderer-svg/src/index.js",
+    "./cli": "./dist/packages/cli/src/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "Plans.md"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit -p tsconfig.json",
     "test": "node --experimental-strip-types --test packages/*/test/*.test.ts",
     "cli": "node --experimental-strip-types packages/cli/src/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "canvaskit-wasm": "^0.41.1"
   }
 }
