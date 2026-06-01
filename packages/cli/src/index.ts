@@ -10,7 +10,7 @@ import { encodeRawVideoFrames } from "../../encoder-ffmpeg/src/index.ts";
 import type { AudioInput, EncodePngFramesOptions } from "../../encoder-ffmpeg/src/index.ts";
 import { defineComposition, frameCount, resolveFrame, timeForFrame } from "../../core/src/index.ts";
 import type { AudioLayer, Composition, ResolvedFrame } from "../../core/src/index.ts";
-import { createVideoFrameCache, renderPngFrame, renderRgbaFrame } from "../../renderer-skia/src/index.ts";
+import { createRgbaFrameRenderer, createVideoFrameCache, renderPngFrame } from "../../renderer-skia/src/index.ts";
 import { renderSvgFrame } from "../../renderer-svg/src/index.ts";
 
 type CliIO = {
@@ -639,35 +639,40 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
   let previousKey: string | undefined;
   let previousFrame: Buffer | undefined;
   const videoFrameCache = createVideoFrameCache(ffmpegPath ? { ffmpegPath } : {});
+  const rgbaRenderer = createRgbaFrameRenderer();
 
-  for (let frameIndex = 0; frameIndex < frameCount(composition); frameIndex += 1) {
-    const timeMs = timeForFrame(composition, frameIndex);
-    const resolvedFrame = resolveFrame(composition, timeMs);
-    const frameKey = visualFrameKey(resolvedFrame);
+  try {
+    for (let frameIndex = 0; frameIndex < frameCount(composition); frameIndex += 1) {
+      const timeMs = timeForFrame(composition, frameIndex);
+      const resolvedFrame = resolveFrame(composition, timeMs);
+      const frameKey = visualFrameKey(resolvedFrame);
 
-    if (previousKey === frameKey && previousFrame) {
+      if (previousKey === frameKey && previousFrame) {
+        if (stats) {
+          stats.frames += 1;
+          stats.reusedFrames += 1;
+          stats.peakRssBytes = Math.max(stats.peakRssBytes, process.memoryUsage().rss);
+        }
+        yield previousFrame;
+        continue;
+      }
+
+      const startedAt = performance.now();
+      const frame = await rgbaRenderer.render(resolvedFrame, { videoFrameCache });
       if (stats) {
         stats.frames += 1;
-        stats.reusedFrames += 1;
+        stats.renderedFrames += 1;
+        const elapsedMs = performance.now() - startedAt;
+        stats.renderWallMs += elapsedMs;
+        stats.renderCpuMs += elapsedMs;
         stats.peakRssBytes = Math.max(stats.peakRssBytes, process.memoryUsage().rss);
       }
-      yield previousFrame;
-      continue;
+      previousKey = frameKey;
+      previousFrame = frame;
+      yield frame;
     }
-
-    const startedAt = performance.now();
-    const frame = await renderRgbaFrame(resolvedFrame, { videoFrameCache });
-    if (stats) {
-      stats.frames += 1;
-      stats.renderedFrames += 1;
-      const elapsedMs = performance.now() - startedAt;
-      stats.renderWallMs += elapsedMs;
-      stats.renderCpuMs += elapsedMs;
-      stats.peakRssBytes = Math.max(stats.peakRssBytes, process.memoryUsage().rss);
-    }
-    previousKey = frameKey;
-    previousFrame = frame;
-    yield frame;
+  } finally {
+    rgbaRenderer.dispose();
   }
 }
 

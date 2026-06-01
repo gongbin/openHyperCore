@@ -1,4 +1,6 @@
 export {
+  RgbaFrameRenderer,
+  createRgbaFrameRenderer,
   VideoFrameCache,
   createVideoFrameCache,
   prefetchVideoFrames,

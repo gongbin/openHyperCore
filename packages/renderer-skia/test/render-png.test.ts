@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ffmpeg from "@ffmpeg-installer/ffmpeg";
 import { defineComposition, resolveFrame } from "../../core/src/index.ts";
-import { createVideoFrameCache, renderPngFrame, renderRgbaFrame } from "../src/index.ts";
+import { createRgbaFrameRenderer, createVideoFrameCache, renderPngFrame, renderRgbaFrame } from "../src/index.ts";
 
 test("renderPngFrame emits a PNG buffer for resolved text and shapes", async () => {
   const composition = defineComposition({
@@ -68,6 +68,49 @@ test("renderRgbaFrame emits width x height x 4 raw bytes", async () => {
   assert.ok(Buffer.isBuffer(rgba));
   assert.equal(rgba.length, 4 * 3 * 4);
   assert.deepEqual([...rgba.subarray(0, 4)], [255, 0, 0, 255]);
+});
+
+test("RgbaFrameRenderer reuses a renderer across frames", async () => {
+  const composition = defineComposition({
+    fps: 2,
+    width: 4,
+    height: 3,
+    durationMs: 1000,
+    layers: [
+      {
+        type: "shape",
+        shape: "rect",
+        width: 4,
+        height: 3,
+        fill: "#ff0000"
+      },
+      {
+        type: "shape",
+        shape: "rect",
+        width: 4,
+        height: 3,
+        fill: "#0000ff",
+        transform: {
+          opacity: [
+            { timeMs: 0, value: 0 },
+            { timeMs: 500, value: 1 }
+          ]
+        }
+      }
+    ]
+  });
+  const renderer = createRgbaFrameRenderer();
+
+  try {
+    const first = await renderer.render(resolveFrame(composition, 0));
+    const second = await renderer.render(resolveFrame(composition, 500));
+
+    assert.equal(first.length, 4 * 3 * 4);
+    assert.equal(second.length, 4 * 3 * 4);
+    assert.notDeepEqual([...first.subarray(0, 4)], [...second.subarray(0, 4)]);
+  } finally {
+    renderer.dispose();
+  }
 });
 
 test("renderRgbaFrame draws a CaptionLayer background", async () => {

@@ -8,6 +8,7 @@ import type { Canvas, CanvasKit, CanvasKitInitOptions, Paint } from "canvaskit-w
 import type { ResolvedFrame, ResolvedLayer } from "../../core/src/index.ts";
 
 type CanvasKitInitFn = (opts?: CanvasKitInitOptions) => Promise<CanvasKit>;
+type SkSurface = NonNullable<ReturnType<CanvasKit["MakeSurface"]>>;
 
 const CanvasKitInit = CanvasKitInitModule as unknown as CanvasKitInitFn;
 
@@ -62,6 +63,53 @@ export function createVideoFrameCache(options: VideoFrameCacheOptions = {}): Vid
   return new VideoFrameCache(options);
 }
 
+export function createRgbaFrameRenderer(): RgbaFrameRenderer {
+  return new RgbaFrameRenderer();
+}
+
+export class RgbaFrameRenderer {
+  #CanvasKit: CanvasKit | undefined;
+  #surface: SkSurface | undefined;
+  #canvas: Canvas | undefined;
+  #width = 0;
+  #height = 0;
+
+  async render(frame: ResolvedFrame, options: RenderFrameOptions = {}): Promise<Buffer> {
+    const { CanvasKit, surface, canvas } = await this.#surfaceFor(frame);
+    await drawFrameToCanvas(CanvasKit, surface, canvas, frame, options);
+    return Buffer.from(readRgbaPixels(CanvasKit, canvas, frame));
+  }
+
+  dispose(): void {
+    this.#surface?.dispose();
+    this.#surface = undefined;
+    this.#canvas = undefined;
+    this.#width = 0;
+    this.#height = 0;
+  }
+
+  async #surfaceFor(frame: ResolvedFrame): Promise<{ CanvasKit: CanvasKit; surface: SkSurface; canvas: Canvas }> {
+    const CanvasKit = this.#CanvasKit ?? await loadCanvasKit();
+    this.#CanvasKit = CanvasKit;
+
+    const width = frame.composition.width;
+    const height = frame.composition.height;
+    if (!this.#surface || !this.#canvas || this.#width !== width || this.#height !== height) {
+      this.dispose();
+      const surface = CanvasKit.MakeSurface(width, height);
+      if (!surface) {
+        throw new Error("CanvasKit failed to create a raster surface");
+      }
+      this.#surface = surface;
+      this.#canvas = surface.getCanvas();
+      this.#width = width;
+      this.#height = height;
+    }
+
+    return { CanvasKit, surface: this.#surface, canvas: this.#canvas };
+  }
+}
+
 export async function renderPngFrame(frame: ResolvedFrame, options: RenderFrameOptions = {}): Promise<Buffer> {
   const { CanvasKit, surface } = await renderFrameSurface(frame, options);
 
@@ -90,25 +138,13 @@ export async function renderRgbaFrame(frame: ResolvedFrame, options: RenderFrame
   const { CanvasKit, surface, canvas } = await renderFrameSurface(frame, options);
 
   try {
-    const pixels = canvas.readPixels(0, 0, {
-      width: frame.composition.width,
-      height: frame.composition.height,
-      colorType: CanvasKit.ColorType.RGBA_8888,
-      alphaType: CanvasKit.AlphaType.Unpremul,
-      colorSpace: CanvasKit.ColorSpace.SRGB
-    });
-
-    if (!pixels) {
-      throw new Error("CanvasKit failed to read RGBA pixels from the frame");
-    }
-
-    return Buffer.from(pixels);
+    return Buffer.from(readRgbaPixels(CanvasKit, canvas, frame));
   } finally {
     surface.dispose();
   }
 }
 
-async function renderFrameSurface(frame: ResolvedFrame, options: RenderFrameOptions): Promise<{ CanvasKit: CanvasKit; surface: NonNullable<ReturnType<CanvasKit["MakeSurface"]>>; canvas: Canvas }> {
+async function renderFrameSurface(frame: ResolvedFrame, options: RenderFrameOptions): Promise<{ CanvasKit: CanvasKit; surface: SkSurface; canvas: Canvas }> {
   const CanvasKit = await loadCanvasKit();
   const surface = CanvasKit.MakeSurface(frame.composition.width, frame.composition.height);
   if (!surface) {
@@ -116,22 +152,43 @@ async function renderFrameSurface(frame: ResolvedFrame, options: RenderFrameOpti
   }
 
   const canvas = surface.getCanvas();
-  canvas.clear(CanvasKit.TRANSPARENT);
 
   try {
-    if (options.videoFrameCache) {
-      await prefetchVideoFrames(frame, options.videoFrameCache);
-    }
-    for (const layer of frame.layers) {
-      await drawLayer(CanvasKit, canvas, layer, frame.timeMs, options);
-    }
-
-    surface.flush();
+    await drawFrameToCanvas(CanvasKit, surface, canvas, frame, options);
     return { CanvasKit, surface, canvas };
   } catch (error) {
     surface.dispose();
     throw error;
   }
+}
+
+async function drawFrameToCanvas(CanvasKit: CanvasKit, surface: SkSurface, canvas: Canvas, frame: ResolvedFrame, options: RenderFrameOptions): Promise<void> {
+  canvas.clear(CanvasKit.TRANSPARENT);
+
+  if (options.videoFrameCache) {
+    await prefetchVideoFrames(frame, options.videoFrameCache);
+  }
+  for (const layer of frame.layers) {
+    await drawLayer(CanvasKit, canvas, layer, frame.timeMs, options);
+  }
+
+  surface.flush();
+}
+
+function readRgbaPixels(CanvasKit: CanvasKit, canvas: Canvas, frame: ResolvedFrame): Uint8Array {
+  const pixels = canvas.readPixels(0, 0, {
+    width: frame.composition.width,
+    height: frame.composition.height,
+    colorType: CanvasKit.ColorType.RGBA_8888,
+    alphaType: CanvasKit.AlphaType.Unpremul,
+    colorSpace: CanvasKit.ColorSpace.SRGB
+  });
+
+  if (!pixels) {
+    throw new Error("CanvasKit failed to read RGBA pixels from the frame");
+  }
+
+  return pixels as Uint8Array;
 }
 
 async function loadCanvasKit(): Promise<CanvasKit> {
