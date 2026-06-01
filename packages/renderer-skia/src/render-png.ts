@@ -75,8 +75,8 @@ export class RgbaFrameRenderer {
   #height = 0;
 
   async render(frame: ResolvedFrame, options: RenderFrameOptions = {}): Promise<Buffer> {
-    const { CanvasKit, surface, canvas } = await this.#surfaceFor(frame);
-    await drawFrameToCanvas(CanvasKit, surface, canvas, frame, options);
+    const { CanvasKit, canvas } = await this.#surfaceFor(frame);
+    await drawFrameToCanvas(CanvasKit, canvas, frame, options);
     return Buffer.from(readRgbaPixels(CanvasKit, canvas, frame));
   }
 
@@ -154,7 +154,7 @@ async function renderFrameSurface(frame: ResolvedFrame, options: RenderFrameOpti
   const canvas = surface.getCanvas();
 
   try {
-    await drawFrameToCanvas(CanvasKit, surface, canvas, frame, options);
+    await drawFrameToCanvas(CanvasKit, canvas, frame, options);
     return { CanvasKit, surface, canvas };
   } catch (error) {
     surface.dispose();
@@ -162,7 +162,7 @@ async function renderFrameSurface(frame: ResolvedFrame, options: RenderFrameOpti
   }
 }
 
-async function drawFrameToCanvas(CanvasKit: CanvasKit, surface: SkSurface, canvas: Canvas, frame: ResolvedFrame, options: RenderFrameOptions): Promise<void> {
+async function drawFrameToCanvas(CanvasKit: CanvasKit, canvas: Canvas, frame: ResolvedFrame, options: RenderFrameOptions): Promise<void> {
   canvas.clear(CanvasKit.TRANSPARENT);
 
   if (options.videoFrameCache) {
@@ -171,8 +171,6 @@ async function drawFrameToCanvas(CanvasKit: CanvasKit, surface: SkSurface, canva
   for (const layer of frame.layers) {
     await drawLayer(CanvasKit, canvas, layer, frame.timeMs, options);
   }
-
-  surface.flush();
 }
 
 function readRgbaPixels(CanvasKit: CanvasKit, canvas: Canvas, frame: ResolvedFrame): Uint8Array {

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -883,12 +882,10 @@ function summarizeAudioTimeline(audio: CompositionAudio, compositionDurationMs: 
 }
 
 function visualFrameKey(frame: ReturnType<typeof resolveFrame>): string {
-  return createHash("sha1")
-    .update(JSON.stringify({
-      composition: frame.composition,
-      layers: frame.layers.filter((layer) => layer.type !== "audio")
-    }))
-    .digest("hex");
+  return JSON.stringify({
+    composition: frame.composition,
+    layers: frame.layers.filter((layer) => layer.type !== "audio")
+  });
 }
 
 function applyRenderOverrides(composition: Composition, options: Pick<RenderOptions, "fps" | "width" | "height">): Composition {
