@@ -1,11 +1,15 @@
 import { parentPort } from "node:worker_threads";
 import { performance } from "node:perf_hooks";
-import { createRgbaFrameRenderer, createVideoFrameCache } from "../../renderer-skia/src/index.ts";
+import { createRgbaFrameRenderer, createVideoFrameCache, prefetchVideoFrameBatch } from "../../renderer-skia/src/index.ts";
 import type { ResolvedFrame } from "../../core/src/index.ts";
 
+// A run = a contiguous slice of frames. The worker batch-extracts all the video
+// frames the slice needs in one ffmpeg pass (sequential decode, no per-frame
+// seek), then rasterises each frame.
 type RenderWorkerRequest = {
-  sourceIndex: number;
-  frame: ResolvedFrame;
+  runIndex: number;
+  sourceIndices: number[];
+  frames: ResolvedFrame[];
   ffmpegPath?: string;
 };
 
@@ -19,17 +23,21 @@ if (!parentPort) {
 parentPort.on("message", async (message: RenderWorkerRequest) => {
   try {
     const startedAt = performance.now();
-    const frame = await rgbaRenderer.render(message.frame, {
-      videoFrameCache: videoFrameCacheFor(message.ffmpegPath)
-    });
+    const cache = videoFrameCacheFor(message.ffmpegPath);
+    cache.clear();
+    await prefetchVideoFrameBatch(message.frames, cache);
+    const frames: Uint8Array[] = [];
+    for (const frame of message.frames) {
+      frames.push(await rgbaRenderer.render(frame, { videoFrameCache: cache }));
+    }
     parentPort?.postMessage({
-      sourceIndex: message.sourceIndex,
-      frame,
+      runIndex: message.runIndex,
+      frames,
       renderMs: performance.now() - startedAt
     });
   } catch (error) {
     parentPort?.postMessage({
-      sourceIndex: message.sourceIndex,
+      runIndex: message.runIndex,
       error: error instanceof Error ? error.message : String(error)
     });
   }

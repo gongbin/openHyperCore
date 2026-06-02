@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { dirname, resolve } from "node:path";
 import { createRequire } from "node:module";
 import CanvasKitInitModule from "canvaskit-wasm";
-import type { Canvas, CanvasKit, CanvasKitInitOptions, Paint, Typeface } from "canvaskit-wasm";
+import type { Canvas, CanvasKit, CanvasKitInitOptions, Font, Paint, Typeface } from "canvaskit-wasm";
 import type { ResolvedFrame, ResolvedLayer } from "../../core/src/index.ts";
 
 type CanvasKitInitFn = (opts?: CanvasKitInitOptions) => Promise<CanvasKit>;
@@ -342,9 +342,37 @@ async function loadDefaultTypeface(CanvasKit: CanvasKit): Promise<Typeface | nul
   return await defaultTypefacePromise;
 }
 
+const typefaceCache = new Map<string, Promise<Typeface | null>>();
+
+// Per-layer font: a TextLayer/CaptionLayer may set `font` to a font file path.
+// Loaded once and cached; falls back to the default typeface if it fails.
+async function loadTypeface(CanvasKit: CanvasKit, fontPath?: string): Promise<Typeface | null> {
+  if (!fontPath) {
+    return loadDefaultTypeface(CanvasKit);
+  }
+  let pending = typefaceCache.get(fontPath);
+  if (!pending) {
+    pending = readFile(fontPath)
+      .then((data) => CanvasKit.Typeface.MakeTypefaceFromData(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)))
+      .catch(() => null);
+    typefaceCache.set(fontPath, pending);
+  }
+  return (await pending) ?? (await loadDefaultTypeface(CanvasKit));
+}
+
 async function loadTypefaceFromCandidates(CanvasKit: CanvasKit): Promise<Typeface | null> {
   const candidates = [
     process.env.OPENHYPERCORE_FONT,
+    // Neutral system fallback only — the per-composition `defaultFont` or
+    // per-layer `font` chooses the typeface; nothing is hardcoded here.
+    // CJK-capable defaults so Chinese/Japanese/Korean text renders out of the
+    // box (their Latin glyphs are clean too). Latin-only fonts follow as
+    // fallbacks for systems without a CJK family installed.
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
@@ -400,11 +428,26 @@ async function drawLayer(CanvasKit: CanvasKit, canvas: Canvas, layer: ResolvedLa
 
 function drawShape(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "shape" }>): void {
   const paint = makePaint(CanvasKit, layer.fill ?? "#000", layer.transform.opacity);
+  let blur: ReturnType<CanvasKit["MaskFilter"]["MakeBlur"]> | undefined;
+  let dash: ReturnType<CanvasKit["PathEffect"]["MakeDash"]> | undefined;
   try {
     if (layer.stroke) {
       paint.setStyle(CanvasKit.PaintStyle.Stroke);
       paint.setStrokeWidth(layer.strokeWidth ?? 1);
       paint.setColor(parseColor(CanvasKit, layer.stroke, layer.transform.opacity));
+    }
+
+    // Dashed stroke (e.g. paper-cut "marching ants" cutout rings).
+    if (layer.dash && layer.dash.length >= 2) {
+      dash = CanvasKit.PathEffect.MakeDash(layer.dash, layer.dashPhase ?? 0);
+      if (dash) {
+        paint.setPathEffect(dash);
+      }
+    }
+
+    if (layer.blur && layer.blur > 0) {
+      blur = CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, layer.blur, false);
+      paint.setMaskFilter(blur);
     }
 
     if (layer.shape === "circle") {
@@ -428,19 +471,64 @@ function drawShape(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Resolved
     canvas.drawRect(CanvasKit.XYWHRect(0, 0, layer.width ?? 0, layer.height ?? 0), paint);
   } finally {
     paint.delete();
+    blur?.delete();
+    dash?.delete();
+  }
+}
+
+type TextStyle = {
+  stroke?: string;
+  strokeWidth?: number;
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowDx?: number;
+  shadowDy?: number;
+};
+
+// Draws a single text run as: soft shadow → outline stroke → fill, so titles
+// and captions read clearly against busy video instead of looking flat.
+function drawStyledText(CanvasKit: CanvasKit, canvas: Canvas, text: string, x: number, baselineY: number, color: string, opacity: number, font: Font, style: TextStyle): void {
+  if (style.shadowColor) {
+    const shadowPaint = makePaint(CanvasKit, style.shadowColor, opacity);
+    const blur = CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, Math.max(0.1, style.shadowBlur ?? 6), false);
+    shadowPaint.setMaskFilter(blur);
+    try {
+      canvas.drawText(text, x + (style.shadowDx ?? 0), baselineY + (style.shadowDy ?? 4), shadowPaint, font);
+    } finally {
+      blur.delete();
+      shadowPaint.delete();
+    }
+  }
+
+  if (style.stroke) {
+    const strokePaint = makePaint(CanvasKit, style.stroke, opacity);
+    strokePaint.setStyle(CanvasKit.PaintStyle.Stroke);
+    strokePaint.setStrokeWidth(style.strokeWidth ?? 4);
+    strokePaint.setStrokeJoin(CanvasKit.StrokeJoin.Round);
+    strokePaint.setStrokeCap(CanvasKit.StrokeCap.Round);
+    try {
+      canvas.drawText(text, x, baselineY, strokePaint, font);
+    } finally {
+      strokePaint.delete();
+    }
+  }
+
+  const fillPaint = makePaint(CanvasKit, color, opacity);
+  try {
+    canvas.drawText(text, x, baselineY, fillPaint, font);
+  } finally {
+    fillPaint.delete();
   }
 }
 
 async function drawText(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "text" }>): Promise<void> {
-  const paint = makePaint(CanvasKit, layer.color ?? "#000", layer.transform.opacity);
-  const font = new CanvasKit.Font(await loadDefaultTypeface(CanvasKit), layer.size ?? 16);
+  const font = new CanvasKit.Font(await loadTypeface(CanvasKit, layer.font), layer.size ?? 16);
 
   try {
     font.setEdging(CanvasKit.FontEdging.AntiAlias);
-    canvas.drawText(layer.text, 0, 0, paint, font);
+    drawStyledText(CanvasKit, canvas, layer.text, 0, 0, layer.color ?? "#000", layer.transform.opacity, font, layer);
   } finally {
     font.delete();
-    paint.delete();
   }
 }
 
@@ -463,14 +551,12 @@ async function drawCaption(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<
     }
   }
 
-  const textPaint = makePaint(CanvasKit, layer.color ?? "#fff", layer.transform.opacity);
-  const font = new CanvasKit.Font(await loadDefaultTypeface(CanvasKit), size);
+  const font = new CanvasKit.Font(await loadTypeface(CanvasKit, layer.font), size);
   try {
     font.setEdging(CanvasKit.FontEdging.AntiAlias);
-    canvas.drawText(layer.text, x, 0, textPaint, font);
+    drawStyledText(CanvasKit, canvas, layer.text, x, 0, layer.color ?? "#fff", layer.transform.opacity, font, layer);
   } finally {
     font.delete();
-    textPaint.delete();
   }
 }
 
@@ -511,6 +597,13 @@ async function drawVideo(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Re
   try {
     const width = layer.width ?? image.width();
     const height = layer.height ?? image.height();
+    // Optional circular crop (e.g. video inside an avatar): clip to the
+    // inscribed circle of the shorter side. Scoped by the per-layer save().
+    if (layer.clip === "circle") {
+      const r = Math.min(width, height) / 2;
+      const rrect = CanvasKit.RRectXY(CanvasKit.XYWHRect(width / 2 - r, height / 2 - r, 2 * r, 2 * r), r, r);
+      canvas.clipRRect(rrect, CanvasKit.ClipOp.Intersect, true);
+    }
     canvas.drawImageRect(image, CanvasKit.XYWHRect(0, 0, image.width(), image.height()), CanvasKit.XYWHRect(0, 0, width, height), paint, false);
   } finally {
     paint.delete();

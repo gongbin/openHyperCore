@@ -168,9 +168,12 @@ function audioFilterArgs(audioInputs: AudioInput[]): string[] {
     return `[${inputIndex}:a]${filters.join(",")}[a${index}]`;
   });
 
+  // Pad the mixed audio with trailing silence so a track that ends before the
+  // (finite, piped) video never becomes the "-shortest" stream and truncates
+  // the rendered video. The video pipe stays authoritative for output length.
   const output = audioInputs.length === 1
-    ? "[a0]anull[aout]"
-    : `${audioInputs.map((_, index) => `[a${index}]`).join("")}amix=inputs=${audioInputs.length}:duration=longest:normalize=0[aout]`;
+    ? "[a0]apad[aout]"
+    : `${audioInputs.map((_, index) => `[a${index}]`).join("")}amix=inputs=${audioInputs.length}:duration=longest:normalize=0,apad[aout]`;
 
   return ["-filter_complex", [...chains, output].join(";"), "-map", "0:v:0", "-map", "[aout]"];
 }

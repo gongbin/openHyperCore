@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
-import { availableParallelism } from "node:os";
+import { availableParallelism, freemem, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
@@ -63,9 +63,13 @@ type CompositionAudio = {
 
 type WorkerSelection = number | "auto";
 
-type RenderJob = {
-  sourceIndex: number;
-  frame: ResolvedFrame;
+// A worker now handles a contiguous RUN of frames so it can batch-extract the
+// needed video frames in one ffmpeg pass (sequential decode ≈ 10ms/frame vs a
+// per-frame seek ≈ 130ms/frame), then rasterise them in parallel with peers.
+type RenderRunJob = {
+  runIndex: number;
+  sourceIndices: number[];
+  frames: ResolvedFrame[];
   ffmpegPath?: string;
 };
 
@@ -75,13 +79,14 @@ type FramePlan = {
 };
 
 type RenderWorkerResponse = {
-  sourceIndex: number;
-  frame?: Uint8Array;
+  runIndex: number;
+  frames?: Uint8Array[];
   renderMs?: number;
   error?: string;
 };
 
 const VIDEO_PREFETCH_WINDOW_FRAMES = 32;
+const RENDER_RUN_FRAMES = 30;
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
   const stdout = io.stdout ?? ((line: string) => console.log(line));
@@ -549,8 +554,9 @@ function numericCaseName(results: Array<{ name: string; metrics: Record<string, 
 
 async function renderVideo(composition: Composition, options: RenderOptions, audio: CompositionAudio = {}): Promise<Record<string, unknown>> {
   const workerSelection = options.workers === "auto" ? "auto" : "manual";
-  const workerCount = resolveWorkerCount(options.workers);
-  const workerWindow = workerCount > 1 ? options.workerWindow ?? workerCount * 2 : 0;
+  const plan = planRenderResources(composition, options.workers, options.workerWindow);
+  const workerCount = plan.workerCount;
+  const workerWindow = plan.workerWindow;
   const stats: RenderStats = {
     frames: 0,
     renderedFrames: 0,
@@ -687,55 +693,69 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
 
 async function* renderCompositionRgbaFramesWithWorkers(composition: Composition, workerCount: number, workerWindow: number, stats?: RenderStats, ffmpegPath?: string): AsyncIterable<Buffer> {
   const totalFrames = frameCount(composition);
+  // `workerWindow` caps how many fresh frames are buffered (memory window) per
+  // dispatch; spread across up to `workerCount` contiguous runs.
+  const windowFrames = workerWindow > 0 ? workerWindow : workerCount * RENDER_RUN_FRAMES;
+  const runFrames = Math.min(RENDER_RUN_FRAMES, Math.max(1, Math.ceil(windowFrames / workerCount)));
   let frameIndex = 0;
   let sourceIndex = 0;
   let previousKey: string | undefined;
   let previousSourceIndex: number | undefined;
-  const carriedFrames = new Map<number, Buffer>();
+  let lastBuffer: Buffer | undefined;
   const pool = new RenderWorkerPool(Math.min(workerCount, totalFrames), stats);
 
   try {
     while (frameIndex < totalFrames) {
-      const jobs: RenderJob[] = [];
+      // Build up to `workerCount` contiguous runs (one per worker), so each
+      // worker batch-extracts its own slice and rasterises it in parallel.
+      const runs: RenderRunJob[] = [];
       const plans: FramePlan[] = [];
+      let batchFrames = 0;
+      while (frameIndex < totalFrames && runs.length < workerCount && batchFrames < windowFrames) {
+        const sourceIndices: number[] = [];
+        const frames: ResolvedFrame[] = [];
+        while (frameIndex < totalFrames && frames.length < runFrames && batchFrames < windowFrames) {
+          const timeMs = timeForFrame(composition, frameIndex);
+          const resolvedFrame = resolveFrame(composition, timeMs);
+          const frameKey = visualFrameKey(resolvedFrame);
 
-      while (frameIndex < totalFrames && jobs.length < workerWindow) {
-        const timeMs = timeForFrame(composition, frameIndex);
-        const resolvedFrame = resolveFrame(composition, timeMs);
-        const frameKey = visualFrameKey(resolvedFrame);
+          if (previousKey === frameKey && previousSourceIndex !== undefined) {
+            plans.push({ sourceIndex: previousSourceIndex, reused: true });
+            frameIndex += 1;
+            continue;
+          }
 
-        if (previousKey === frameKey && previousSourceIndex !== undefined) {
-          plans.push({ sourceIndex: previousSourceIndex, reused: true });
+          const currentSourceIndex = sourceIndex;
+          sourceIndex += 1;
+          batchFrames += 1;
+          frames.push(resolvedFrame);
+          sourceIndices.push(currentSourceIndex);
+          plans.push({ sourceIndex: currentSourceIndex, reused: false });
+          previousKey = frameKey;
+          previousSourceIndex = currentSourceIndex;
           frameIndex += 1;
-          continue;
         }
-
-        const currentSourceIndex = sourceIndex;
-        sourceIndex += 1;
-        jobs.push(omitUndefined({ sourceIndex: currentSourceIndex, frame: resolvedFrame, ffmpegPath }) as RenderJob);
-        plans.push({ sourceIndex: currentSourceIndex, reused: false });
-        previousKey = frameKey;
-        previousSourceIndex = currentSourceIndex;
-        frameIndex += 1;
+        if (frames.length > 0) {
+          runs.push(omitUndefined({ runIndex: runs.length, sourceIndices, frames, ffmpegPath }) as RenderRunJob);
+        }
       }
 
       if (stats) {
-        stats.maxBufferedFrames = Math.max(stats.maxBufferedFrames, jobs.length);
+        stats.maxBufferedFrames = Math.max(stats.maxBufferedFrames, runs.reduce((n, r) => n + r.frames.length, 0));
       }
       const startedAt = performance.now();
-      const renderedFrames = await pool.render(jobs, stats);
+      const renderedFrames = await pool.render(runs, stats);
       if (stats) {
         stats.renderWallMs += performance.now() - startedAt;
       }
-      for (const [renderedSourceIndex, frame] of renderedFrames) {
-        carriedFrames.set(renderedSourceIndex, frame);
-      }
 
-      let lastSourceIndex: number | undefined;
       for (const plan of plans) {
-        const frame = carriedFrames.get(plan.sourceIndex);
+        const frame = plan.reused ? lastBuffer : renderedFrames.get(plan.sourceIndex);
         if (!frame) {
           throw new Error(`Missing rendered frame for source index ${plan.sourceIndex}`);
+        }
+        if (!plan.reused) {
+          lastBuffer = frame;
         }
         if (stats) {
           stats.frames += 1;
@@ -744,14 +764,7 @@ async function* renderCompositionRgbaFramesWithWorkers(composition: Composition,
           }
           stats.peakRssBytes = Math.max(stats.peakRssBytes, process.memoryUsage().rss);
         }
-        lastSourceIndex = plan.sourceIndex;
         yield frame;
-      }
-
-      for (const renderedSourceIndex of carriedFrames.keys()) {
-        if (renderedSourceIndex !== lastSourceIndex) {
-          carriedFrames.delete(renderedSourceIndex);
-        }
       }
     }
   } finally {
@@ -769,7 +782,7 @@ class RenderWorkerPool {
     }
   }
 
-  async render(jobs: RenderJob[], stats?: RenderStats): Promise<Map<number, Buffer>> {
+  async render(jobs: RenderRunJob[], stats?: RenderStats): Promise<Map<number, Buffer>> {
     if (jobs.length === 0) {
       return new Map();
     }
@@ -778,6 +791,7 @@ class RenderWorkerPool {
     }
 
     const results = new Map<number, Buffer>();
+    const byRun = new Map<number, RenderRunJob>(jobs.map((job) => [job.runIndex, job]));
     const activeWorkers = this.workers.slice(0, Math.min(this.workers.length, jobs.length));
     const handlers = new Map<Worker, {
       message: (message: RenderWorkerResponse) => void;
@@ -823,15 +837,18 @@ class RenderWorkerPool {
             fail(new Error(message.error));
             return;
           }
-          if (!message.frame) {
-            fail(new Error(`Worker returned no frame for source index ${message.sourceIndex}`));
+          const job = byRun.get(message.runIndex);
+          if (!job || !message.frames || message.frames.length !== job.sourceIndices.length) {
+            fail(new Error(`Worker returned an invalid result for run ${message.runIndex}`));
             return;
           }
 
-          results.set(message.sourceIndex, Buffer.from(message.frame));
+          for (let i = 0; i < job.sourceIndices.length; i += 1) {
+            results.set(job.sourceIndices[i]!, Buffer.from(message.frames[i]!));
+          }
           completedJobs += 1;
           if (stats) {
-            stats.renderedFrames += 1;
+            stats.renderedFrames += job.sourceIndices.length;
             stats.renderCpuMs += message.renderMs ?? 0;
           }
 
@@ -961,6 +978,55 @@ function resolveWorkerCount(selection: WorkerSelection | undefined): number {
     return Math.max(1, Math.min(4, availableParallelism() - 1));
   }
   return selection ?? 1;
+}
+
+// Pick a worker count + buffer window that fit the host: scale up on a roomy
+// laptop, stay within RAM on a small (e.g. 2-core / 2 GB) server so rendering
+// completes smoothly instead of OOM-ing. Buffer sizing is based on the RGBA
+// frame size, available memory, and core count.
+export type HostResources = { cores: number; totalBytes: number; freeBytes: number };
+
+export function planRenderResources(
+  composition: Pick<Composition, "width" | "height">,
+  selection: WorkerSelection | undefined,
+  explicitWindow: number | undefined,
+  host: HostResources = { cores: availableParallelism(), totalBytes: totalmem(), freeBytes: freemem() }
+): { workerCount: number; workerWindow: number } {
+  if (selection === undefined) {
+    // No --workers given: keep the simple single-threaded default.
+    return { workerCount: 1, workerWindow: 0 };
+  }
+
+  const cores = host.cores;
+  const frameBytes = Math.max(1, composition.width * composition.height * 4);
+  // Each buffered frame costs roughly: a worker extraction-cache frame, the
+  // worker's rendered output, and the main-thread copy → ~3.5× the frame.
+  const perFrameBytes = frameBytes * 3.5;
+  const reserveBytes = 512 * 1024 * 1024; // base runtime (Node + CanvasKit + ffmpeg)
+  // Budget from TOTAL ram (the OS reclaims cache; freemem under-reports
+  // "available" on macOS/Linux), but never assume more than freemem + a
+  // reclaimable allowance so a genuinely tight host stays safe.
+  const totalBudget = host.totalBytes * 0.5;
+  const freeBudget = host.freeBytes + host.totalBytes * 0.35; // free + reclaimable cache allowance
+  const budgetBytes = Math.max(0, Math.min(totalBudget, freeBudget) - reserveBytes);
+  const maxBufferedFrames = Math.max(1, Math.floor(budgetBytes / perFrameBytes));
+
+  let workerCount: number;
+  if (selection === "auto") {
+    const coreWorkers = cores <= 2 ? cores : cores - 1; // leave a core on bigger machines
+    workerCount = Math.max(1, Math.min(coreWorkers, maxBufferedFrames, 8));
+  } else {
+    workerCount = Math.max(1, selection);
+  }
+
+  if (workerCount <= 1) {
+    return { workerCount: 1, workerWindow: 0 };
+  }
+
+  // Full batching = RENDER_RUN_FRAMES per worker; shrink to stay within memory.
+  const fullWindow = workerCount * RENDER_RUN_FRAMES;
+  const adaptiveWindow = Math.max(workerCount, Math.min(fullWindow, maxBufferedFrames));
+  return { workerCount, workerWindow: explicitWindow ?? adaptiveWindow };
 }
 
 function roundMs(value: number): number {

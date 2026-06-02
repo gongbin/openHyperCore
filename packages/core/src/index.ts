@@ -18,5 +18,6 @@ export type {
   ScalarKeyframe,
   ShapeLayer,
   TextLayer,
+  TextStyle,
   VideoLayer
 } from "./types.ts";
