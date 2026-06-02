@@ -134,7 +134,7 @@ test("buildRawVideoPipeArgs maps multiple audio inputs through timing, volume, a
     "-i",
     "/tmp/b.wav",
     "-filter_complex",
-    "[1:a]atrim=duration=2,asetpts=PTS-STARTPTS,volume=0.25,adelay=500|500[a0];[2:a]asetpts=PTS-STARTPTS,volume=1.5[a1];[a0][a1]amix=inputs=2:duration=longest:normalize=0[aout]",
+    "[1:a]atrim=duration=2,asetpts=PTS-STARTPTS,volume=0.25,adelay=500|500[a0];[2:a]asetpts=PTS-STARTPTS,volume=1.5[a1];[a0][a1]amix=inputs=2:duration=longest:normalize=0,apad[aout]",
     "-map",
     "0:v:0",
     "-map",
@@ -180,7 +180,7 @@ test("buildRawVideoPipeArgs maps audio fadeInMs and fadeOutMs to afade filters",
     "-i",
     "/tmp/a.wav",
     "-filter_complex",
-    "[1:a]atrim=duration=2,asetpts=PTS-STARTPTS,volume=0.25,afade=t=in:st=0:d=0.3,afade=t=out:st=1.6:d=0.4,adelay=500|500[a0];[a0]anull[aout]",
+    "[1:a]atrim=duration=2,asetpts=PTS-STARTPTS,volume=0.25,afade=t=in:st=0:d=0.3,afade=t=out:st=1.6:d=0.4,adelay=500|500[a0];[a0]apad[aout]",
     "-map",
     "0:v:0",
     "-map",
@@ -295,7 +295,7 @@ test("encodeRawVideoFrames passes mixed audio input args when audioInputs are se
   assert.ok(args.includes("/tmp/a.wav"));
   assert.ok(args.includes("/tmp/b.wav"));
   assert.ok(args.includes("-filter_complex"));
-  assert.ok(args.some((arg: string) => arg.includes("[a0][a1]amix=inputs=2:duration=longest:normalize=0[aout]")));
+  assert.ok(args.some((arg: string) => arg.includes("[a0][a1]amix=inputs=2:duration=longest:normalize=0,apad[aout]")));
 });
 
 test("resolveDefaultFfmpegPath returns the installer binary when available", async () => {

@@ -26,7 +26,7 @@ export function resolveFrame(composition: Composition, timeMs: number): Resolved
       durationMs: composition.durationMs
     },
     timeMs,
-    layers: composition.layers.filter((layer) => isActive(layer, timeMs, composition.durationMs)).map((layer) => resolveLayer(layer, timeMs))
+    layers: composition.layers.filter((layer) => isActive(layer, timeMs, composition.durationMs)).map((layer) => resolveLayer(layer, timeMs, composition.defaultFont))
   };
 }
 
@@ -36,12 +36,18 @@ function isActive(layer: Layer, timeMs: number, durationMs: number): boolean {
   return timeMs >= startMs && timeMs < endMs;
 }
 
-function resolveLayer(layer: Layer, timeMs: number): ResolvedLayer {
+function resolveLayer(layer: Layer, timeMs: number, defaultFont?: string): ResolvedLayer {
   const { transform, ...rest } = layer;
-  return {
+  const resolved = {
     ...rest,
     transform: resolveTransform(transform, timeMs)
   } as ResolvedLayer;
+  // Apply the composition-level default font to text/captions that don't set
+  // their own, so each composition can pick its typeface without hardcoding.
+  if ((resolved.type === "text" || resolved.type === "caption") && resolved.font === undefined && defaultFont !== undefined) {
+    resolved.font = defaultFont;
+  }
+  return resolved;
 }
 
 function resolveTransform(transform: Layer["transform"], timeMs: number): ResolvedTransform {

@@ -28,7 +28,18 @@ export type BaseLayer = {
   transform?: LayerTransform;
 };
 
-export type TextLayer = BaseLayer & {
+export type TextStyle = {
+  // Outline drawn behind the fill — great for making titles pop.
+  stroke?: string;
+  strokeWidth?: number;
+  // Soft drop shadow for legibility / depth.
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowDx?: number;
+  shadowDy?: number;
+};
+
+export type TextLayer = BaseLayer & TextStyle & {
   type: "text";
   text: string;
   font?: string;
@@ -38,7 +49,7 @@ export type TextLayer = BaseLayer & {
   lineHeight?: number;
 };
 
-export type CaptionLayer = BaseLayer & {
+export type CaptionLayer = BaseLayer & TextStyle & {
   type: "caption";
   text: string;
   font?: string;
@@ -61,6 +72,11 @@ export type ShapeLayer = BaseLayer & {
   fill?: string;
   stroke?: string;
   strokeWidth?: number;
+  // Dashed stroke intervals [on, off, ...] (+ optional phase offset).
+  dash?: number[];
+  dashPhase?: number;
+  // Soft blur (mask filter sigma) — enables neon glow / soft light shapes.
+  blur?: number;
 };
 
 export type ImageLayer = BaseLayer & {
@@ -80,6 +96,9 @@ export type VideoLayer = BaseLayer & {
   trimStartMs?: number;
   trimEndMs?: number;
   volume?: number;
+  // Crop the drawn frame to a circle (inscribed in the shorter side) — e.g. a
+  // video inside an avatar. The clip scales/moves with the layer transform.
+  clip?: "circle";
 };
 
 export type AudioLayer = BaseLayer & {
@@ -98,6 +117,9 @@ export type Composition = {
   width: number;
   height: number;
   durationMs: number;
+  // Default font (path) applied to text/caption layers that don't set their own
+  // `font`. Lets each composition pick its typeface; not hardcoded in the engine.
+  defaultFont?: string;
   layers: Layer[];
 };
 

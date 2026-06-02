@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import ffmpeg from "@ffmpeg-installer/ffmpeg";
-import { runCli } from "../src/index.ts";
+import { planRenderResources, runCli } from "../src/index.ts";
 
 test("runCli probe returns composition metadata JSON", async () => {
   const dir = await mkdtemp(join(tmpdir(), "openhyper-cli-"));
@@ -659,7 +659,7 @@ export default defineComposition({
   assert.ok(args.includes(audioA));
   assert.ok(args.includes(audioB));
   assert.ok(args.includes("-filter_complex"));
-  assert.ok(args.some((arg: string) => arg.includes("[a0][a1]amix=inputs=2:duration=longest:normalize=0[aout]")));
+  assert.ok(args.some((arg: string) => arg.includes("[a0][a1]amix=inputs=2:duration=longest:normalize=0,apad[aout]")));
 });
 
 test("runCli render maps AudioLayer fadeInMs and fadeOutMs into ffmpeg filters", async () => {
@@ -707,4 +707,30 @@ export default defineComposition({
   assert.ok(args.includes("-filter_complex"));
   assert.ok(args.some((arg: string) => arg.includes("afade=t=in:st=0:d=0.3")));
   assert.ok(args.some((arg: string) => arg.includes("afade=t=out:st=1.6:d=0.4")));
+});
+
+test("planRenderResources adapts worker count and buffer window to the host", () => {
+  const GB = 1024 ** 3;
+  const frameBytes = 1920 * 1080 * 4 * 3.5;
+
+  // small 2-core / 2 GB server: few workers, buffer must stay well within RAM
+  const small = planRenderResources({ width: 1920, height: 1080 }, "auto", undefined, { cores: 2, totalBytes: 2 * GB, freeBytes: 1 * GB });
+  assert.ok(small.workerCount <= 2);
+  assert.ok(small.workerWindow * frameBytes < 1 * GB);
+
+  // roomy 10-core / 32 GB laptop: scales up for speed
+  const big = planRenderResources({ width: 1920, height: 1080 }, "auto", undefined, { cores: 10, totalBytes: 32 * GB, freeBytes: 8 * GB });
+  assert.ok(big.workerCount >= 4);
+  assert.ok(big.workerCount > small.workerCount);
+  assert.ok(big.workerWindow >= small.workerWindow);
+
+  // explicit --workers / --worker-window are honoured
+  const fixed = planRenderResources({ width: 1280, height: 720 }, 4, 12, { cores: 8, totalBytes: 16 * GB, freeBytes: 8 * GB });
+  assert.equal(fixed.workerCount, 4);
+  assert.equal(fixed.workerWindow, 12);
+
+  // no --workers selection stays single-threaded
+  const none = planRenderResources({ width: 1280, height: 720 }, undefined, undefined, { cores: 8, totalBytes: 16 * GB, freeBytes: 8 * GB });
+  assert.equal(none.workerCount, 1);
+  assert.equal(none.workerWindow, 0);
 });
