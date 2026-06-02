@@ -5,6 +5,10 @@ export {
   createVideoFrameCache,
   prefetchVideoFrameBatch,
   prefetchVideoFrames,
+  registerFont,
+  unregisterFont,
+  clearFontRegistry,
+  registerEmojiFont,
   renderPngFrame,
   renderRgbaFrame
 } from "./render-png.ts";

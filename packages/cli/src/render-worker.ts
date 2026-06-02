@@ -11,6 +11,7 @@ type RenderWorkerRequest = {
   sourceIndices: number[];
   frames: ResolvedFrame[];
   ffmpegPath?: string;
+  diskCacheDir?: string;
 };
 
 const videoFrameCaches = new Map<string, ReturnType<typeof createVideoFrameCache>>();
@@ -23,7 +24,7 @@ if (!parentPort) {
 parentPort.on("message", async (message: RenderWorkerRequest) => {
   try {
     const startedAt = performance.now();
-    const cache = videoFrameCacheFor(message.ffmpegPath);
+    const cache = videoFrameCacheFor(message.ffmpegPath, message.diskCacheDir);
     cache.clear();
     await prefetchVideoFrameBatch(message.frames, cache);
     const frames: Uint8Array[] = [];
@@ -45,14 +46,21 @@ parentPort.on("message", async (message: RenderWorkerRequest) => {
 
 process.once("exit", () => rgbaRenderer.dispose());
 
-function videoFrameCacheFor(ffmpegPath: string | undefined): ReturnType<typeof createVideoFrameCache> {
-  const key = ffmpegPath ?? "default";
+function videoFrameCacheFor(ffmpegPath: string | undefined, diskCacheDir: string | undefined): ReturnType<typeof createVideoFrameCache> {
+  const key = `${ffmpegPath ?? "default"}|${diskCacheDir ?? ""}`;
   const cached = videoFrameCaches.get(key);
   if (cached) {
     return cached;
   }
 
-  const cache = createVideoFrameCache(ffmpegPath ? { ffmpegPath } : {});
+  const options: { ffmpegPath?: string; diskCacheDir?: string } = {};
+  if (ffmpegPath) {
+    options.ffmpegPath = ffmpegPath;
+  }
+  if (diskCacheDir) {
+    options.diskCacheDir = diskCacheDir;
+  }
+  const cache = createVideoFrameCache(options);
   videoFrameCaches.set(key, cache);
   return cache;
 }

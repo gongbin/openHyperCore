@@ -15,23 +15,28 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 - CanvasKit/Skia 渲染后端：支持文本、矩形/圆形/path、图片和第一版本地 VideoLayer。
 - SVG debug still 与 PNG still：可快速检查单帧布局，也可生成真实 CanvasKit PNG。
 - CaptionLayer：支持时间段字幕、字体大小、颜色、背景色、padding、对齐和 transform 位置。
-- 转场 helper：提供 fade、slide、scale preset，并输出可复用 Scene Graph transform keyframes。
+- 转场 helper：提供 fade、slide、scale preset，并输出可复用 Scene Graph transform keyframes；支持 easing preset（`easeIn/easeOut/easeInOut/...` 及自定义缓动函数），通过采样烘焙为关键帧。
+- 时间线 DSL：`composeTimeline` 可将同一属性的多段动画按时间串联（如同一图层的入场淡入 + 出场淡出），`delayTransition` 可整体平移 transform 时间用于错峰编排。
+- 图层 fit 模式：`ImageLayer.fit` 与 `VideoLayer.fit` 支持 `fill`（拉伸）、`cover`（居中裁切）、`contain`（letterbox 留边）；圆形视频裁切默认 `cover`。
+- 文本排版：text/caption 支持显式 `\n` 与按 `maxWidth` 自动换行（Latin 按词、CJK 按字），并支持逐行 `align`（left/center/right）。
+- 字体：提供命名字体注册表（`registerFont(name, path)`）与逐字符 fallback 字体栈，支持彩色 emoji fallback（`registerEmojiFont`）。
+- 字幕：`parseSubtitles` 解析 SRT/WebVTT 为带时间的 cue，`subtitlesToCaptions` 生成带样式、按时间显示的 CaptionLayer。
 - FFmpeg 编码后端：通过 raw RGBA stdin pipe 输出 H.264/yuv420p MP4；有音频时输出 AAC。
 - AudioLayer：支持单音频、多音频 amix、start/end、volume、fadeIn/fadeOut。
 - VideoLayer：支持从本地视频按时间点抽帧并贴入 Skia 画布；有 `width/height` 的视频层会按源视频尺寸批量解码 raw RGBA，绕过 PNG 中间格式与 CanvasKit 每帧图片解码。
 - 资产 probe/cache：提供图片、视频、音频 metadata probe，以及任务级缓存 API。
 - 帧级优化：连续视觉内容相同则复用 RGBA buffer，保持编码帧序和 PTS 不变。
 - worker_threads 并行渲染池：支持 `--workers N`、`--workers auto`、`--worker-window N` 控制并行度与内存窗口。
+- 持久帧缓存：`--cache-dir <dir>` 将解码后的 RGBA 帧按 源路径 + mtime/size + 时间 + 尺寸 落盘缓存，可跨渲染任务复用，并在指向同一目录的 worker 进程间共享。
 - Benchmark：输出帧数、复用帧、worker 配置、音频 timeline、渲染耗时、编码耗时、峰值 RSS 等指标。
 
 ## 当前限制
 
 - 仍是 alpha 工程原型，API 可能继续调整。
-- VideoLayer 目前仍以 correctness-first 为主：已具备源尺寸探测、任务级 raw RGBA 帧缓存和窗口化批量预取，但尚未做跨任务持久缓存、GOP 级解码调度或 worker 间共享视频帧缓存。
-- `ImageLayer.fit` 与 `VideoLayer.fit` 已预留类型，但当前 Skia 绘制主要按 `width/height` 拉伸绘制。
-- 文本排版仍是基础 Skia font 绘制，尚未补齐复杂断行、字体注册和 emoji fallback。
-- CaptionLayer 当前为单行基础字幕，尚未实现自动换行、复杂排版和 SRT/VTT 导入。
-- 转场 helper 当前输出基础 transform keyframes，尚未实现 easing preset、组合时间线 DSL 或复杂出入场编排。
+- VideoLayer 已具备源尺寸探测、任务级 raw RGBA 帧缓存、窗口化批量预取，并通过 `--cache-dir` 支持跨任务持久磁盘缓存（同时在 worker 间共享）。解码已按连续顺序批量 pass 进行（无逐帧 seek）；显式的 GOP/关键帧对齐调度仍是后续优化。
+- 文本排版已支持多行换行、对齐、字体注册和 emoji fallback，但尚未支持行内富文本（单行内混合样式）或双向/复杂文种 shaping。
+- 彩色 emoji fallback 依赖宿主机存在 emoji 字体（自动探测，或通过 `registerEmojiFont` 指定）；若没有，则 emoji 回退到默认字体。
+- 转场 helper 已支持 easing preset 与组合时间线 DSL（`composeTimeline`/`delayTransition`）；更高层的 scene/track 时间线抽象仍是后续工作。
 - 尚未实现 HTTP 服务、可视化编辑器和发布打包流程。
 
 ## 环境要求
@@ -101,6 +106,12 @@ pnpm cli render examples/simple-video.ts --out /tmp/openhyper-worker.mp4 --worke
 ```bash
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --ffmpeg-path /usr/local/bin/ffmpeg
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --ffmpeg-arg-prefix -hide_banner
+```
+
+`--cache-dir <dir>` 开启持久磁盘 RGBA 帧缓存：解码帧按 源路径 + mtime/size + 时间 + 尺寸 作为 key，可跨渲染复用，并在指向同一目录的 worker 进程间共享：
+
+```bash
+pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --workers auto --cache-dir /tmp/openhyper-cache
 ```
 
 ### bench

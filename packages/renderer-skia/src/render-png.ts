@@ -1,7 +1,8 @@
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { dirname, resolve } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import CanvasKitInitModule from "canvaskit-wasm";
 import type { Canvas, CanvasKit, CanvasKitInitOptions, Font, Paint, Typeface } from "canvaskit-wasm";
@@ -22,6 +23,11 @@ export type RenderFrameOptions = {
 export type VideoFrameCacheOptions = {
   ffmpegPath?: string;
   ffmpegArgsPrefix?: string[];
+  // When set, decoded RGBA frames are persisted to this directory keyed by the
+  // source path + mtime/size + time + dimensions. This survives across render
+  // tasks (cross-task cache) and is shared between worker processes pointing at
+  // the same directory (shared video-frame cache across workers).
+  diskCacheDir?: string;
 };
 
 export type RgbaVideoFrame = {
@@ -139,7 +145,20 @@ export class VideoFrameCache {
       return cached;
     }
 
-    const pending = extractVideoFrameRgba(src, timeMs, width, height, this.#options).catch((error: unknown) => {
+    const dir = this.#options.diskCacheDir;
+    const pending = (async () => {
+      if (dir) {
+        const onDisk = await readRgbaFrameFromDisk(dir, key);
+        if (onDisk) {
+          return onDisk;
+        }
+      }
+      const frame = await extractVideoFrameRgba(src, timeMs, width, height, this.#options);
+      if (dir) {
+        await writeRgbaFrameToDisk(dir, key, frame);
+      }
+      return frame;
+    })().catch((error: unknown) => {
       this.#rgbaEntries.delete(key);
       throw error;
     });
@@ -153,12 +172,33 @@ export class VideoFrameCache {
       return;
     }
 
-    const missing: Array<{ key: string; timeMs: number }> = [];
+    const candidates: Array<{ key: string; timeMs: number }> = [];
     for (const timeMs of uniqueTimes) {
       const key = await buildVideoFrameCacheKey(src, timeMs, width, height, "rgba");
       if (!this.#rgbaEntries.has(key)) {
-        missing.push({ key, timeMs });
+        candidates.push({ key, timeMs });
       }
+    }
+
+    if (candidates.length === 0) {
+      return;
+    }
+
+    // Pull any frames already on disk (e.g. written by a prior task/worker)
+    // straight from the cache directory instead of re-decoding them.
+    const dir = this.#options.diskCacheDir;
+    const missing: Array<{ key: string; timeMs: number }> = [];
+    if (dir) {
+      await Promise.all(candidates.map(async (entry) => {
+        const onDisk = await readRgbaFrameFromDisk(dir, entry.key);
+        if (onDisk) {
+          this.#rgbaEntries.set(entry.key, Promise.resolve(onDisk));
+        } else {
+          missing.push(entry);
+        }
+      }));
+    } else {
+      missing.push(...candidates);
     }
 
     if (missing.length === 0) {
@@ -179,10 +219,13 @@ export class VideoFrameCache {
       });
 
     for (const [index, entry] of missing.entries()) {
-      this.#rgbaEntries.set(entry.key, pendingFrames.then((frames) => {
+      this.#rgbaEntries.set(entry.key, pendingFrames.then(async (frames) => {
         const frame = frames[index];
         if (!frame) {
           throw new Error(`ffmpeg returned no raw video frame for time ${entry.timeMs}ms`);
+        }
+        if (dir) {
+          await writeRgbaFrameToDisk(dir, entry.key, frame);
         }
         return frame;
       }));
@@ -344,12 +387,35 @@ async function loadDefaultTypeface(CanvasKit: CanvasKit): Promise<Typeface | nul
 
 const typefaceCache = new Map<string, Promise<Typeface | null>>();
 
-// Per-layer font: a TextLayer/CaptionLayer may set `font` to a font file path.
-// Loaded once and cached; falls back to the default typeface if it fails.
-async function loadTypeface(CanvasKit: CanvasKit, fontPath?: string): Promise<Typeface | null> {
-  if (!fontPath) {
+// Named font registry: map a friendly name to a font file path so layers can
+// set `font: "title"` instead of repeating absolute paths.
+const fontRegistry = new Map<string, string>();
+
+export function registerFont(name: string, path: string): void {
+  fontRegistry.set(name, path);
+}
+
+export function unregisterFont(name: string): void {
+  fontRegistry.delete(name);
+}
+
+export function clearFontRegistry(): void {
+  fontRegistry.clear();
+}
+
+// Resolve a layer's `font` (a registered name or a direct path) to a path.
+function resolveFontPath(font: string): string {
+  return fontRegistry.get(font) ?? font;
+}
+
+// Per-layer font: a TextLayer/CaptionLayer may set `font` to a registered name
+// or a font file path. Loaded once and cached; falls back to the default
+// typeface if it fails.
+async function loadTypeface(CanvasKit: CanvasKit, font?: string): Promise<Typeface | null> {
+  if (!font) {
     return loadDefaultTypeface(CanvasKit);
   }
+  const fontPath = resolveFontPath(font);
   let pending = typefaceCache.get(fontPath);
   if (!pending) {
     pending = readFile(fontPath)
@@ -358,6 +424,43 @@ async function loadTypeface(CanvasKit: CanvasKit, fontPath?: string): Promise<Ty
     typefaceCache.set(fontPath, pending);
   }
   return (await pending) ?? (await loadDefaultTypeface(CanvasKit));
+}
+
+// Emoji fallback typeface — used to draw glyphs the primary font is missing.
+let emojiTypefacePromise: Promise<Typeface | null> | undefined;
+let emojiFontOverride: string | undefined;
+
+export function registerEmojiFont(path: string): void {
+  emojiFontOverride = path;
+  emojiTypefacePromise = undefined;
+}
+
+async function loadEmojiTypeface(CanvasKit: CanvasKit): Promise<Typeface | null> {
+  if (!emojiTypefacePromise) {
+    const candidates = [
+      emojiFontOverride,
+      process.env.OPENHYPERCORE_EMOJI_FONT,
+      "/System/Library/Fonts/Apple Color Emoji.ttc",
+      "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+      "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
+      "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf"
+    ].filter((path): path is string => Boolean(path));
+    emojiTypefacePromise = (async () => {
+      for (const candidate of candidates) {
+        try {
+          const data = await readFile(candidate);
+          const typeface = CanvasKit.Typeface.MakeTypefaceFromData(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+          if (typeface) {
+            return typeface;
+          }
+        } catch {
+          // Try the next emoji-font candidate.
+        }
+      }
+      return null;
+    })();
+  }
+  return emojiTypefacePromise;
 }
 
 async function loadTypefaceFromCandidates(CanvasKit: CanvasKit): Promise<Typeface | null> {
@@ -485,15 +588,78 @@ type TextStyle = {
   shadowDy?: number;
 };
 
-// Draws a single text run as: soft shadow → outline stroke → fill, so titles
-// and captions read clearly against busy video instead of looking flat.
-function drawStyledText(CanvasKit: CanvasKit, canvas: Canvas, text: string, x: number, baselineY: number, color: string, opacity: number, font: Font, style: TextStyle): void {
+// A font stack: the primary typeface followed by emoji/default fallbacks. Each
+// character is drawn with the first font in the stack that has a glyph for it,
+// so emoji and missing CJK glyphs fall back instead of rendering as tofu.
+type FontRun = { fontIndex: number; text: string };
+
+function splitRuns(stack: Font[], text: string): FontRun[] {
+  const runs: FontRun[] = [];
+  for (const ch of text) {
+    let fontIndex = 0;
+    for (let i = 0; i < stack.length; i++) {
+      const ids = stack[i]!.getGlyphIDs(ch);
+      if (ids[0]) {
+        fontIndex = i;
+        break;
+      }
+    }
+    const last = runs[runs.length - 1];
+    if (last && last.fontIndex === fontIndex) {
+      last.text += ch;
+    } else {
+      runs.push({ fontIndex, text: ch });
+    }
+  }
+  return runs;
+}
+
+// Sum the advance widths of a string's glyphs in the given font — exact
+// glyph measurement, used for auto-wrapping and per-line alignment.
+function measureTextWidth(font: Font, text: string): number {
+  if (text === "") {
+    return 0;
+  }
+  const ids = font.getGlyphIDs(text);
+  const widths = font.getGlyphWidths(ids);
+  let sum = 0;
+  for (const w of widths) {
+    sum += w;
+  }
+  return sum;
+}
+
+// Total width of a string across the font stack (fallbacks included).
+function measureStack(stack: Font[], text: string): number {
+  let sum = 0;
+  for (const run of splitRuns(stack, text)) {
+    sum += measureTextWidth(stack[run.fontIndex]!, run.text);
+  }
+  return sum;
+}
+
+// Draw each run with its resolved font, advancing x by the run's width.
+function drawRuns(canvas: Canvas, runs: FontRun[], stack: Font[], x: number, baselineY: number, paint: Paint): void {
+  let cursor = x;
+  for (const run of runs) {
+    const font = stack[run.fontIndex]!;
+    canvas.drawText(run.text, cursor, baselineY, paint, font);
+    cursor += measureTextWidth(font, run.text);
+  }
+}
+
+// Draws a styled line as: soft shadow → outline stroke → fill, so titles and
+// captions read clearly against busy video. Per-character font fallback is
+// applied via the font stack.
+function drawStyledText(CanvasKit: CanvasKit, canvas: Canvas, text: string, x: number, baselineY: number, color: string, opacity: number, stack: Font[], style: TextStyle): void {
+  const runs = splitRuns(stack, text);
+
   if (style.shadowColor) {
     const shadowPaint = makePaint(CanvasKit, style.shadowColor, opacity);
     const blur = CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, Math.max(0.1, style.shadowBlur ?? 6), false);
     shadowPaint.setMaskFilter(blur);
     try {
-      canvas.drawText(text, x + (style.shadowDx ?? 0), baselineY + (style.shadowDy ?? 4), shadowPaint, font);
+      drawRuns(canvas, runs, stack, x + (style.shadowDx ?? 0), baselineY + (style.shadowDy ?? 4), shadowPaint);
     } finally {
       blur.delete();
       shadowPaint.delete();
@@ -507,7 +673,7 @@ function drawStyledText(CanvasKit: CanvasKit, canvas: Canvas, text: string, x: n
     strokePaint.setStrokeJoin(CanvasKit.StrokeJoin.Round);
     strokePaint.setStrokeCap(CanvasKit.StrokeCap.Round);
     try {
-      canvas.drawText(text, x, baselineY, strokePaint, font);
+      drawRuns(canvas, runs, stack, x, baselineY, strokePaint);
     } finally {
       strokePaint.delete();
     }
@@ -515,20 +681,86 @@ function drawStyledText(CanvasKit: CanvasKit, canvas: Canvas, text: string, x: n
 
   const fillPaint = makePaint(CanvasKit, color, opacity);
   try {
-    canvas.drawText(text, x, baselineY, fillPaint, font);
+    drawRuns(canvas, runs, stack, x, baselineY, fillPaint);
   } finally {
     fillPaint.delete();
   }
 }
 
+// Build the per-character fallback stack for a layer's font at a given size:
+// [primary, emoji, default], de-duplicated by typeface identity.
+async function loadFontStack(CanvasKit: CanvasKit, size: number, font?: string): Promise<Font[]> {
+  const typefaces = [
+    await loadTypeface(CanvasKit, font),
+    await loadEmojiTypeface(CanvasKit),
+    await loadDefaultTypeface(CanvasKit)
+  ].filter((t, i, all): t is Typeface => t !== null && all.indexOf(t) === i);
+
+  return typefaces.map((typeface) => {
+    const f = new CanvasKit.Font(typeface, size);
+    f.setEdging(CanvasKit.FontEdging.AntiAlias);
+    return f;
+  });
+}
+
+function deleteFontStack(stack: Font[]): void {
+  for (const f of stack) {
+    f.delete();
+  }
+}
+
+// Atomic units that must not be split: optional leading spaces followed by
+// either a single CJK/full-width char or a run of non-space, non-CJK chars
+// (a "word"). Lets us greedily wrap Latin on word boundaries and CJK per char.
+const WRAP_TOKEN = /\s*(?:[⺀-鿿　-〿＀-￯]|[^\s⺀-鿿　-〿＀-￯]+)/gu;
+
+function wrapText(measure: (text: string) => number, text: string, maxWidth: number): string[] {
+  if (!Number.isFinite(maxWidth) || maxWidth <= 0) {
+    return text.split("\n");
+  }
+  const lines: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    let line = "";
+    for (const match of paragraph.matchAll(WRAP_TOKEN)) {
+      const token = match[0];
+      const candidate = line + token;
+      if (line !== "" && measure(candidate) > maxWidth) {
+        lines.push(line);
+        line = token.replace(/^\s+/, "");
+      } else {
+        line = candidate;
+      }
+    }
+    lines.push(line);
+  }
+  return lines.length > 0 ? lines : [""];
+}
+
+// Per-line x offset for the given alignment, resolved against each line's own
+// measured width so multi-line blocks centre/right-align correctly.
+function lineX(align: Extract<ResolvedLayer, { type: "caption" }>["align"], width: number): number {
+  if (align === "center") {
+    return -width / 2;
+  }
+  if (align === "right") {
+    return -width;
+  }
+  return 0;
+}
+
 async function drawText(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "text" }>): Promise<void> {
-  const font = new CanvasKit.Font(await loadTypeface(CanvasKit, layer.font), layer.size ?? 16);
+  const size = layer.size ?? 16;
+  const stack = await loadFontStack(CanvasKit, size, layer.font);
 
   try {
-    font.setEdging(CanvasKit.FontEdging.AntiAlias);
-    drawStyledText(CanvasKit, canvas, layer.text, 0, 0, layer.color ?? "#000", layer.transform.opacity, font, layer);
+    const lineHeight = layer.lineHeight ?? size * 1.2;
+    const lines = layer.maxWidth ? wrapText((t) => measureStack(stack, t), layer.text, layer.maxWidth) : layer.text.split("\n");
+    lines.forEach((line, index) => {
+      const x = lineX(layer.align, measureStack(stack, line));
+      drawStyledText(CanvasKit, canvas, line, x, index * lineHeight, layer.color ?? "#000", layer.transform.opacity, stack, layer);
+    });
   } finally {
-    font.delete();
+    deleteFontStack(stack);
   }
 }
 
@@ -536,28 +768,59 @@ async function drawCaption(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<
   const size = layer.size ?? 32;
   const lineHeight = layer.lineHeight ?? size * 1.2;
   const padding = layer.padding ?? 8;
-  const textWidth = layer.maxWidth ?? estimateTextWidth(layer.text, size);
-  const x = alignedX(layer.align, textWidth);
 
-  if (layer.backgroundColor) {
-    const backgroundPaint = makePaint(CanvasKit, layer.backgroundColor, layer.transform.opacity);
-    try {
-      canvas.drawRect(
-        CanvasKit.XYWHRect(x - padding, -lineHeight - padding, textWidth + padding * 2, lineHeight + padding * 2),
-        backgroundPaint
-      );
-    } finally {
-      backgroundPaint.delete();
-    }
-  }
-
-  const font = new CanvasKit.Font(await loadTypeface(CanvasKit, layer.font), size);
+  const stack = await loadFontStack(CanvasKit, size, layer.font);
   try {
-    font.setEdging(CanvasKit.FontEdging.AntiAlias);
-    drawStyledText(CanvasKit, canvas, layer.text, x, 0, layer.color ?? "#fff", layer.transform.opacity, font, layer);
+    const measure = (t: string) => measureStack(stack, t);
+    const lines = layer.maxWidth ? wrapText(measure, layer.text, layer.maxWidth) : layer.text.split("\n");
+    const blockWidth = layer.maxWidth ?? Math.max(0, ...lines.map(measure));
+
+    if (layer.backgroundColor) {
+      const bgX = lineX(layer.align, blockWidth);
+      const backgroundPaint = makePaint(CanvasKit, layer.backgroundColor, layer.transform.opacity);
+      try {
+        canvas.drawRect(
+          CanvasKit.XYWHRect(bgX - padding, -lineHeight - padding, blockWidth + padding * 2, lineHeight * lines.length + padding * 2),
+          backgroundPaint
+        );
+      } finally {
+        backgroundPaint.delete();
+      }
+    }
+
+    lines.forEach((line, index) => {
+      const x = lineX(layer.align, measure(line));
+      drawStyledText(CanvasKit, canvas, line, x, index * lineHeight, layer.color ?? "#fff", layer.transform.opacity, stack, layer);
+    });
   } finally {
-    font.delete();
+    deleteFontStack(stack);
   }
+}
+
+type Rect = { x: number; y: number; w: number; h: number };
+
+// Map a source image into a destination box honouring `fit`:
+//  - "fill" (default): stretch to the box (legacy behaviour)
+//  - "cover": fill the box, centre-cropping the overflow
+//  - "contain": fit entirely inside the box, letterboxed/centred
+function fitRects(srcW: number, srcH: number, dstW: number, dstH: number, fit?: "cover" | "contain" | "fill"): { src: Rect; dst: Rect } {
+  const full = { src: { x: 0, y: 0, w: srcW, h: srcH }, dst: { x: 0, y: 0, w: dstW, h: dstH } };
+  if (!fit || fit === "fill" || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) {
+    return full;
+  }
+  const srcAspect = srcW / srcH;
+  const dstAspect = dstW / dstH;
+  if (fit === "cover") {
+    let cw = srcW;
+    let ch = srcH;
+    if (srcAspect > dstAspect) { cw = srcH * dstAspect; } else { ch = srcW / dstAspect; }
+    return { src: { x: (srcW - cw) / 2, y: (srcH - ch) / 2, w: cw, h: ch }, dst: { x: 0, y: 0, w: dstW, h: dstH } };
+  }
+  // contain
+  let dw = dstW;
+  let dh = dstH;
+  if (srcAspect > dstAspect) { dh = dstW / srcAspect; } else { dw = dstH * srcAspect; }
+  return { src: { x: 0, y: 0, w: srcW, h: srcH }, dst: { x: (dstW - dw) / 2, y: (dstH - dh) / 2, w: dw, h: dh } };
 }
 
 async function drawImage(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "image" }>): Promise<void> {
@@ -572,7 +835,8 @@ async function drawImage(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Re
   try {
     const width = layer.width ?? image.width();
     const height = layer.height ?? image.height();
-    canvas.drawImageRect(image, CanvasKit.XYWHRect(0, 0, image.width(), image.height()), CanvasKit.XYWHRect(0, 0, width, height), paint, false);
+    const { src: s, dst: d } = fitRects(image.width(), image.height(), width, height, layer.fit);
+    canvas.drawImageRect(image, CanvasKit.XYWHRect(s.x, s.y, s.w, s.h), CanvasKit.XYWHRect(d.x, d.y, d.w, d.h), paint, false);
   } finally {
     paint.delete();
     image.delete();
@@ -604,7 +868,11 @@ async function drawVideo(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Re
       const rrect = CanvasKit.RRectXY(CanvasKit.XYWHRect(width / 2 - r, height / 2 - r, 2 * r, 2 * r), r, r);
       canvas.clipRRect(rrect, CanvasKit.ClipOp.Intersect, true);
     }
-    canvas.drawImageRect(image, CanvasKit.XYWHRect(0, 0, image.width(), image.height()), CanvasKit.XYWHRect(0, 0, width, height), paint, false);
+    // Default to "cover" for circular crops so the avatar is filled, not
+    // letterboxed; otherwise honour the explicit fit (stretch by default).
+    const fit = layer.fit ?? (layer.clip === "circle" ? "cover" : undefined);
+    const { src: s, dst: d } = fitRects(image.width(), image.height(), width, height, fit);
+    canvas.drawImageRect(image, CanvasKit.XYWHRect(s.x, s.y, s.w, s.h), CanvasKit.XYWHRect(d.x, d.y, d.w, d.h), paint, false);
   } finally {
     paint.delete();
     image.delete();
@@ -686,6 +954,52 @@ function isUniformFrameSequence(timeMsList: number[]): boolean {
   }
 
   return timeMsList.every((timeMs, index) => index === 0 || Math.abs((timeMs - timeMsList[index - 1]!) - stepMs) <= 1);
+}
+
+// Persistent disk cache for decoded RGBA frames. Files are named by a hash of
+// the (path + mtime/size + time + dims) cache key, so they are valid across
+// processes and tasks and are safe to share between workers.
+const DISK_RGBA_MAGIC = 0x4f48_5631; // "OHV1"
+
+function diskCacheFilePath(dir: string, key: string): string {
+  return join(dir, `${createHash("sha256").update(key).digest("hex")}.ohrgba`);
+}
+
+async function readRgbaFrameFromDisk(dir: string, key: string): Promise<RgbaVideoFrame | undefined> {
+  try {
+    const buffer = await readFile(diskCacheFilePath(dir, key));
+    if (buffer.length < 12 || buffer.readUInt32LE(0) !== DISK_RGBA_MAGIC) {
+      return undefined;
+    }
+    const width = buffer.readUInt32LE(4);
+    const height = buffer.readUInt32LE(8);
+    const pixels = buffer.subarray(12);
+    if (width <= 0 || height <= 0 || pixels.length !== width * height * 4) {
+      return undefined;
+    }
+    return { width, height, pixels: Buffer.from(pixels) };
+  } catch {
+    // Cache miss or unreadable entry — fall back to decoding.
+    return undefined;
+  }
+}
+
+async function writeRgbaFrameToDisk(dir: string, key: string, frame: RgbaVideoFrame): Promise<void> {
+  try {
+    await mkdir(dir, { recursive: true });
+    const header = Buffer.alloc(12);
+    header.writeUInt32LE(DISK_RGBA_MAGIC, 0);
+    header.writeUInt32LE(frame.width, 4);
+    header.writeUInt32LE(frame.height, 8);
+    // Write to a unique temp file then rename, so concurrent workers never read
+    // a half-written entry.
+    const target = diskCacheFilePath(dir, key);
+    const tmp = `${target}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+    await writeFile(tmp, Buffer.concat([header, frame.pixels]));
+    await rename(tmp, target);
+  } catch {
+    // A best-effort cache: failures to persist must not break rendering.
+  }
 }
 
 async function buildVideoFrameCacheKey(src: string, timeMs: number, width?: number, height?: number, format = "png"): Promise<string> {
@@ -987,20 +1301,6 @@ function formatSeconds(value: number): string {
 
 function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
-}
-
-function alignedX(align: Extract<ResolvedLayer, { type: "caption" }>["align"], width: number): number {
-  if (align === "center") {
-    return -width / 2;
-  }
-  if (align === "right") {
-    return -width;
-  }
-  return 0;
-}
-
-function estimateTextWidth(text: string, size: number): number {
-  return text.length * size * 0.6;
 }
 
 function makePaint(CanvasKit: CanvasKit, color: string, opacity: number): Paint {

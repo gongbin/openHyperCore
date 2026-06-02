@@ -47,6 +47,9 @@ export type TextLayer = BaseLayer & TextStyle & {
   color?: string;
   align?: "left" | "center" | "right";
   lineHeight?: number;
+  // When set, long text auto-wraps to fit within this pixel width (CJK breaks
+  // per-character, Latin breaks on word boundaries). Explicit `\n` is honoured.
+  maxWidth?: number;
 };
 
 export type CaptionLayer = BaseLayer & TextStyle & {

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ffmpeg from "@ffmpeg-installer/ffmpeg";
 import { defineComposition, resolveFrame } from "../../core/src/index.ts";
-import { createRgbaFrameRenderer, createVideoFrameCache, renderPngFrame, renderRgbaFrame } from "../src/index.ts";
+import { clearFontRegistry, createRgbaFrameRenderer, createVideoFrameCache, registerFont, renderPngFrame, renderRgbaFrame } from "../src/index.ts";
 
 test("renderPngFrame emits a PNG buffer for resolved text and shapes", async () => {
   const composition = defineComposition({
@@ -93,6 +93,43 @@ test("renderRgbaFrame draws visible text glyphs", async () => {
   assert.ok(paintedPixels > 0);
 });
 
+test("registerFont resolves a named font, falling back when unavailable", async (t) => {
+  t.after(() => clearFontRegistry());
+  // A registered name that points at a missing file must fall back to the
+  // default typeface rather than throwing — text still renders.
+  registerFont("title", "/openhypercore/does-not-exist.ttf");
+  const composition = defineComposition({
+    fps: 30,
+    width: 96,
+    height: 48,
+    durationMs: 1000,
+    layers: [
+      { type: "text", text: "TEXT", size: 28, color: "#ffffff", font: "title", transform: { x: 4, y: 34 } }
+    ]
+  });
+
+  const rgba = await renderRgbaFrame(resolveFrame(composition, 0));
+  assert.ok(countPixelsWithAlpha(rgba) > 0);
+});
+
+test("renderRgbaFrame renders mixed text and emoji without throwing", async () => {
+  // Emoji fall through the font stack to the emoji/default fallback; the
+  // primary glyphs still draw regardless of whether an emoji font is present.
+  const composition = defineComposition({
+    fps: 30,
+    width: 128,
+    height: 48,
+    durationMs: 1000,
+    layers: [
+      { type: "text", text: "Hi 😀", size: 28, color: "#ffffff", transform: { x: 4, y: 34 } }
+    ]
+  });
+
+  const rgba = await renderRgbaFrame(resolveFrame(composition, 0));
+  assert.equal(rgba.length, 128 * 48 * 4);
+  assert.ok(countPixelsWithAlpha(rgba) > 0);
+});
+
 test("RgbaFrameRenderer reuses a renderer across frames", async () => {
   const composition = defineComposition({
     fps: 2,
@@ -159,6 +196,78 @@ test("renderRgbaFrame draws a CaptionLayer background", async () => {
 
   assert.equal(rgba.length, 24 * 16 * 4);
   assert.deepEqual([...rgba.subarray(0, 4)], [255, 0, 0, 255]);
+});
+
+test("renderRgbaFrame wraps a CaptionLayer onto multiple lines within maxWidth", async () => {
+  const size = 10;
+  const padding = 2;
+  const lineHeight = 12;
+  const composition = defineComposition({
+    fps: 30,
+    width: 48,
+    height: 32,
+    durationMs: 1000,
+    layers: [
+      {
+        type: "caption",
+        text: "AA BB",
+        size,
+        lineHeight,
+        padding,
+        color: "#ffffff",
+        backgroundColor: "#ff0000",
+        maxWidth: 20,
+        transform: { x: 4, y: 14 }
+      }
+    ]
+  });
+
+  const rgba = await renderRgbaFrame(resolveFrame(composition, 0));
+  const pixel = (x: number, y: number) => rgba.subarray((y * 48 + x) * 4, (y * 48 + x) * 4 + 4);
+  // With two wrapped lines the red background spans two line-heights, so a
+  // background pixel well below the first line (row 26) is still red. A single
+  // line's background (height ~16) would leave that row transparent.
+  assert.deepEqual([...pixel(10, 26)], [255, 0, 0, 255]);
+  // ...and the row beyond both lines is transparent again.
+  assert.equal(pixel(10, 30)[3], 0);
+});
+
+test("renderRgbaFrame letterboxes an ImageLayer with fit: contain", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "openhyper-image-fit-"));
+  const imageFile = join(dir, "red.png");
+  // A wide 4x2 red source drawn into a 4x4 box. With "contain" the source
+  // keeps its 2:1 aspect, so it occupies the middle two rows and the top/
+  // bottom rows stay transparent (letterbox).
+  const generated = spawnSync(ffmpeg.path, [
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    "color=c=red:s=4x2:d=1",
+    "-frames:v",
+    "1",
+    imageFile
+  ], { encoding: "utf8" });
+  assert.equal(generated.status, 0, generated.stderr);
+
+  const composition = defineComposition({
+    fps: 1,
+    width: 4,
+    height: 4,
+    durationMs: 1000,
+    layers: [
+      { type: "image", src: imageFile, width: 4, height: 4, fit: "contain" }
+    ]
+  });
+
+  const rgba = await renderRgbaFrame(resolveFrame(composition, 0));
+  assert.equal(rgba.length, 4 * 4 * 4);
+  // Top-left pixel (row 0) is letterbox → transparent.
+  assert.equal(rgba[3], 0);
+  // A pixel in the centred band (row 2) is opaque red.
+  const center = (2 * 4 + 1) * 4;
+  assert.ok(rgba[center]! > 180);
+  assert.equal(rgba[center + 3], 255);
 });
 
 test("renderRgbaFrame draws a VideoLayer frame extracted with ffmpeg", async () => {
@@ -282,6 +391,42 @@ test("renderRgbaFrame shares cached VideoLayer frames within a render task", asy
   assert.equal(count, "x");
 });
 
+test("VideoFrameCache persists RGBA frames to a shared disk cache across instances", async () => {
+  const { makeCache, dir, countFile, videoFile } = await createFakeVideoFrameCache();
+  const diskCacheDir = join(dir, "frame-cache");
+
+  // First instance decodes and persists the frame to disk.
+  const warm = makeCache({ diskCacheDir });
+  const first = await warm.getRgbaFrame(videoFile, 0, 2, 2);
+  assert.equal(await readFile(countFile, "utf8"), "x");
+
+  // A fresh instance with a cold in-memory map reads the frame from disk
+  // instead of invoking ffmpeg again (count stays "x").
+  const cold = makeCache({ diskCacheDir });
+  const second = await cold.getRgbaFrame(videoFile, 0, 2, 2);
+  assert.equal(await readFile(countFile, "utf8"), "x");
+
+  assert.deepEqual([...second.pixels], [...first.pixels]);
+  assert.equal(second.width, 2);
+  assert.equal(second.height, 2);
+});
+
+test("VideoFrameCache batch prefetch reuses disk-cached frames across instances", async () => {
+  const { makeCache, dir, countFile, videoFile } = await createFakeVideoFrameCache();
+  const diskCacheDir = join(dir, "frame-cache");
+
+  const warm = makeCache({ diskCacheDir });
+  await warm.prefetchRgbaFrames(videoFile, [0, 500, 1000], 2, 2);
+  assert.equal(await readFile(countFile, "utf8"), "x");
+
+  // A cold instance finds every frame on disk, so no new ffmpeg pass runs.
+  const cold = makeCache({ diskCacheDir });
+  await cold.prefetchRgbaFrames(videoFile, [0, 500, 1000], 2, 2);
+  const frame = await cold.getRgbaFrame(videoFile, 500, 2, 2);
+  assert.equal(await readFile(countFile, "utf8"), "x");
+  assert.equal(frame.pixels.length, 2 * 2 * 4);
+});
+
 async function createFakeVideoFrameCache() {
   const dir = await mkdtemp(join(tmpdir(), "openhyper-video-cache-"));
   const videoFile = join(dir, "clip.mp4");
@@ -323,11 +468,16 @@ for (let index = 0; index < frames; index += 1) {
     "utf8"
   );
 
+  const makeCache = (extra: { diskCacheDir?: string } = {}) => createVideoFrameCache({
+    ffmpegPath: process.execPath,
+    ffmpegArgsPrefix: [fakeFfmpeg],
+    ...extra
+  });
+
   return {
-    cache: createVideoFrameCache({
-      ffmpegPath: process.execPath,
-      ffmpegArgsPrefix: [fakeFfmpeg]
-    }),
+    cache: makeCache(),
+    makeCache,
+    dir,
     countFile,
     videoFile
   };

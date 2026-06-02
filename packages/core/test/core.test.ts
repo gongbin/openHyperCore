@@ -1,13 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  composeTimeline,
   defineComposition,
+  delayTransition,
   fadeTransition,
   frameCount,
   mergeTransforms,
+  parseSubtitles,
   resolveFrame,
   scaleTransition,
   slideTransition,
+  subtitlesToCaptions,
   timeForFrame
 } from "../src/index.ts";
 
@@ -143,6 +147,111 @@ test("transition helpers create reusable transform keyframes", () => {
   assert.equal(middle.transform.x, -25);
   assert.equal(middle.transform.y, 20);
   assert.equal(middle.transform.scale, 0.9);
+});
+
+test("eased transitions bake a non-linear curve into sampled keyframes", () => {
+  const linear = fadeTransition({ startMs: 0, durationMs: 1000, from: 0, to: 1 });
+  assert.ok(Array.isArray(linear.opacity));
+  assert.equal((linear.opacity as unknown[]).length, 2);
+
+  const eased = fadeTransition({ startMs: 0, durationMs: 1000, from: 0, to: 1, easing: "easeOutCubic" });
+  const frames = eased.opacity as { timeMs: number; value: number }[];
+  assert.ok(Array.isArray(frames));
+  assert.ok(frames.length > 2);
+  assert.equal(frames[0]!.value, 0);
+  assert.equal(frames.at(-1)!.value, 1);
+  assert.equal(frames[0]!.timeMs, 0);
+  assert.equal(frames.at(-1)!.timeMs, 1000);
+
+  const composition = defineComposition({
+    fps: 30,
+    width: 100,
+    height: 100,
+    durationMs: 1000,
+    layers: [{ type: "text", text: "Eased", transform: eased }]
+  });
+  // easeOut front-loads progress: at the midpoint opacity is well past 0.5.
+  const mid = resolveFrame(composition, 500).layers[0]!;
+  assert.ok((mid.transform.opacity as number) > 0.6, `expected eased midpoint > 0.6, got ${mid.transform.opacity}`);
+});
+
+test("custom easing function is sampled into the transition curve", () => {
+  const eased = scaleTransition({ startMs: 0, durationMs: 400, from: 0, to: 1, easing: (t) => t * t });
+  const frames = eased.scale as { timeMs: number; value: number }[];
+  assert.ok(frames.length > 2);
+  // t*t at the midpoint is 0.25.
+  const midpoint = frames.find((f) => f.timeMs === 200);
+  assert.ok(midpoint);
+  assert.ok(Math.abs(midpoint!.value - 0.25) < 1e-9);
+});
+
+test("parseSubtitles reads SRT cues into milliseconds", () => {
+  const srt = "1\n00:00:01,000 --> 00:00:04,500\nHello world\n\n2\n00:00:05,000 --> 00:00:08,000\nSecond line\nwrapped\n";
+  const cues = parseSubtitles(srt);
+  assert.equal(cues.length, 2);
+  assert.deepEqual(cues[0], { startMs: 1000, endMs: 4500, text: "Hello world" });
+  assert.equal(cues[1]!.text, "Second line\nwrapped");
+});
+
+test("parseSubtitles reads WebVTT cues, skipping header and settings", () => {
+  const vtt = "WEBVTT\n\nNOTE intro credit\n\nintro\n00:01.000 --> 00:03.000 align:center\nHi there\n\n00:00:04.000 --> 00:00:06.000\nFull clock\n";
+  const cues = parseSubtitles(vtt);
+  assert.equal(cues.length, 2);
+  assert.deepEqual(cues[0], { startMs: 1000, endMs: 3000, text: "Hi there" });
+  assert.deepEqual(cues[1], { startMs: 4000, endMs: 6000, text: "Full clock" });
+});
+
+test("subtitlesToCaptions builds timed caption layers with shared styling", () => {
+  const cues = parseSubtitles("1\n00:00:00,000 --> 00:00:02,000\nA\n");
+  const captions = subtitlesToCaptions(cues, { size: 40, color: "#fff", align: "center", maxWidth: 800 });
+  assert.equal(captions.length, 1);
+  assert.deepEqual(captions[0], {
+    type: "caption",
+    text: "A",
+    startMs: 0,
+    endMs: 2000,
+    size: 40,
+    color: "#fff",
+    align: "center",
+    maxWidth: 800
+  });
+
+  // The cue window drives layer visibility through the scheduler.
+  const composition = defineComposition({ fps: 30, width: 100, height: 100, durationMs: 3000, layers: captions });
+  assert.equal(resolveFrame(composition, 1000).layers.length, 1);
+  assert.equal(resolveFrame(composition, 2500).layers.length, 0);
+});
+
+test("composeTimeline chains entrance and exit animations on one property", () => {
+  const transform = composeTimeline(
+    fadeTransition({ startMs: 0, durationMs: 300, from: 0, to: 1 }),
+    fadeTransition({ startMs: 2000, durationMs: 300, from: 1, to: 0 })
+  );
+  const frames = transform.opacity as { timeMs: number; value: number }[];
+  assert.deepEqual(frames.map((f) => f.timeMs), [0, 300, 2000, 2300]);
+
+  const composition = defineComposition({
+    fps: 30,
+    width: 100,
+    height: 100,
+    durationMs: 2300,
+    layers: [{ type: "text", text: "Hi", transform }]
+  });
+  // Holds fully visible between the entrance and exit segments.
+  assert.equal(resolveFrame(composition, 1000).layers[0]!.transform.opacity, 1);
+  assert.equal(resolveFrame(composition, 0).layers[0]!.transform.opacity, 0);
+  // Fades back out during the exit segment.
+  assert.equal(resolveFrame(composition, 2150).layers[0]!.transform.opacity, 0.5);
+});
+
+test("delayTransition shifts every keyframe in time", () => {
+  const base = fadeTransition({ startMs: 0, durationMs: 200, from: 0, to: 1 });
+  const delayed = delayTransition(base, 500);
+  const frames = delayed.opacity as { timeMs: number; value: number }[];
+  assert.deepEqual(frames, [
+    { timeMs: 500, value: 0 },
+    { timeMs: 700, value: 1 }
+  ]);
 });
 
 test("mergeTransforms rejects duplicate animated properties", () => {

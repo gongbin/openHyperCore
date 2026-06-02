@@ -1,8 +1,10 @@
 export { defineComposition } from "./composition.ts";
 export { resolveScalar } from "./animation.ts";
 export { frameCount, resolveFrame, timeForFrame } from "./scheduler.ts";
-export { fadeTransition, mergeTransforms, scaleTransition, slideTransition } from "./transitions.ts";
-export type { FadeTransitionOptions, ScaleTransitionOptions, SlideTransitionOptions, TimedTransitionOptions } from "./transitions.ts";
+export { composeTimeline, delayTransition, fadeTransition, mergeTransforms, scaleTransition, slideTransition } from "./transitions.ts";
+export type { Easing, EasingFn, FadeTransitionOptions, ScaleTransitionOptions, SlideTransitionOptions, TimedTransitionOptions } from "./transitions.ts";
+export { parseSubtitles, subtitlesToCaptions } from "./subtitles.ts";
+export type { SubtitleCaptionOptions, SubtitleCue } from "./subtitles.ts";
 export type {
   AnimatedScalar,
   AudioLayer,
