@@ -26,12 +26,13 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 - 资产 probe/cache：提供图片、视频、音频 metadata probe，以及任务级缓存 API。
 - 帧级优化：连续视觉内容相同则复用 RGBA buffer，保持编码帧序和 PTS 不变。
 - worker_threads 并行渲染池：支持 `--workers N`、`--workers auto`、`--worker-window N` 控制并行度与内存窗口。
+- 持久帧缓存：`--cache-dir <dir>` 将解码后的 RGBA 帧按 源路径 + mtime/size + 时间 + 尺寸 落盘缓存，可跨渲染任务复用，并在指向同一目录的 worker 进程间共享。
 - Benchmark：输出帧数、复用帧、worker 配置、音频 timeline、渲染耗时、编码耗时、峰值 RSS 等指标。
 
 ## 当前限制
 
 - 仍是 alpha 工程原型，API 可能继续调整。
-- VideoLayer 目前仍以 correctness-first 为主：已具备源尺寸探测、任务级 raw RGBA 帧缓存和窗口化批量预取，但尚未做跨任务持久缓存、GOP 级解码调度或 worker 间共享视频帧缓存。
+- VideoLayer 已具备源尺寸探测、任务级 raw RGBA 帧缓存、窗口化批量预取，并通过 `--cache-dir` 支持跨任务持久磁盘缓存（同时在 worker 间共享）。解码已按连续顺序批量 pass 进行（无逐帧 seek）；显式的 GOP/关键帧对齐调度仍是后续优化。
 - 文本排版已支持多行换行、对齐、字体注册和 emoji fallback，但尚未支持行内富文本（单行内混合样式）或双向/复杂文种 shaping。
 - 彩色 emoji fallback 依赖宿主机存在 emoji 字体（自动探测，或通过 `registerEmojiFont` 指定）；若没有，则 emoji 回退到默认字体。
 - 转场 helper 已支持 easing preset，但组合时间线 DSL 与复杂出入场编排仍是后续工作。
@@ -104,6 +105,12 @@ pnpm cli render examples/simple-video.ts --out /tmp/openhyper-worker.mp4 --worke
 ```bash
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --ffmpeg-path /usr/local/bin/ffmpeg
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --ffmpeg-arg-prefix -hide_banner
+```
+
+`--cache-dir <dir>` 开启持久磁盘 RGBA 帧缓存：解码帧按 源路径 + mtime/size + 时间 + 尺寸 作为 key，可跨渲染复用，并在指向同一目录的 worker 进程间共享：
+
+```bash
+pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --workers auto --cache-dir /tmp/openhyper-cache
 ```
 
 ### bench

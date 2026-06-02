@@ -1,7 +1,8 @@
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { dirname, resolve } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import CanvasKitInitModule from "canvaskit-wasm";
 import type { Canvas, CanvasKit, CanvasKitInitOptions, Font, Paint, Typeface } from "canvaskit-wasm";
@@ -22,6 +23,11 @@ export type RenderFrameOptions = {
 export type VideoFrameCacheOptions = {
   ffmpegPath?: string;
   ffmpegArgsPrefix?: string[];
+  // When set, decoded RGBA frames are persisted to this directory keyed by the
+  // source path + mtime/size + time + dimensions. This survives across render
+  // tasks (cross-task cache) and is shared between worker processes pointing at
+  // the same directory (shared video-frame cache across workers).
+  diskCacheDir?: string;
 };
 
 export type RgbaVideoFrame = {
@@ -139,7 +145,20 @@ export class VideoFrameCache {
       return cached;
     }
 
-    const pending = extractVideoFrameRgba(src, timeMs, width, height, this.#options).catch((error: unknown) => {
+    const dir = this.#options.diskCacheDir;
+    const pending = (async () => {
+      if (dir) {
+        const onDisk = await readRgbaFrameFromDisk(dir, key);
+        if (onDisk) {
+          return onDisk;
+        }
+      }
+      const frame = await extractVideoFrameRgba(src, timeMs, width, height, this.#options);
+      if (dir) {
+        await writeRgbaFrameToDisk(dir, key, frame);
+      }
+      return frame;
+    })().catch((error: unknown) => {
       this.#rgbaEntries.delete(key);
       throw error;
     });
@@ -153,12 +172,33 @@ export class VideoFrameCache {
       return;
     }
 
-    const missing: Array<{ key: string; timeMs: number }> = [];
+    const candidates: Array<{ key: string; timeMs: number }> = [];
     for (const timeMs of uniqueTimes) {
       const key = await buildVideoFrameCacheKey(src, timeMs, width, height, "rgba");
       if (!this.#rgbaEntries.has(key)) {
-        missing.push({ key, timeMs });
+        candidates.push({ key, timeMs });
       }
+    }
+
+    if (candidates.length === 0) {
+      return;
+    }
+
+    // Pull any frames already on disk (e.g. written by a prior task/worker)
+    // straight from the cache directory instead of re-decoding them.
+    const dir = this.#options.diskCacheDir;
+    const missing: Array<{ key: string; timeMs: number }> = [];
+    if (dir) {
+      await Promise.all(candidates.map(async (entry) => {
+        const onDisk = await readRgbaFrameFromDisk(dir, entry.key);
+        if (onDisk) {
+          this.#rgbaEntries.set(entry.key, Promise.resolve(onDisk));
+        } else {
+          missing.push(entry);
+        }
+      }));
+    } else {
+      missing.push(...candidates);
     }
 
     if (missing.length === 0) {
@@ -179,10 +219,13 @@ export class VideoFrameCache {
       });
 
     for (const [index, entry] of missing.entries()) {
-      this.#rgbaEntries.set(entry.key, pendingFrames.then((frames) => {
+      this.#rgbaEntries.set(entry.key, pendingFrames.then(async (frames) => {
         const frame = frames[index];
         if (!frame) {
           throw new Error(`ffmpeg returned no raw video frame for time ${entry.timeMs}ms`);
+        }
+        if (dir) {
+          await writeRgbaFrameToDisk(dir, entry.key, frame);
         }
         return frame;
       }));
@@ -911,6 +954,52 @@ function isUniformFrameSequence(timeMsList: number[]): boolean {
   }
 
   return timeMsList.every((timeMs, index) => index === 0 || Math.abs((timeMs - timeMsList[index - 1]!) - stepMs) <= 1);
+}
+
+// Persistent disk cache for decoded RGBA frames. Files are named by a hash of
+// the (path + mtime/size + time + dims) cache key, so they are valid across
+// processes and tasks and are safe to share between workers.
+const DISK_RGBA_MAGIC = 0x4f48_5631; // "OHV1"
+
+function diskCacheFilePath(dir: string, key: string): string {
+  return join(dir, `${createHash("sha256").update(key).digest("hex")}.ohrgba`);
+}
+
+async function readRgbaFrameFromDisk(dir: string, key: string): Promise<RgbaVideoFrame | undefined> {
+  try {
+    const buffer = await readFile(diskCacheFilePath(dir, key));
+    if (buffer.length < 12 || buffer.readUInt32LE(0) !== DISK_RGBA_MAGIC) {
+      return undefined;
+    }
+    const width = buffer.readUInt32LE(4);
+    const height = buffer.readUInt32LE(8);
+    const pixels = buffer.subarray(12);
+    if (width <= 0 || height <= 0 || pixels.length !== width * height * 4) {
+      return undefined;
+    }
+    return { width, height, pixels: Buffer.from(pixels) };
+  } catch {
+    // Cache miss or unreadable entry — fall back to decoding.
+    return undefined;
+  }
+}
+
+async function writeRgbaFrameToDisk(dir: string, key: string, frame: RgbaVideoFrame): Promise<void> {
+  try {
+    await mkdir(dir, { recursive: true });
+    const header = Buffer.alloc(12);
+    header.writeUInt32LE(DISK_RGBA_MAGIC, 0);
+    header.writeUInt32LE(frame.width, 4);
+    header.writeUInt32LE(frame.height, 8);
+    // Write to a unique temp file then rename, so concurrent workers never read
+    // a half-written entry.
+    const target = diskCacheFilePath(dir, key);
+    const tmp = `${target}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+    await writeFile(tmp, Buffer.concat([header, frame.pixels]));
+    await rename(tmp, target);
+  } catch {
+    // A best-effort cache: failures to persist must not break rendering.
+  }
 }
 
 async function buildVideoFrameCacheKey(src: string, timeMs: number, width?: number, height?: number, format = "png"): Promise<string> {

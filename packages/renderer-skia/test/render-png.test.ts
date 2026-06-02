@@ -391,6 +391,42 @@ test("renderRgbaFrame shares cached VideoLayer frames within a render task", asy
   assert.equal(count, "x");
 });
 
+test("VideoFrameCache persists RGBA frames to a shared disk cache across instances", async () => {
+  const { makeCache, dir, countFile, videoFile } = await createFakeVideoFrameCache();
+  const diskCacheDir = join(dir, "frame-cache");
+
+  // First instance decodes and persists the frame to disk.
+  const warm = makeCache({ diskCacheDir });
+  const first = await warm.getRgbaFrame(videoFile, 0, 2, 2);
+  assert.equal(await readFile(countFile, "utf8"), "x");
+
+  // A fresh instance with a cold in-memory map reads the frame from disk
+  // instead of invoking ffmpeg again (count stays "x").
+  const cold = makeCache({ diskCacheDir });
+  const second = await cold.getRgbaFrame(videoFile, 0, 2, 2);
+  assert.equal(await readFile(countFile, "utf8"), "x");
+
+  assert.deepEqual([...second.pixels], [...first.pixels]);
+  assert.equal(second.width, 2);
+  assert.equal(second.height, 2);
+});
+
+test("VideoFrameCache batch prefetch reuses disk-cached frames across instances", async () => {
+  const { makeCache, dir, countFile, videoFile } = await createFakeVideoFrameCache();
+  const diskCacheDir = join(dir, "frame-cache");
+
+  const warm = makeCache({ diskCacheDir });
+  await warm.prefetchRgbaFrames(videoFile, [0, 500, 1000], 2, 2);
+  assert.equal(await readFile(countFile, "utf8"), "x");
+
+  // A cold instance finds every frame on disk, so no new ffmpeg pass runs.
+  const cold = makeCache({ diskCacheDir });
+  await cold.prefetchRgbaFrames(videoFile, [0, 500, 1000], 2, 2);
+  const frame = await cold.getRgbaFrame(videoFile, 500, 2, 2);
+  assert.equal(await readFile(countFile, "utf8"), "x");
+  assert.equal(frame.pixels.length, 2 * 2 * 4);
+});
+
 async function createFakeVideoFrameCache() {
   const dir = await mkdtemp(join(tmpdir(), "openhyper-video-cache-"));
   const videoFile = join(dir, "clip.mp4");
@@ -432,11 +468,16 @@ for (let index = 0; index < frames; index += 1) {
     "utf8"
   );
 
+  const makeCache = (extra: { diskCacheDir?: string } = {}) => createVideoFrameCache({
+    ffmpegPath: process.execPath,
+    ffmpegArgsPrefix: [fakeFfmpeg],
+    ...extra
+  });
+
   return {
-    cache: createVideoFrameCache({
-      ffmpegPath: process.execPath,
-      ffmpegArgsPrefix: [fakeFfmpeg]
-    }),
+    cache: makeCache(),
+    makeCache,
+    dir,
     countFile,
     videoFile
   };

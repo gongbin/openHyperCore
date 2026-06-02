@@ -28,12 +28,13 @@ OpenHyperCore is an open-source TypeScript video rendering core for template vid
 - Asset probe/cache: provides metadata probing and task-level cache APIs for images, video, and audio.
 - Frame-level reuse: visually identical consecutive frames reuse the same RGBA buffer while preserving encoded frame order and PTS.
 - worker_threads render pool: supports `--workers N`, `--workers auto`, and `--worker-window N` to control parallelism and memory buffering.
+- Persistent frame cache: `--cache-dir <dir>` stores decoded RGBA frames on disk keyed by source + mtime/size + time + dimensions, so they are reused across renders and shared between worker processes.
 - Benchmark output: reports frame count, rendered/reused frames, worker settings, audio timeline, render time, encode time, total time, and peak RSS.
 
 ## Current Limits
 
 - This is still an alpha prototype, and APIs may continue to change.
-- VideoLayer is still correctness-first: it supports source-size probing, task-level raw RGBA frame caching, and windowed batched prefetch, but does not yet implement cross-task persistent cache, GOP-level decode scheduling, or shared video-frame cache across workers.
+- VideoLayer supports source-size probing, task-level raw RGBA caching, windowed batched prefetch, and (via `--cache-dir`) a cross-task persistent disk cache that is also shared between workers. Decode already runs as contiguous sequential batch passes (no per-frame seeks); explicit GOP/keyframe-aligned scheduling is still a future refinement.
 - Text layout supports multi-line wrapping, alignment, font registration, and emoji fallback, but not yet full rich-text runs (mixed styles within a line) or bidirectional/complex-script shaping.
 - Colour-emoji fallback depends on an emoji font being available on the host (auto-detected, or set via `registerEmojiFont`); without one, emoji fall back to the default typeface.
 - Transition helpers now support easing presets, but a composed timeline DSL and complex entrance/exit choreography are still future work.
@@ -106,6 +107,12 @@ You can specify an FFmpeg binary or extra prefix arguments:
 ```bash
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --ffmpeg-path /usr/local/bin/ffmpeg
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --ffmpeg-arg-prefix -hide_banner
+```
+
+`--cache-dir <dir>` enables a persistent on-disk RGBA frame cache. Decoded video frames are keyed by source path + mtime/size + time + dimensions, so the cache is reused across renders (cross-task) and shared between worker processes pointing at the same directory:
+
+```bash
+pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4 --workers auto --cache-dir /tmp/openhyper-cache
 ```
 
 ### bench

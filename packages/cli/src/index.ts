@@ -32,6 +32,7 @@ type RenderOptions = {
   ffmpegArgsPrefix: string[];
   workers?: WorkerSelection;
   workerWindow?: number;
+  diskCacheDir?: string;
 };
 
 type BenchOptions = Omit<RenderOptions, "out"> & {
@@ -71,6 +72,7 @@ type RenderRunJob = {
   sourceIndices: number[];
   frames: ResolvedFrame[];
   ffmpegPath?: string;
+  diskCacheDir?: string;
 };
 
 type FramePlan = {
@@ -219,6 +221,7 @@ function parseRenderOptions(args: string[]): RenderOptions {
   let ffmpegPath: string | undefined;
   let workers: WorkerSelection | undefined;
   let workerWindow: number | undefined;
+  let diskCacheDir: string | undefined;
   const ffmpegArgsPrefix: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -269,6 +272,12 @@ function parseRenderOptions(args: string[]): RenderOptions {
       continue;
     }
 
+    if (name === "--cache-dir") {
+      diskCacheDir = resolve(requiredArg(value, "--cache-dir value"));
+      index += 1;
+      continue;
+    }
+
     throw new Error(`Unknown option: ${name}`);
   }
 
@@ -280,7 +289,8 @@ function parseRenderOptions(args: string[]): RenderOptions {
     ffmpegPath,
     ffmpegArgsPrefix,
     workers,
-    workerWindow
+    workerWindow,
+    diskCacheDir
   }) as RenderOptions;
 }
 
@@ -293,6 +303,7 @@ function parseBenchOptions(args: string[]): BenchOptions {
   let ffmpegPath: string | undefined;
   let workers: WorkerSelection | undefined;
   let workerWindow: number | undefined;
+  let diskCacheDir: string | undefined;
   const ffmpegArgsPrefix: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -349,6 +360,12 @@ function parseBenchOptions(args: string[]): BenchOptions {
       continue;
     }
 
+    if (name === "--cache-dir") {
+      diskCacheDir = resolve(requiredArg(value, "--cache-dir value"));
+      index += 1;
+      continue;
+    }
+
     throw new Error(`Unknown option: ${name}`);
   }
 
@@ -361,7 +378,8 @@ function parseBenchOptions(args: string[]): BenchOptions {
     ffmpegPath,
     ffmpegArgsPrefix,
     workers,
-    workerWindow
+    workerWindow,
+    diskCacheDir
   }) as BenchOptions;
 }
 
@@ -585,7 +603,7 @@ async function renderVideo(composition: Composition, options: RenderOptions, aud
     encodeOptions.audioInputs = audio.audioInputs;
   }
 
-  await encodeRawVideoFrames(renderCompositionRgbaFrames(composition, stats, workerCount, workerWindow, options.ffmpegPath), encodeOptions);
+  await encodeRawVideoFrames(renderCompositionRgbaFrames(composition, stats, workerCount, workerWindow, options.ffmpegPath, options.diskCacheDir), encodeOptions);
   stats.peakRssBytes = Math.max(stats.peakRssBytes, process.memoryUsage().rss);
   const totalMs = performance.now() - startedAt;
 
@@ -637,9 +655,9 @@ function extractAudioInputs(composition: Composition): CompositionAudio {
   return { audioInputs };
 }
 
-async function* renderCompositionRgbaFrames(composition: Composition, stats?: RenderStats, workerCount = 1, workerWindow = workerCount * 2, ffmpegPath?: string): AsyncIterable<Buffer> {
+async function* renderCompositionRgbaFrames(composition: Composition, stats?: RenderStats, workerCount = 1, workerWindow = workerCount * 2, ffmpegPath?: string, diskCacheDir?: string): AsyncIterable<Buffer> {
   if (workerCount > 1) {
-    yield* renderCompositionRgbaFramesWithWorkers(composition, workerCount, workerWindow, stats, ffmpegPath);
+    yield* renderCompositionRgbaFramesWithWorkers(composition, workerCount, workerWindow, stats, ffmpegPath, diskCacheDir);
     return;
   }
 
@@ -647,7 +665,7 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
   let previousFrame: Buffer | undefined;
   let prefetchedUntilFrameIndex = 0;
   const totalFrames = frameCount(composition);
-  const videoFrameCache = createVideoFrameCache(ffmpegPath ? { ffmpegPath } : {});
+  const videoFrameCache = createVideoFrameCache(videoFrameCacheOptions(ffmpegPath, diskCacheDir));
   const rgbaRenderer = createRgbaFrameRenderer();
 
   try {
@@ -691,7 +709,7 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
   }
 }
 
-async function* renderCompositionRgbaFramesWithWorkers(composition: Composition, workerCount: number, workerWindow: number, stats?: RenderStats, ffmpegPath?: string): AsyncIterable<Buffer> {
+async function* renderCompositionRgbaFramesWithWorkers(composition: Composition, workerCount: number, workerWindow: number, stats?: RenderStats, ffmpegPath?: string, diskCacheDir?: string): AsyncIterable<Buffer> {
   const totalFrames = frameCount(composition);
   // `workerWindow` caps how many fresh frames are buffered (memory window) per
   // dispatch; spread across up to `workerCount` contiguous runs.
@@ -736,7 +754,7 @@ async function* renderCompositionRgbaFramesWithWorkers(composition: Composition,
           frameIndex += 1;
         }
         if (frames.length > 0) {
-          runs.push(omitUndefined({ runIndex: runs.length, sourceIndices, frames, ffmpegPath }) as RenderRunJob);
+          runs.push(omitUndefined({ runIndex: runs.length, sourceIndices, frames, ffmpegPath, diskCacheDir }) as RenderRunJob);
         }
       }
 
@@ -1047,6 +1065,18 @@ function requiredArg(value: string | undefined, name: string): string {
 
 function omitUndefined<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter((entry) => entry[1] !== undefined)) as T;
+}
+
+// Build VideoFrameCache options, omitting unset fields (exactOptionalPropertyTypes).
+function videoFrameCacheOptions(ffmpegPath?: string, diskCacheDir?: string): { ffmpegPath?: string; diskCacheDir?: string } {
+  const options: { ffmpegPath?: string; diskCacheDir?: string } = {};
+  if (ffmpegPath) {
+    options.ffmpegPath = ffmpegPath;
+  }
+  if (diskCacheDir) {
+    options.diskCacheDir = diskCacheDir;
+  }
+  return options;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
