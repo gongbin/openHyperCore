@@ -17,7 +17,11 @@ OpenHyperCore is an open-source TypeScript video rendering core for template vid
 - CanvasKit/Skia renderer: supports text, rectangles, circles, paths, images, and the first local VideoLayer implementation.
 - SVG debug stills and PNG stills: quickly inspect layout as SVG or render a real CanvasKit PNG frame.
 - CaptionLayer: supports timed captions, font size, color, background color, padding, alignment, and transform position.
-- Transition helpers: fade, slide, and scale presets that return reusable transform keyframes.
+- Transition helpers: fade, slide, and scale presets that return reusable transform keyframes, with named easing presets (`easeIn/easeOut/easeInOut/...`, plus custom easing functions) baked into sampled keyframes.
+- Layer fit modes: `ImageLayer.fit` and `VideoLayer.fit` support `fill` (stretch), `cover` (centre-crop), and `contain` (letterbox); circular video clips default to `cover`.
+- Text layout: multi-line text/captions with explicit `\n` and automatic word/CJK wrapping via `maxWidth`, plus per-line `align` (left/center/right).
+- Fonts: a named font registry (`registerFont(name, path)`) and per-character fallback stack with optional colour-emoji fallback (`registerEmojiFont`).
+- Subtitles: `parseSubtitles` reads SRT/WebVTT into timed cues and `subtitlesToCaptions` turns them into styled, time-bounded CaptionLayers.
 - FFmpeg encoder backend: pipes raw RGBA frames to FFmpeg and outputs H.264/yuv420p MP4; with audio layers it outputs AAC audio.
 - AudioLayer: supports single audio, multi-audio `amix`, start/end timing, volume, fade in, and fade out.
 - VideoLayer: extracts frames from local video by timeline time and draws them into the Skia canvas. Video layers with `width/height` use source-sized batched raw RGBA decoding, bypassing the PNG intermediate format and CanvasKit per-frame image decoding.
@@ -30,10 +34,9 @@ OpenHyperCore is an open-source TypeScript video rendering core for template vid
 
 - This is still an alpha prototype, and APIs may continue to change.
 - VideoLayer is still correctness-first: it supports source-size probing, task-level raw RGBA frame caching, and windowed batched prefetch, but does not yet implement cross-task persistent cache, GOP-level decode scheduling, or shared video-frame cache across workers.
-- `ImageLayer.fit` and `VideoLayer.fit` are reserved in the type system, but the current Skia renderer primarily stretches to `width/height`.
-- Text layout is still basic Skia font drawing. Complex line breaking, font registration, and emoji fallback are not complete.
-- CaptionLayer currently supports basic single-line captions. Automatic wrapping, advanced layout, and SRT/VTT import are not implemented yet.
-- Transition helpers currently output basic transform keyframes. Easing presets, a composed timeline DSL, and complex entrance/exit choreography are still future work.
+- Text layout supports multi-line wrapping, alignment, font registration, and emoji fallback, but not yet full rich-text runs (mixed styles within a line) or bidirectional/complex-script shaping.
+- Colour-emoji fallback depends on an emoji font being available on the host (auto-detected, or set via `registerEmojiFont`); without one, emoji fall back to the default typeface.
+- Transition helpers now support easing presets, but a composed timeline DSL and complex entrance/exit choreography are still future work.
 - HTTP service APIs, visual editor, and release packaging are not implemented yet.
 
 ## Requirements

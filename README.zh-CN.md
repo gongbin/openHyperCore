@@ -15,7 +15,11 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 - CanvasKit/Skia 渲染后端：支持文本、矩形/圆形/path、图片和第一版本地 VideoLayer。
 - SVG debug still 与 PNG still：可快速检查单帧布局，也可生成真实 CanvasKit PNG。
 - CaptionLayer：支持时间段字幕、字体大小、颜色、背景色、padding、对齐和 transform 位置。
-- 转场 helper：提供 fade、slide、scale preset，并输出可复用 Scene Graph transform keyframes。
+- 转场 helper：提供 fade、slide、scale preset，并输出可复用 Scene Graph transform keyframes；支持 easing preset（`easeIn/easeOut/easeInOut/...` 及自定义缓动函数），通过采样烘焙为关键帧。
+- 图层 fit 模式：`ImageLayer.fit` 与 `VideoLayer.fit` 支持 `fill`（拉伸）、`cover`（居中裁切）、`contain`（letterbox 留边）；圆形视频裁切默认 `cover`。
+- 文本排版：text/caption 支持显式 `\n` 与按 `maxWidth` 自动换行（Latin 按词、CJK 按字），并支持逐行 `align`（left/center/right）。
+- 字体：提供命名字体注册表（`registerFont(name, path)`）与逐字符 fallback 字体栈，支持彩色 emoji fallback（`registerEmojiFont`）。
+- 字幕：`parseSubtitles` 解析 SRT/WebVTT 为带时间的 cue，`subtitlesToCaptions` 生成带样式、按时间显示的 CaptionLayer。
 - FFmpeg 编码后端：通过 raw RGBA stdin pipe 输出 H.264/yuv420p MP4；有音频时输出 AAC。
 - AudioLayer：支持单音频、多音频 amix、start/end、volume、fadeIn/fadeOut。
 - VideoLayer：支持从本地视频按时间点抽帧并贴入 Skia 画布；有 `width/height` 的视频层会按源视频尺寸批量解码 raw RGBA，绕过 PNG 中间格式与 CanvasKit 每帧图片解码。
@@ -28,10 +32,9 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 
 - 仍是 alpha 工程原型，API 可能继续调整。
 - VideoLayer 目前仍以 correctness-first 为主：已具备源尺寸探测、任务级 raw RGBA 帧缓存和窗口化批量预取，但尚未做跨任务持久缓存、GOP 级解码调度或 worker 间共享视频帧缓存。
-- `ImageLayer.fit` 与 `VideoLayer.fit` 已预留类型，但当前 Skia 绘制主要按 `width/height` 拉伸绘制。
-- 文本排版仍是基础 Skia font 绘制，尚未补齐复杂断行、字体注册和 emoji fallback。
-- CaptionLayer 当前为单行基础字幕，尚未实现自动换行、复杂排版和 SRT/VTT 导入。
-- 转场 helper 当前输出基础 transform keyframes，尚未实现 easing preset、组合时间线 DSL 或复杂出入场编排。
+- 文本排版已支持多行换行、对齐、字体注册和 emoji fallback，但尚未支持行内富文本（单行内混合样式）或双向/复杂文种 shaping。
+- 彩色 emoji fallback 依赖宿主机存在 emoji 字体（自动探测，或通过 `registerEmojiFont` 指定）；若没有，则 emoji 回退到默认字体。
+- 转场 helper 已支持 easing preset，但组合时间线 DSL 与复杂出入场编排仍是后续工作。
 - 尚未实现 HTTP 服务、可视化编辑器和发布打包流程。
 
 ## 环境要求
