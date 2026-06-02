@@ -16,6 +16,7 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 - SVG debug still 与 PNG still：可快速检查单帧布局，也可生成真实 CanvasKit PNG。
 - CaptionLayer：支持时间段字幕、字体大小、颜色、背景色、padding、对齐和 transform 位置。
 - 转场 helper：提供 fade、slide、scale preset，并输出可复用 Scene Graph transform keyframes；支持 easing preset（`easeIn/easeOut/easeInOut/...` 及自定义缓动函数），通过采样烘焙为关键帧。
+- 时间线 DSL：`composeTimeline` 可将同一属性的多段动画按时间串联（如同一图层的入场淡入 + 出场淡出），`delayTransition` 可整体平移 transform 时间用于错峰编排。
 - 图层 fit 模式：`ImageLayer.fit` 与 `VideoLayer.fit` 支持 `fill`（拉伸）、`cover`（居中裁切）、`contain`（letterbox 留边）；圆形视频裁切默认 `cover`。
 - 文本排版：text/caption 支持显式 `\n` 与按 `maxWidth` 自动换行（Latin 按词、CJK 按字），并支持逐行 `align`（left/center/right）。
 - 字体：提供命名字体注册表（`registerFont(name, path)`）与逐字符 fallback 字体栈，支持彩色 emoji fallback（`registerEmojiFont`）。
@@ -35,7 +36,7 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 - VideoLayer 已具备源尺寸探测、任务级 raw RGBA 帧缓存、窗口化批量预取，并通过 `--cache-dir` 支持跨任务持久磁盘缓存（同时在 worker 间共享）。解码已按连续顺序批量 pass 进行（无逐帧 seek）；显式的 GOP/关键帧对齐调度仍是后续优化。
 - 文本排版已支持多行换行、对齐、字体注册和 emoji fallback，但尚未支持行内富文本（单行内混合样式）或双向/复杂文种 shaping。
 - 彩色 emoji fallback 依赖宿主机存在 emoji 字体（自动探测，或通过 `registerEmojiFont` 指定）；若没有，则 emoji 回退到默认字体。
-- 转场 helper 已支持 easing preset，但组合时间线 DSL 与复杂出入场编排仍是后续工作。
+- 转场 helper 已支持 easing preset 与组合时间线 DSL（`composeTimeline`/`delayTransition`）；更高层的 scene/track 时间线抽象仍是后续工作。
 - 尚未实现 HTTP 服务、可视化编辑器和发布打包流程。
 
 ## 环境要求

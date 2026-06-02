@@ -1,4 +1,4 @@
-import type { LayerTransform, ScalarKeyframe } from "./types.ts";
+import type { AnimatedScalar, LayerTransform, ScalarKeyframe } from "./types.ts";
 
 // Named easing presets. The render engine only interpolates linearly between
 // keyframes, so non-linear easings are baked by sampling the curve into a
@@ -96,10 +96,12 @@ export function scaleTransition(options: ScaleTransitionOptions): LayerTransform
   };
 }
 
+const TRANSFORM_PROPERTIES = ["x", "y", "scale", "rotate", "opacity"] as const;
+
 export function mergeTransforms(...transforms: LayerTransform[]): LayerTransform {
   const merged: LayerTransform = {};
   for (const transform of transforms) {
-    for (const property of ["x", "y", "scale", "rotate", "opacity"] as const) {
+    for (const property of TRANSFORM_PROPERTIES) {
       const value = transform[property];
       if (value === undefined) {
         continue;
@@ -111,6 +113,44 @@ export function mergeTransforms(...transforms: LayerTransform[]): LayerTransform
     }
   }
   return merged;
+}
+
+function toKeyframes(value: AnimatedScalar): ScalarKeyframe[] {
+  return typeof value === "number" ? [{ timeMs: 0, value }] : value;
+}
+
+// Timeline DSL: compose several transitions of the SAME property over time
+// into one keyframe track — e.g. an entrance fade-in followed by an exit
+// fade-out on `opacity`. Unlike `mergeTransforms`, overlapping properties are
+// concatenated (sorted by time) instead of rejected, so you can choreograph
+// multi-stage entrance/exit animations on a single layer.
+export function composeTimeline(...transforms: LayerTransform[]): LayerTransform {
+  const out: LayerTransform = {};
+  for (const property of TRANSFORM_PROPERTIES) {
+    const tracks = transforms
+      .map((transform) => transform[property])
+      .filter((value): value is AnimatedScalar => value !== undefined);
+    if (tracks.length === 0) {
+      continue;
+    }
+    const frames = tracks.flatMap(toKeyframes).sort((a, b) => a.timeMs - b.timeMs);
+    out[property] = frames;
+  }
+  return out;
+}
+
+// Shift every keyframe of a transform by `offsetMs` — handy for staggering a
+// shared entrance across multiple layers, or delaying an exit.
+export function delayTransition(transform: LayerTransform, offsetMs: number): LayerTransform {
+  const out: LayerTransform = {};
+  for (const property of TRANSFORM_PROPERTIES) {
+    const value = transform[property];
+    if (value === undefined) {
+      continue;
+    }
+    out[property] = toKeyframes(value).map((frame) => ({ timeMs: frame.timeMs + offsetMs, value: frame.value }));
+  }
+  return out;
 }
 
 function keyframes(options: TimedTransitionOptions, from: number, to: number): ScalarKeyframe[] {

@@ -18,6 +18,7 @@ OpenHyperCore is an open-source TypeScript video rendering core for template vid
 - SVG debug stills and PNG stills: quickly inspect layout as SVG or render a real CanvasKit PNG frame.
 - CaptionLayer: supports timed captions, font size, color, background color, padding, alignment, and transform position.
 - Transition helpers: fade, slide, and scale presets that return reusable transform keyframes, with named easing presets (`easeIn/easeOut/easeInOut/...`, plus custom easing functions) baked into sampled keyframes.
+- Timeline DSL: `composeTimeline` chains multiple animations of the same property over time (e.g. entrance fade-in + exit fade-out on one layer), and `delayTransition` shifts a transform in time for staggering.
 - Layer fit modes: `ImageLayer.fit` and `VideoLayer.fit` support `fill` (stretch), `cover` (centre-crop), and `contain` (letterbox); circular video clips default to `cover`.
 - Text layout: multi-line text/captions with explicit `\n` and automatic word/CJK wrapping via `maxWidth`, plus per-line `align` (left/center/right).
 - Fonts: a named font registry (`registerFont(name, path)`) and per-character fallback stack with optional colour-emoji fallback (`registerEmojiFont`).
@@ -37,7 +38,7 @@ OpenHyperCore is an open-source TypeScript video rendering core for template vid
 - VideoLayer supports source-size probing, task-level raw RGBA caching, windowed batched prefetch, and (via `--cache-dir`) a cross-task persistent disk cache that is also shared between workers. Decode already runs as contiguous sequential batch passes (no per-frame seeks); explicit GOP/keyframe-aligned scheduling is still a future refinement.
 - Text layout supports multi-line wrapping, alignment, font registration, and emoji fallback, but not yet full rich-text runs (mixed styles within a line) or bidirectional/complex-script shaping.
 - Colour-emoji fallback depends on an emoji font being available on the host (auto-detected, or set via `registerEmojiFont`); without one, emoji fall back to the default typeface.
-- Transition helpers now support easing presets, but a composed timeline DSL and complex entrance/exit choreography are still future work.
+- Transition helpers support easing presets and a composed timeline DSL (`composeTimeline`/`delayTransition`); a higher-level scene/track timeline abstraction is still future work.
 - HTTP service APIs, visual editor, and release packaging are not implemented yet.
 
 ## Requirements
