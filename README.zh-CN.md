@@ -2,7 +2,7 @@
 
 OpenHyperCore 是一个面向低成本 CPU 服务器的视频剪辑渲染引擎原型。它用 TypeScript 描述 Scene Graph，使用 CanvasKit/Skia 做帧渲染，并通过 FFmpeg 输出 H.264/AAC MP4，目标是在不依赖 Chromium、无 GPU 的环境中提供比浏览器渲染链路更轻量、更可控的视频生成能力。
 
-当前项目处于 alpha 阶段，核心 CLI 与渲染管线已经可用，但还不是完整的 HyperFrames 替代品。已实现的能力覆盖图文合成、字幕层、基础转场 preset、PNG still、无音频 MP4、音频合流、多音频混音、VideoLayer、本地素材 probe/cache、raw RGBA 视频帧批量解码、增量帧复用、worker_threads 帧级并行和 AWS 2CPU/2G benchmark 验证；服务化接口和发布打包流程仍在 Roadmap 中。
+当前项目处于 alpha 阶段，核心 CLI 与渲染管线已经可用，但还不是完整的 HyperFrames 替代品。已实现的能力覆盖图文合成、字幕层、可复用电影感特效 helper、场景时间线编排、PNG still、无音频 MP4、音频合流、多音频混音、VideoLayer、本地素材 probe/cache、raw RGBA 视频帧批量解码、增量帧复用、worker_threads 帧级并行和 AWS 2CPU/2G benchmark 验证；服务化接口和发布打包流程仍在 Roadmap 中。
 
 ## 开源
 
@@ -17,6 +17,8 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 - CaptionLayer：支持时间段字幕、字体大小、颜色、背景色、padding、对齐和 transform 位置。
 - 转场 helper：提供 fade、slide、scale preset，并输出可复用 Scene Graph transform keyframes；支持 easing preset（`easeIn/easeOut/easeInOut/...` 及自定义缓动函数），通过采样烘焙为关键帧。
 - 时间线 DSL：`composeTimeline` 可将同一属性的多段动画按时间串联（如同一图层的入场淡入 + 出场淡出），`delayTransition` 可整体平移 transform 时间用于错峰编排。
+- 电影感特效 helper：`cinematicBars`、`flashTransitionLayer`、`speedLineBurst`、`glitchTitle` 可生成片头/转场常用 layer stack，减少手写大量图层。
+- 场景时间线 builder：`createTimeline(...).scene(...).transition(...).build()` 可顺序编排命名场景和转场，并返回 Composition 与 timing markers。
 - 图层 fit 模式：`ImageLayer.fit` 与 `VideoLayer.fit` 支持 `fill`（拉伸）、`cover`（居中裁切）、`contain`（letterbox 留边）；圆形视频裁切默认 `cover`。
 - 文本排版：text/caption 支持显式 `\n` 与按 `maxWidth` 自动换行（Latin 按词、CJK 按字），并支持逐行 `align`（left/center/right）。
 - 字体：提供命名字体注册表（`registerFont(name, path)`）与逐字符 fallback 字体栈，支持彩色 emoji fallback（`registerEmojiFont`）。
@@ -36,7 +38,7 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 - VideoLayer 已具备源尺寸探测、任务级 raw RGBA 帧缓存、窗口化批量预取，并通过 `--cache-dir` 支持跨任务持久磁盘缓存（同时在 worker 间共享）。解码已按连续顺序批量 pass 进行（无逐帧 seek）；显式的 GOP/关键帧对齐调度仍是后续优化。
 - 文本排版已支持多行换行、对齐、字体注册和 emoji fallback，但尚未支持行内富文本（单行内混合样式）或双向/复杂文种 shaping。
 - 彩色 emoji fallback 依赖宿主机存在 emoji 字体（自动探测，或通过 `registerEmojiFont` 指定）；若没有，则 emoji 回退到默认字体。
-- 转场 helper 已支持 easing preset 与组合时间线 DSL（`composeTimeline`/`delayTransition`）；更高层的 scene/track 时间线抽象仍是后续工作。
+- 转场 helper 已支持 easing preset、组合属性时间线 DSL（`composeTimeline`/`delayTransition`）与轻量场景时间线 builder；更完整的 track-based 编辑时间线仍是后续工作。
 - 尚未实现 HTTP 服务、可视化编辑器和发布打包流程。
 
 ## 环境要求
@@ -61,6 +63,7 @@ pnpm cli probe examples/simple-video.ts
 pnpm cli still examples/simple-video.ts --t 1 --out /tmp/openhyper-frame.svg
 pnpm cli still examples/simple-video.ts --t 1 --out /tmp/openhyper-frame.png --format png
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4
+pnpm cli render examples/effects-opener.ts --out /tmp/openhyper-effects.mp4
 pnpm cli bench examples/simple-video.ts --out /tmp/openhyper-bench.json --video-out /tmp/openhyper-bench.mp4
 pnpm cli bench-suite examples/bench/animated-workload.ts --static examples/bench/static-reuse.ts --out /tmp/openhyper-bench-suite.json --video-dir /tmp/openhyper-bench-suite
 ```
@@ -310,6 +313,31 @@ import {
 }
 ```
 
+特效 / 时间线片头示例：
+
+```ts
+import {
+  cinematicBars,
+  createTimeline,
+  flashTransitionLayer,
+  glitchTitle,
+  speedLineBurst
+} from "openhypercore/core";
+
+const timeline = createTimeline({ width: 1280, height: 720, fps: 30 })
+  .scene("intro", 1600, ({ startMs, endMs, width, height }) => [
+    ...speedLineBurst({ width, height, startMs, endMs, count: 18, seed: 9 }),
+    ...cinematicBars({ width, height, startMs, endMs }),
+    ...glitchTitle({ text: "METRO RUN", startMs, endMs, x: 120, y: 340, size: 96 })
+  ])
+  .transition("flash", 240, ({ startMs, width, height }) => [
+    flashTransitionLayer({ width, height, startMs, durationMs: 240 })
+  ])
+  .build();
+
+export default timeline.composition;
+```
+
 资产 probe/cache 示例：
 
 ```ts
@@ -334,7 +362,7 @@ const rgba = await renderRgbaFrame(frame, { videoFrameCache });
 
 ```text
 packages/
-  core/             Scene Graph IR、Composition 校验、调度器、关键帧求值
+  core/             Scene Graph IR、Composition 校验、调度器、关键帧、特效/时间线 helper
   jsx-runtime/      自定义 JSX runtime，输出 IR
   renderer-svg/     SVG debug still 后端
   renderer-skia/    CanvasKit PNG/RGBA 渲染后端
@@ -350,11 +378,12 @@ examples/bench/     M4.1 benchmark fixtures
 - M3.5：已完成 `packages/assets`，提供图片/视频/音频 probe、尺寸/时长元信息和任务级缓存。
 - M3.6：已完成任务级视频帧缓存、窗口化批量预取和 raw RGBA VideoLayer 解码，避免同一视频/同一时间点重复 FFmpeg 抽帧，并绕过 PNG 中间格式。
 - M3.7：已完成基础 CaptionLayer，支持时间段文本、样式和位置。
-- M3.8：已完成基础转场 preset：fade、slide、scale，并输出可复用 Scene Graph helper。
+- M3.8：已完成转场 preset、easing、组合 transform 时间线、电影感特效 helper 与轻量场景时间线 builder。
 - M4.1：已完成 benchmark fixtures 与 `bench-suite`，对比 single-thread、worker、worker+window、静态复用路径。
 - M4.2：已在 AWS 2CPU/2G 服务器上运行 benchmark，验证 1080p30/5s 与 <800MB 内存目标。
 - M4.3：输出 benchmark 对比摘要 JSON，便于 CI 和服务器验收。
-- M5：补齐项目模板、用户文档、错误提示和发布打包流程。
+- M4.4：完成持久磁盘视频帧缓存加固，并修复部分缓存命中时 batch miss 顺序保持问题。
+- M5：补齐项目模板、用户文档、错误提示、更完整 track-based 时间线和发布打包流程。
 
 ## 目标
 

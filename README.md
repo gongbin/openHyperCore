@@ -4,7 +4,7 @@
 
 OpenHyperCore is a lightweight video editing and rendering engine prototype for low-cost CPU servers. It describes video compositions as a TypeScript scene graph, renders frames with CanvasKit/Skia, and writes H.264/AAC MP4 output through FFmpeg. The goal is to provide a rendering pipeline that is lighter, more controllable, and easier to deploy than browser-based renderers, without requiring Chromium or a GPU.
 
-The project is currently in alpha. The core CLI and rendering pipeline are usable, but OpenHyperCore is not yet a complete HyperFrames replacement. Implemented capabilities include graphic/text composition, captions, basic transition helpers, PNG still export, silent MP4 rendering, audio muxing, multi-audio mixing, VideoLayer, local asset probe/cache, batched raw RGBA video-frame decoding, incremental frame reuse, worker_threads frame rendering, and AWS 2CPU/2G benchmark validation. HTTP service APIs and release packaging remain on the roadmap.
+The project is currently in alpha. The core CLI and rendering pipeline are usable, but OpenHyperCore is not yet a complete HyperFrames replacement. Implemented capabilities include graphic/text composition, captions, reusable cinematic effect helpers, timeline composition, PNG still export, silent MP4 rendering, audio muxing, multi-audio mixing, VideoLayer, local asset probe/cache, batched raw RGBA video-frame decoding, incremental frame reuse, worker_threads frame rendering, and AWS 2CPU/2G benchmark validation. HTTP service APIs and release packaging remain on the roadmap.
 
 ## Open Source
 
@@ -19,6 +19,8 @@ OpenHyperCore is an open-source TypeScript video rendering core for template vid
 - CaptionLayer: supports timed captions, font size, color, background color, padding, alignment, and transform position.
 - Transition helpers: fade, slide, and scale presets that return reusable transform keyframes, with named easing presets (`easeIn/easeOut/easeInOut/...`, plus custom easing functions) baked into sampled keyframes.
 - Timeline DSL: `composeTimeline` chains multiple animations of the same property over time (e.g. entrance fade-in + exit fade-out on one layer), and `delayTransition` shifts a transform in time for staggering.
+- Cinematic effect helpers: `cinematicBars`, `flashTransitionLayer`, `speedLineBurst`, and `glitchTitle` generate reusable intro/transition layer stacks for high-energy reels without hand-writing dozens of layers.
+- Scene timeline builder: `createTimeline(...).scene(...).transition(...).build()` lays out named scenes and transitions sequentially, returning both a ready Composition and timing markers.
 - Layer fit modes: `ImageLayer.fit` and `VideoLayer.fit` support `fill` (stretch), `cover` (centre-crop), and `contain` (letterbox); circular video clips default to `cover`.
 - Text layout: multi-line text/captions with explicit `\n` and automatic word/CJK wrapping via `maxWidth`, plus per-line `align` (left/center/right).
 - Fonts: a named font registry (`registerFont(name, path)`) and per-character fallback stack with optional colour-emoji fallback (`registerEmojiFont`).
@@ -38,7 +40,7 @@ OpenHyperCore is an open-source TypeScript video rendering core for template vid
 - VideoLayer supports source-size probing, task-level raw RGBA caching, windowed batched prefetch, and (via `--cache-dir`) a cross-task persistent disk cache that is also shared between workers. Decode already runs as contiguous sequential batch passes (no per-frame seeks); explicit GOP/keyframe-aligned scheduling is still a future refinement.
 - Text layout supports multi-line wrapping, alignment, font registration, and emoji fallback, but not yet full rich-text runs (mixed styles within a line) or bidirectional/complex-script shaping.
 - Colour-emoji fallback depends on an emoji font being available on the host (auto-detected, or set via `registerEmojiFont`); without one, emoji fall back to the default typeface.
-- Transition helpers support easing presets and a composed timeline DSL (`composeTimeline`/`delayTransition`); a higher-level scene/track timeline abstraction is still future work.
+- Transition helpers support easing presets, a composed property timeline DSL (`composeTimeline`/`delayTransition`), and a lightweight scene timeline builder. A richer track-based editor timeline is still future work.
 - HTTP service APIs, visual editor, and release packaging are not implemented yet.
 
 ## Requirements
@@ -63,6 +65,7 @@ pnpm cli probe examples/simple-video.ts
 pnpm cli still examples/simple-video.ts --t 1 --out /tmp/openhyper-frame.svg
 pnpm cli still examples/simple-video.ts --t 1 --out /tmp/openhyper-frame.png --format png
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4
+pnpm cli render examples/effects-opener.ts --out /tmp/openhyper-effects.mp4
 pnpm cli bench examples/simple-video.ts --out /tmp/openhyper-bench.json --video-out /tmp/openhyper-bench.mp4
 pnpm cli bench-suite examples/bench/animated-workload.ts --static examples/bench/static-reuse.ts --out /tmp/openhyper-bench-suite.json --video-dir /tmp/openhyper-bench-suite
 ```
@@ -312,6 +315,31 @@ import {
 }
 ```
 
+Effect/timeline opener example:
+
+```ts
+import {
+  cinematicBars,
+  createTimeline,
+  flashTransitionLayer,
+  glitchTitle,
+  speedLineBurst
+} from "openhypercore/core";
+
+const timeline = createTimeline({ width: 1280, height: 720, fps: 30 })
+  .scene("intro", 1600, ({ startMs, endMs, width, height }) => [
+    ...speedLineBurst({ width, height, startMs, endMs, count: 18, seed: 9 }),
+    ...cinematicBars({ width, height, startMs, endMs }),
+    ...glitchTitle({ text: "METRO RUN", startMs, endMs, x: 120, y: 340, size: 96 })
+  ])
+  .transition("flash", 240, ({ startMs, width, height }) => [
+    flashTransitionLayer({ width, height, startMs, durationMs: 240 })
+  ])
+  .build();
+
+export default timeline.composition;
+```
+
 Asset probe/cache example:
 
 ```ts
@@ -336,7 +364,7 @@ const rgba = await renderRgbaFrame(frame, { videoFrameCache });
 
 ```text
 packages/
-  core/             Scene Graph IR, composition validation, scheduler, keyframe evaluation
+  core/             Scene Graph IR, composition validation, scheduler, keyframes, effects/timeline helpers
   jsx-runtime/      Custom JSX runtime that emits IR
   renderer-svg/     SVG debug still backend
   renderer-skia/    CanvasKit PNG/RGBA renderer backend
@@ -352,11 +380,12 @@ examples/bench/     M4.1 benchmark fixtures
 - M3.5: completed `packages/assets`, with image/video/audio probe, size/duration metadata, and task-level cache.
 - M3.6: completed task-level video frame cache, windowed batch prefetch, and raw RGBA VideoLayer decoding to avoid repeated FFmpeg extraction and bypass the PNG intermediate format.
 - M3.7: completed basic CaptionLayer with timed text, style, and position.
-- M3.8: completed basic transition presets: fade, slide, scale, and reusable scene-graph helpers.
+- M3.8: completed transition presets, easing, composed transform timelines, cinematic effect helpers, and the lightweight scene timeline builder.
 - M4.1: completed benchmark fixtures and `bench-suite`, comparing single-thread, worker, worker+window, and static-reuse paths.
 - M4.2: completed AWS 2CPU/2G benchmark validation for the 1080p30/5s and <800MB memory targets.
 - M4.3: completed benchmark summary JSON output for CI and server acceptance checks.
-- M5: fill in project templates, user documentation, error messages, and release packaging.
+- M4.4: completed persistent disk video-frame cache hardening and batch-order preservation for partial cache hits.
+- M5: fill in project templates, user documentation, error messages, richer track-based timelines, and release packaging.
 
 ## Goal
 

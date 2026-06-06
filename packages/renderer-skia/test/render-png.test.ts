@@ -427,6 +427,19 @@ test("VideoFrameCache batch prefetch reuses disk-cached frames across instances"
   assert.equal(frame.pixels.length, 2 * 2 * 4);
 });
 
+test("VideoFrameCache preserves batch order when some disk cached frames are missing", async () => {
+  const { makeCache, dir, countFile, videoFile } = await createFakeVideoFrameCache();
+  const diskCacheDir = join(dir, "frame-cache");
+
+  const warm = makeCache({ diskCacheDir });
+  await warm.getRgbaFrame(videoFile, 500, 2, 2);
+  assert.equal(await readFile(countFile, "utf8"), "x");
+
+  const cold = makeCache({ diskCacheDir });
+  await cold.prefetchRgbaFrames(videoFile, [0, 500, 1000], 2, 2);
+  assert.equal(await readFile(countFile, "utf8"), "xx");
+});
+
 async function createFakeVideoFrameCache() {
   const dir = await mkdtemp(join(tmpdir(), "openhyper-video-cache-"));
   const videoFile = join(dir, "clip.mp4");

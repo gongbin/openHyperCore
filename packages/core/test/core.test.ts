@@ -1,16 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  cinematicBars,
   composeTimeline,
+  createTimeline,
   defineComposition,
   delayTransition,
   fadeTransition,
+  flashTransitionLayer,
+  glitchTitle,
   frameCount,
   mergeTransforms,
   parseSubtitles,
   resolveFrame,
   scaleTransition,
   slideTransition,
+  speedLineBurst,
   subtitlesToCaptions,
   timeForFrame
 } from "../src/index.ts";
@@ -252,6 +257,53 @@ test("delayTransition shifts every keyframe in time", () => {
     { timeMs: 500, value: 0 },
     { timeMs: 700, value: 1 }
   ]);
+});
+
+test("effect helpers build cinematic intro and transition layers", () => {
+  const bars = cinematicBars({ width: 1280, height: 720, startMs: 0, endMs: 1200, barHeight: 84 });
+  assert.equal(bars.length, 2);
+  assert.deepEqual(bars.map((layer) => layer.id), ["cinematic-bars-top", "cinematic-bars-bottom"]);
+  assert.equal(bars[1]!.transform?.y, 720 - 84);
+
+  const flash = flashTransitionLayer({ id: "hit", width: 1280, height: 720, startMs: 1000, durationMs: 260, color: "#ffffff", peakOpacity: 0.9 });
+  assert.equal(flash.id, "hit");
+  assert.equal(flash.endMs, 1260);
+  assert.deepEqual((flash.transform?.opacity as { timeMs: number; value: number }[]).map((frame) => frame.timeMs), [1000, 1052, 1130, 1260]);
+
+  const lines = speedLineBurst({ width: 1280, height: 720, startMs: 1200, endMs: 2600, count: 6, seed: 7 });
+  assert.equal(lines.length, 6);
+  assert.ok(lines.every((layer) => layer.type === "shape" && layer.shape === "rect"));
+  assert.equal(lines[0]!.startMs, 1200);
+  assert.equal(lines.at(-1)!.endMs, 2600);
+
+  const title = glitchTitle({ text: "METRO RUN", startMs: 0, endMs: 1500, x: 120, y: 300, size: 96 });
+  assert.ok(title.length >= 4);
+  assert.equal(title[0]!.type, "text");
+  assert.equal(title[0]!.text, "METRO RUN");
+});
+
+test("createTimeline composes scenes and transitions in sequence", () => {
+  const timeline = createTimeline({ width: 1280, height: 720, fps: 30 })
+    .scene("intro", 1200, ({ startMs, endMs, width, height }) => [
+      ...cinematicBars({ width, height, startMs, endMs }),
+      ...glitchTitle({ text: "OPEN", startMs, endMs, x: 120, y: 320, size: 88 })
+    ])
+    .transition("flash", 240, ({ startMs, width, height }) => [
+      flashTransitionLayer({ width, height, startMs, durationMs: 240 })
+    ])
+    .scene("main", 1000, ({ startMs, endMs, width, height }) => [
+      ...speedLineBurst({ width, height, startMs, endMs, count: 4, seed: 3 })
+    ])
+    .build();
+
+  assert.equal(timeline.durationMs, 2440);
+  assert.ok(timeline.layers.length > 6);
+  assert.equal(timeline.markers.intro!.startMs, 0);
+  assert.equal(timeline.markers.intro!.endMs, 1200);
+  assert.equal(timeline.markers.flash!.startMs, 1200);
+  assert.equal(timeline.markers.main!.startMs, 1440);
+  assert.equal(timeline.composition.type, "composition");
+  assert.equal(timeline.composition.durationMs, 2440);
 });
 
 test("mergeTransforms rejects duplicate animated properties", () => {

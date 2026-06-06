@@ -189,14 +189,15 @@ export class VideoFrameCache {
     const dir = this.#options.diskCacheDir;
     const missing: Array<{ key: string; timeMs: number }> = [];
     if (dir) {
-      await Promise.all(candidates.map(async (entry) => {
+      const misses = await Promise.all(candidates.map(async (entry) => {
         const onDisk = await readRgbaFrameFromDisk(dir, entry.key);
         if (onDisk) {
           this.#rgbaEntries.set(entry.key, Promise.resolve(onDisk));
-        } else {
-          missing.push(entry);
+          return undefined;
         }
+        return entry;
       }));
+      missing.push(...misses.filter((entry): entry is { key: string; timeMs: number } => entry !== undefined));
     } else {
       missing.push(...candidates);
     }
