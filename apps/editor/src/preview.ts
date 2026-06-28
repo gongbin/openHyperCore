@@ -112,13 +112,45 @@ function drawSample(ck: CK, canvas: Canvas, layer: ResolvedLayer): void {
     drawShape(ck, canvas, layer);
   } else if (layer.type === "group") {
     drawGroup(ck, canvas, layer);
+  } else if (layer.type === "text" || layer.type === "caption" || layer.type === "image" || layer.type === "video") {
+    // Preview can't load fonts/decode media in-browser yet, so show a labelled
+    // placeholder where the layer sits; the final MP4 (via the service) renders
+    // it for real.
+    drawPlaceholder(ck, canvas, layer);
   }
-  // text/image/video are preview-skipped (rendered fully by the service).
 
   if (wrapped) {
     canvas.restore();
   }
   canvas.restore();
+}
+
+function drawPlaceholder(ck: CK, canvas: Canvas, layer: ResolvedLayer): void {
+  let w = 160;
+  let h = 60;
+  if (layer.type === "image" || layer.type === "video") {
+    w = layer.width ?? 320;
+    h = layer.height ?? 180;
+  } else if (layer.type === "text" || layer.type === "caption") {
+    const size = layer.size ?? (layer.type === "caption" ? 32 : 16);
+    w = Math.max(40, (layer.text.length || 4) * size * 0.6);
+    h = size * 1.3;
+  }
+  const opacity = layer.transform.opacity;
+  const fill = new ck.Paint();
+  fill.setColor(ck.Color(120, 140, 170, 0.18 * opacity));
+  canvas.drawRect(ck.XYWHRect(0, layer.type === "text" || layer.type === "caption" ? -h * 0.8 : 0, w, h), fill);
+  fill.delete();
+  const stroke = new ck.Paint();
+  stroke.setStyle(ck.PaintStyle.Stroke);
+  stroke.setStrokeWidth(1);
+  stroke.setColor(ck.Color(150, 170, 200, 0.5 * opacity));
+  const dash = ck.PathEffect.MakeDash([6, 4], 0);
+  if (dash) {
+    stroke.setPathEffect(dash);
+  }
+  canvas.drawRect(ck.XYWHRect(0, layer.type === "text" || layer.type === "caption" ? -h * 0.8 : 0, w, h), stroke);
+  stroke.delete();
 }
 
 function drawGroup(ck: CK, canvas: Canvas, group: Extract<ResolvedLayer, { type: "group" }>): void {
