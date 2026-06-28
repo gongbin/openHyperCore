@@ -19,9 +19,10 @@ use skia_safe::canvas::{SaveLayerRec, SrcRectConstraint};
 use skia_safe::font::Edging;
 use skia_safe::paint::{Cap, Join};
 use skia_safe::{
-    gradient_shader, image_filters, BlendMode, BlurStyle, Canvas, ClipOp, Color, Data, Font,
-    FontMgr, Image, MaskFilter, Paint, PaintStyle, Path, PathEffect, PathFillType,
-    Point, RRect, Rect, Shader, TileMode, Typeface,
+    gradient_shader, image_filters, images, AlphaType, BlendMode, BlurStyle, Canvas, ClipOp, Color,
+    ColorType, Data, FilterMode, Font, FontMgr, Image, ImageInfo, MaskFilter, MipmapMode, Paint,
+    PaintStyle, Path, PathEffect, PathFillType, Point, RRect, Rect, SamplingOptions, Shader,
+    TileMode, Typeface,
 };
 
 // ---------------------------------------------------------------------------
@@ -244,6 +245,28 @@ struct ImageLayer {
     height: Option<f32>,
 }
 
+// Video layers carry no source/timing here: the TS side already resolved the
+// source time, decoded the frame (ffmpeg), and injected the raw RGBA via the
+// video-frame buffer list + frameIndex/frameWidth/frameHeight.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VideoLayer {
+    #[serde(flatten)]
+    base: Base,
+    #[serde(default)]
+    fit: Option<String>,
+    #[serde(default)]
+    width: Option<f32>,
+    #[serde(default)]
+    height: Option<f32>,
+    #[serde(default)]
+    frame_index: Option<usize>,
+    #[serde(default)]
+    frame_width: Option<i32>,
+    #[serde(default)]
+    frame_height: Option<i32>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Reveal {
@@ -273,6 +296,7 @@ enum Layer {
     Text(TextLayer),
     Caption(CaptionLayer),
     Image(ImageLayer),
+    Video(VideoLayer),
     Group(GroupLayer),
     // Audio and anything unknown is skipped.
     #[serde(other)]
@@ -286,10 +310,17 @@ impl Layer {
             Layer::Text(t) => Some(&t.base),
             Layer::Caption(c) => Some(&c.base),
             Layer::Image(i) => Some(&i.base),
+            Layer::Video(v) => Some(&v.base),
             Layer::Group(g) => Some(&g.base),
             Layer::Unsupported => None,
         }
     }
+}
+
+// Per-render context: decoded video frame pixels (RGBA8888), referenced by a
+// video layer's frameIndex. Borrows the napi buffers for the call's duration.
+struct RenderCtx<'a> {
+    videos: Vec<&'a [u8]>,
 }
 
 #[derive(Deserialize)]
@@ -685,7 +716,13 @@ fn draw_image(canvas: &Canvas, layer: &ImageLayer) {
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
     paint.set_alpha_f(layer.base.transform.opacity);
-    canvas.draw_image_rect(&image, Some((&rects.src, SrcRectConstraint::Strict)), rects.dst, &paint);
+    canvas.draw_image_rect_with_sampling_options(
+        &image,
+        Some((&rects.src, SrcRectConstraint::Strict)),
+        rects.dst,
+        SamplingOptions::new(FilterMode::Linear, MipmapMode::None),
+        &paint,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -906,18 +943,56 @@ fn apply_transform(canvas: &Canvas, t: &Transform) {
     canvas.rotate(t.rotate, None);
 }
 
-fn draw_content(canvas: &Canvas, layer: &Layer) {
+fn draw_video(canvas: &Canvas, layer: &VideoLayer, ctx: &RenderCtx) {
+    let (Some(index), Some(fw), Some(fh)) = (layer.frame_index, layer.frame_width, layer.frame_height) else {
+        return;
+    };
+    if fw <= 0 || fh <= 0 {
+        return;
+    }
+    let Some(pixels) = ctx.videos.get(index) else {
+        return;
+    };
+    let info = ImageInfo::new((fw, fh), ColorType::RGBA8888, AlphaType::Unpremul, None);
+    let Some(image) = images::raster_from_data(&info, Data::new_copy(pixels), (fw as usize) * 4) else {
+        return;
+    };
+
+    let iw = fw as f32;
+    let ih = fh as f32;
+    let w = layer.width.unwrap_or(iw);
+    let h = layer.height.unwrap_or(ih);
+    // Default to "cover" for circular crops (filled avatar), else honour the
+    // explicit fit (stretch by default) — matching the wasm renderer.
+    let is_circle_clip = matches!(layer.base.clip, Some(Clip::Circle { .. }));
+    let fit = layer.fit.as_deref().or(if is_circle_clip { Some("cover") } else { None });
+    let rects = fit_rects(iw, ih, w, h, fit);
+
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_alpha_f(layer.base.transform.opacity);
+    canvas.draw_image_rect_with_sampling_options(
+        &image,
+        Some((&rects.src, SrcRectConstraint::Strict)),
+        rects.dst,
+        SamplingOptions::new(FilterMode::Linear, MipmapMode::None),
+        &paint,
+    );
+}
+
+fn draw_content(canvas: &Canvas, layer: &Layer, ctx: &RenderCtx) {
     match layer {
         Layer::Shape(s) => draw_shape(canvas, s),
         Layer::Text(t) => draw_text(canvas, t),
         Layer::Caption(c) => draw_caption(canvas, c),
         Layer::Image(i) => draw_image(canvas, i),
-        Layer::Group(g) => draw_group(canvas, g),
+        Layer::Video(v) => draw_video(canvas, v, ctx),
+        Layer::Group(g) => draw_group(canvas, g, ctx),
         Layer::Unsupported => {}
     }
 }
 
-fn draw_group(canvas: &Canvas, group: &GroupLayer) {
+fn draw_group(canvas: &Canvas, group: &GroupLayer, ctx: &RenderCtx) {
     if let Some(reveal) = &group.reveal {
         if reveal.progress <= 0.0 {
             return;
@@ -940,14 +1015,14 @@ fn draw_group(canvas: &Canvas, group: &GroupLayer) {
         canvas.save_layer(&SaveLayerRec::default().paint(&paint));
     }
     for child in &group.layers {
-        draw_layer(canvas, child);
+        draw_layer(canvas, child, ctx);
     }
     if layered {
         canvas.restore();
     }
 }
 
-fn draw_layer_sample(canvas: &Canvas, layer: &Layer) {
+fn draw_layer_sample(canvas: &Canvas, layer: &Layer, ctx: &RenderCtx) {
     let Some(base) = layer.base() else {
         return;
     };
@@ -976,7 +1051,7 @@ fn draw_layer_sample(canvas: &Canvas, layer: &Layer) {
     if let Some(clip) = &base.clip {
         apply_layer_clip(canvas, clip);
     }
-    draw_content(canvas, layer);
+    draw_content(canvas, layer, ctx);
 
     if wrapped {
         canvas.restore();
@@ -984,7 +1059,7 @@ fn draw_layer_sample(canvas: &Canvas, layer: &Layer) {
     canvas.restore();
 }
 
-fn draw_motion_blurred(canvas: &Canvas, layer: &Layer, mb: &MotionBlur) {
+fn draw_motion_blurred(canvas: &Canvas, layer: &Layer, mb: &MotionBlur, ctx: &RenderCtx) {
     let samples = (mb.samples.unwrap_or(8.0).round() as i32).clamp(2, 64);
     let rad = mb.angle.to_radians();
     let dx = rad.cos() * mb.distance;
@@ -997,31 +1072,31 @@ fn draw_motion_blurred(canvas: &Canvas, layer: &Layer, mb: &MotionBlur) {
         let mut paint = Paint::default();
         paint.set_alpha_f(alpha);
         canvas.save_layer(&SaveLayerRec::default().paint(&paint));
-        draw_layer_sample(canvas, layer);
+        draw_layer_sample(canvas, layer, ctx);
         canvas.restore();
         canvas.restore();
     }
 }
 
-fn draw_layer(canvas: &Canvas, layer: &Layer) {
+fn draw_layer(canvas: &Canvas, layer: &Layer, ctx: &RenderCtx) {
     if let Some(base) = layer.base() {
         if let Some(mb) = &base.motion_blur {
             if mb.distance > 0.0 && mb.samples.unwrap_or(8.0) > 1.0 {
-                draw_motion_blurred(canvas, layer, mb);
+                draw_motion_blurred(canvas, layer, mb, ctx);
                 return;
             }
         }
     } else {
         return;
     }
-    draw_layer_sample(canvas, layer);
+    draw_layer_sample(canvas, layer, ctx);
 }
 
 // ---------------------------------------------------------------------------
 // Frame
 // ---------------------------------------------------------------------------
 
-fn render_frame_to_rgba(frame: &Frame) -> napi::Result<Vec<u8>> {
+fn render_frame_to_rgba(frame: &Frame, ctx: &RenderCtx) -> napi::Result<Vec<u8>> {
     let width = frame.composition.width;
     let height = frame.composition.height;
     if width <= 0 || height <= 0 {
@@ -1034,7 +1109,7 @@ fn render_frame_to_rgba(frame: &Frame) -> napi::Result<Vec<u8>> {
     canvas.clear(Color::TRANSPARENT);
 
     for layer in &frame.layers {
-        draw_layer(canvas, layer);
+        draw_layer(canvas, layer, ctx);
     }
 
     read_rgba(&mut surface, width, height)
@@ -1133,11 +1208,16 @@ fn byte(hex: &str, index: usize) -> Option<u8> {
 // ---------------------------------------------------------------------------
 
 /// Render a full ResolvedFrame (passed as JSON) to an RGBA8888 buffer.
+/// `video_frames` holds decoded RGBA8888 pixels for each video layer, referenced
+/// by the layer's injected `frameIndex` (empty when there are no video layers).
 #[napi]
-pub fn render_frame(frame_json: String) -> napi::Result<Buffer> {
+pub fn render_frame(frame_json: String, video_frames: Vec<Buffer>) -> napi::Result<Buffer> {
     let frame: Frame = serde_json::from_str(&frame_json)
         .map_err(|e| napi::Error::from_reason(format!("invalid frame JSON: {e}")))?;
-    Ok(Buffer::from(render_frame_to_rgba(&frame)?))
+    let ctx = RenderCtx {
+        videos: video_frames.iter().map(|b| b.as_ref()).collect(),
+    };
+    Ok(Buffer::from(render_frame_to_rgba(&frame, &ctx)?))
 }
 
 /// Smoke entry point retained from Phase 0b.
