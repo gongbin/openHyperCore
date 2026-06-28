@@ -9,9 +9,11 @@ import { encodeRawVideoFrames } from "../../encoder-ffmpeg/src/index.ts";
 import type { AudioInput, EncodePngFramesOptions } from "../../encoder-ffmpeg/src/index.ts";
 import { defineComposition, frameCount, resolveFrame, timeForFrame } from "../../core/src/index.ts";
 import type { Composition, Layer, ResolvedFrame, ResolvedLayer } from "../../core/src/index.ts";
-import { createFrameRenderer, createVideoFrameCache, prefetchVideoFrameBatch, renderPngFrame } from "../../renderer-skia/src/index.ts";
+import { createVideoFrameCache, prefetchVideoFrameBatch, renderPngFrame } from "../../renderer-skia/src/index.ts";
 import type { LayerRasterCacheStats } from "../../renderer-skia/src/index.ts";
 import { renderSvgFrame } from "../../renderer-svg/src/index.ts";
+import { createBackendRenderer, parseRendererBackend, resolveBackend } from "./renderer-backend.ts";
+import type { RendererBackend } from "./renderer-backend.ts";
 
 type CliIO = {
   stdout?: (line: string) => void;
@@ -36,6 +38,8 @@ type RenderOptions = {
   diskCacheDir?: string;
   // `false` disables the in-renderer static-layer raster cache (--no-layer-cache).
   layerCache?: boolean;
+  // Render backend: "wasm" (canvaskit, default) or "native" (Rust + skia-safe).
+  renderer?: RendererBackend;
 };
 
 type BenchOptions = Omit<RenderOptions, "out"> & {
@@ -78,6 +82,7 @@ type RenderRunJob = {
   ffmpegPath?: string;
   diskCacheDir?: string;
   layerCache?: boolean;
+  backend?: RendererBackend;
 };
 
 type FramePlan = {
@@ -228,6 +233,7 @@ function parseRenderOptions(args: string[]): RenderOptions {
   let workerWindow: number | undefined;
   let diskCacheDir: string | undefined;
   let layerCache: boolean | undefined;
+  let renderer: RendererBackend | undefined;
   const ffmpegArgsPrefix: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -289,6 +295,12 @@ function parseRenderOptions(args: string[]): RenderOptions {
       continue;
     }
 
+    if (name === "--renderer") {
+      renderer = parseRendererBackend(requiredArg(value, "--renderer value"));
+      index += 1;
+      continue;
+    }
+
     throw new Error(`Unknown option: ${name}`);
   }
 
@@ -302,7 +314,8 @@ function parseRenderOptions(args: string[]): RenderOptions {
     workers,
     workerWindow,
     diskCacheDir,
-    layerCache
+    layerCache,
+    renderer
   }) as RenderOptions;
 }
 
@@ -317,6 +330,7 @@ function parseBenchOptions(args: string[]): BenchOptions {
   let workerWindow: number | undefined;
   let diskCacheDir: string | undefined;
   let layerCache: boolean | undefined;
+  let renderer: RendererBackend | undefined;
   const ffmpegArgsPrefix: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -331,6 +345,12 @@ function parseBenchOptions(args: string[]): BenchOptions {
 
     if (name === "--video-out") {
       videoOut = requiredArg(value, "--video-out value");
+      index += 1;
+      continue;
+    }
+
+    if (name === "--renderer") {
+      renderer = parseRendererBackend(requiredArg(value, "--renderer value"));
       index += 1;
       continue;
     }
@@ -398,7 +418,8 @@ function parseBenchOptions(args: string[]): BenchOptions {
     workers,
     workerWindow,
     diskCacheDir,
-    layerCache
+    layerCache,
+    renderer
   }) as BenchOptions;
 }
 
@@ -591,6 +612,7 @@ function numericCaseName(results: Array<{ name: string; metrics: Record<string, 
 
 async function renderVideo(composition: Composition, options: RenderOptions, audio: CompositionAudio = {}): Promise<Record<string, unknown>> {
   const workerSelection = options.workers === "auto" ? "auto" : "manual";
+  const backend = resolveBackend(options.renderer);
   const plan = planRenderResources(composition, options.workers, options.workerWindow);
   const workerCount = plan.workerCount;
   const workerWindow = plan.workerWindow;
@@ -622,12 +644,13 @@ async function renderVideo(composition: Composition, options: RenderOptions, aud
     encodeOptions.audioInputs = audio.audioInputs;
   }
 
-  await encodeRawVideoFrames(renderCompositionRgbaFrames(composition, stats, workerCount, workerWindow, options.ffmpegPath, options.diskCacheDir, options.layerCache), encodeOptions);
+  await encodeRawVideoFrames(renderCompositionRgbaFrames(composition, stats, workerCount, workerWindow, options.ffmpegPath, options.diskCacheDir, options.layerCache, backend), encodeOptions);
   stats.peakRssBytes = Math.max(stats.peakRssBytes, process.memoryUsage().rss);
   const totalMs = performance.now() - startedAt;
 
   return {
     pipeline: "rawvideo-rgba",
+    renderer: backend,
     renderMode: workerCount > 1 ? "worker_threads" : "single_thread",
     workerSelection,
     workerCount,
@@ -705,9 +728,9 @@ function collectAudioInputs(layers: Layer[], offsetMs: number, windowEndMs: numb
   }
 }
 
-async function* renderCompositionRgbaFrames(composition: Composition, stats?: RenderStats, workerCount = 1, workerWindow = workerCount * 2, ffmpegPath?: string, diskCacheDir?: string, layerCache?: boolean): AsyncIterable<Buffer> {
+async function* renderCompositionRgbaFrames(composition: Composition, stats?: RenderStats, workerCount = 1, workerWindow = workerCount * 2, ffmpegPath?: string, diskCacheDir?: string, layerCache?: boolean, backend: RendererBackend = "wasm"): AsyncIterable<Buffer> {
   if (workerCount > 1) {
-    yield* renderCompositionRgbaFramesWithWorkers(composition, workerCount, workerWindow, stats, ffmpegPath, diskCacheDir, layerCache);
+    yield* renderCompositionRgbaFramesWithWorkers(composition, workerCount, workerWindow, stats, ffmpegPath, diskCacheDir, layerCache, backend);
     return;
   }
 
@@ -716,7 +739,7 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
   let prefetchedUntilFrameIndex = 0;
   const totalFrames = frameCount(composition);
   const videoFrameCache = createVideoFrameCache(videoFrameCacheOptions(ffmpegPath, diskCacheDir));
-  const rgbaRenderer = createFrameRenderer(layerCache === false ? { layerCache: false } : {});
+  const rgbaRenderer = createBackendRenderer(backend, layerCache === false ? { layerCache: false } : {});
 
   try {
     for (let frameIndex = 0; frameIndex < totalFrames; frameIndex += 1) {
@@ -765,7 +788,7 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
   }
 }
 
-async function* renderCompositionRgbaFramesWithWorkers(composition: Composition, workerCount: number, workerWindow: number, stats?: RenderStats, ffmpegPath?: string, diskCacheDir?: string, layerCache?: boolean): AsyncIterable<Buffer> {
+async function* renderCompositionRgbaFramesWithWorkers(composition: Composition, workerCount: number, workerWindow: number, stats?: RenderStats, ffmpegPath?: string, diskCacheDir?: string, layerCache?: boolean, backend: RendererBackend = "wasm"): AsyncIterable<Buffer> {
   const totalFrames = frameCount(composition);
   // `workerWindow` caps how many fresh frames are buffered (memory window) per
   // dispatch; spread across up to `workerCount` contiguous runs.
@@ -810,7 +833,7 @@ async function* renderCompositionRgbaFramesWithWorkers(composition: Composition,
           frameIndex += 1;
         }
         if (frames.length > 0) {
-          runs.push(omitUndefined({ runIndex: runs.length, sourceIndices, frames, ffmpegPath, diskCacheDir, layerCache }) as RenderRunJob);
+          runs.push(omitUndefined({ runIndex: runs.length, sourceIndices, frames, ffmpegPath, diskCacheDir, layerCache, backend }) as RenderRunJob);
         }
       }
 

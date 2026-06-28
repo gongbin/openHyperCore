@@ -13,6 +13,7 @@ OpenHyperCore 为开源 TypeScript 视频渲染内核，适合被集成到模板
 - Scene Graph IR：用纯数据描述 Composition、Layer、Transform、Keyframe，便于缓存、测试和后续服务化。
 - TypeScript API 与轻量 JSX runtime：不引入 React，JSX/命令式写法最终都落到 Composition IR。
 - CanvasKit/Skia 渲染后端：支持文本、矩形/圆形/path、图片和第一版本地 VideoLayer。
+- 原生渲染后端（Rust + skia-safe，可选）：在同一 `FrameRenderer` 接缝下整帧原生绘制，与 wasm 渲染器功能对齐（golden 测试验证），吞吐大幅提升——特效密集 1080p 场景实测渲染快 ~8x、端到端快 ~6x。用 `pnpm build:native` 构建（需 Rust 工具链），再以 `--renderer native`（或 `OPENHYPERCORE_RENDERER=native`）选用；wasm 后端仍为默认与可搬 fallback。原生后端逐帧直绘（无需静态层栅格缓存——直绘已快过 wasm 的缓存贴图）。基准：`node --experimental-strip-types packages/renderer-native/scripts/bench-vs-wasm.mjs`。
 - SVG debug still 与 PNG still：可快速检查单帧布局，也可生成真实 CanvasKit PNG。
 - CaptionLayer：支持时间段字幕、字体大小、颜色、背景色、padding、对齐和 transform 位置。
 - 全属性 transform：每个图层都可用关键帧驱动 `x/y/scale/scaleX/scaleY/rotate/opacity`。关键帧可附带 easing（预设名、自定义函数，或 CSS 风格 `cubicBezier(x1,y1,x2,y2)` / `[x1,y1,x2,y2]` 元组），作用于“终止于该关键帧”的区间——任意轨道无需烘焙即可获得逐帧精确曲线，见 `examples/full-transform-easing.ts`。
