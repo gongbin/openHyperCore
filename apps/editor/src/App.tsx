@@ -47,8 +47,7 @@ export function App() {
 
   useEffect(() => {
     if (ready && rendererRef.current) {
-      try { rendererRef.current.renderFrame(composition, timeMs); }
-      catch (e) { setStatus(`preview error: ${String(e)}`); }
+      rendererRef.current.renderFrame(composition, timeMs).catch((e: unknown) => setStatus(`preview error: ${String(e)}`));
     }
   }, [ready, composition, timeMs]);
 

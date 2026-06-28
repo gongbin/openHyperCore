@@ -1,16 +1,78 @@
 import CanvasKitInit from "canvaskit-wasm";
-import type { Canvas, CanvasKit, Paint, Shader, Surface } from "canvaskit-wasm";
+import type { Canvas, CanvasKit, Font, Image, Paint, Shader, Surface, Typeface } from "canvaskit-wasm";
 import canvaskitWasmUrl from "canvaskit-wasm/bin/canvaskit.wasm?url";
 import { resolveFrame } from "openhypercore";
 import type { Composition, Fill, Gradient, ResolvedFrame, ResolvedLayer } from "openhypercore";
 
-// Browser canvaskit-wasm preview of the openhypercore IR — the vector subset
-// (shapes, gradients, groups, clip, blend, blur, motion blur, transform). Text/
-// image/video are skipped in preview; the render service produces the full MP4.
-// (A renderer "asset provider" refactor will later let us reuse the engine's
-// exact draw path instead of this compact mirror.)
+// Browser canvaskit-wasm preview of the openhypercore IR. Vector subset (shapes,
+// gradients, groups, clip, blend, blur, motion blur, transform) plus text (via a
+// fetched font) and images (via fetch). Video still falls back to a placeholder
+// (in-browser decode is heavy); the render service produces the full MP4.
 
 type CK = CanvasKit;
+type TextLayer = Extract<ResolvedLayer, { type: "text" | "caption" }>;
+type ImageLayer = Extract<ResolvedLayer, { type: "image" }>;
+
+// CanvasKit's own demo font — a stable, CORS-enabled TTF on the Skia CDN. Used
+// when a text layer doesn't point at its own web font.
+const DEFAULT_FONT_URL = "https://storage.googleapis.com/skia-cdn/misc/Roboto-Regular.ttf";
+
+const typefaceCache = new Map<string, Typeface | null>();
+const imageCache = new Map<string, Image | null>();
+
+function isAssetUrl(src: string): boolean {
+  return /^(https?:|data:|blob:)/i.test(src);
+}
+
+function fontUrlFor(layer: TextLayer): string {
+  const f = (layer as { font?: unknown }).font;
+  return typeof f === "string" && isAssetUrl(f) ? f : DEFAULT_FONT_URL;
+}
+
+async function loadTypeface(ck: CK, url: string): Promise<Typeface | null> {
+  if (typefaceCache.has(url)) return typefaceCache.get(url) ?? null;
+  let tf: Typeface | null = null;
+  try {
+    const buf = await (await fetch(url)).arrayBuffer();
+    tf = ck.Typeface.MakeFreeTypeFaceFromData(buf);
+  } catch {
+    tf = null;
+  }
+  typefaceCache.set(url, tf);
+  return tf;
+}
+
+async function loadImage(ck: CK, src: string): Promise<Image | null> {
+  if (imageCache.has(src)) return imageCache.get(src) ?? null;
+  let img: Image | null = null;
+  try {
+    const buf = await (await fetch(src)).arrayBuffer();
+    img = ck.MakeImageFromEncoded(new Uint8Array(buf));
+  } catch {
+    img = null;
+  }
+  imageCache.set(src, img);
+  return img;
+}
+
+// Walk the frame and load every font / image it needs (cached), so the
+// synchronous draw pass can look them up.
+async function ensureAssets(ck: CK, frame: ResolvedFrame): Promise<void> {
+  const fonts = new Set<string>();
+  const images = new Set<string>();
+  const walk = (layers: readonly ResolvedLayer[]): void => {
+    for (const l of layers) {
+      if (l.type === "text" || l.type === "caption") fonts.add(fontUrlFor(l));
+      else if (l.type === "image" && typeof l.src === "string" && isAssetUrl(l.src)) images.add(l.src);
+      else if (l.type === "group") walk(l.layers);
+    }
+  };
+  walk(frame.layers);
+  await Promise.all([
+    ...[...fonts].map((u) => loadTypeface(ck, u)),
+    ...[...images].map((s) => loadImage(ck, s))
+  ]);
+}
 
 let ckPromise: Promise<CanvasKit> | undefined;
 export function loadCanvasKit(): Promise<CanvasKit> {
@@ -40,8 +102,9 @@ export class PreviewRenderer {
     return new PreviewRenderer(ck, surface);
   }
 
-  renderFrame(composition: Composition, timeMs: number): void {
+  async renderFrame(composition: Composition, timeMs: number): Promise<void> {
     const frame = resolveFrame(composition, timeMs);
+    await ensureAssets(this.#ck, frame);
     this.#draw(frame);
   }
 
@@ -112,10 +175,12 @@ function drawSample(ck: CK, canvas: Canvas, layer: ResolvedLayer): void {
     drawShape(ck, canvas, layer);
   } else if (layer.type === "group") {
     drawGroup(ck, canvas, layer);
-  } else if (layer.type === "text" || layer.type === "caption" || layer.type === "image" || layer.type === "video") {
-    // Preview can't load fonts/decode media in-browser yet, so show a labelled
-    // placeholder where the layer sits; the final MP4 (via the service) renders
-    // it for real.
+  } else if (layer.type === "text" || layer.type === "caption") {
+    drawText(ck, canvas, layer);
+  } else if (layer.type === "image") {
+    drawImage(ck, canvas, layer);
+  } else if (layer.type === "video") {
+    // In-browser video decode is heavy; show a placeholder. The MP4 renders it.
     drawPlaceholder(ck, canvas, layer);
   }
 
@@ -151,6 +216,64 @@ function drawPlaceholder(ck: CK, canvas: Canvas, layer: ResolvedLayer): void {
   }
   canvas.drawRect(ck.XYWHRect(0, layer.type === "text" || layer.type === "caption" ? -h * 0.8 : 0, w, h), stroke);
   stroke.delete();
+}
+
+function measureLine(font: Font, line: string): number {
+  if (!line) return 0;
+  const ids = font.getGlyphIDs(line);
+  const widths = font.getGlyphWidths(ids);
+  let w = 0;
+  for (const x of widths) w += x;
+  return w;
+}
+
+function drawText(ck: CK, canvas: Canvas, layer: TextLayer): void {
+  const typeface = typefaceCache.get(fontUrlFor(layer)) ?? null;
+  if (!typeface) {
+    drawPlaceholder(ck, canvas, layer);
+    return;
+  }
+  const size = layer.size ?? (layer.type === "caption" ? 32 : 16);
+  const opacity = layer.transform.opacity;
+  const align = layer.align ?? (layer.type === "caption" ? "center" : "left");
+  const font = new ck.Font(typeface, size);
+  font.setSubpixel(true);
+  const paint = new ck.Paint();
+  paint.setAntiAlias(true);
+  paint.setColor(parseColor(ck, typeof layer.color === "string" ? layer.color : "#ffffff", opacity));
+
+  const lineHeight = ((layer as { lineHeight?: number }).lineHeight ?? 1.3) * size;
+  const lines = String(layer.text).split("\n");
+  let y = size * 0.8;
+  for (const line of lines) {
+    const w = measureLine(font, line);
+    const x = align === "center" ? -w / 2 : align === "right" ? -w : 0;
+    const blob = ck.TextBlob.MakeFromText(line, font);
+    if (blob) {
+      canvas.drawTextBlob(blob, x, y, paint);
+      blob.delete();
+    }
+    y += lineHeight;
+  }
+  font.delete();
+  paint.delete();
+}
+
+function drawImage(ck: CK, canvas: Canvas, layer: ImageLayer): void {
+  const image = typeof layer.src === "string" ? imageCache.get(layer.src) ?? null : null;
+  if (!image) {
+    drawPlaceholder(ck, canvas, layer);
+    return;
+  }
+  const iw = image.width();
+  const ih = image.height();
+  const w = layer.width ?? iw;
+  const h = layer.height ?? ih;
+  const paint = new ck.Paint();
+  paint.setAntiAlias(true);
+  paint.setAlphaf(layer.transform.opacity);
+  canvas.drawImageRect(image, ck.XYWHRect(0, 0, iw, ih), ck.XYWHRect(0, 0, w, h), paint, false);
+  paint.delete();
 }
 
 function drawGroup(ck: CK, canvas: Canvas, group: Extract<ResolvedLayer, { type: "group" }>): void {
