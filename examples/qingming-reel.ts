@@ -94,6 +94,30 @@ const outroGlow: Gradient = {
     { offset: 1, color: "rgba(231,195,106,0)" }
   ]
 };
+// Spine gutter shadow printed INTO the painting so it reads as bound to the
+// page (the book seam had a gradient, the landscape did not).
+const gutterGradient: Gradient = {
+  type: "linear",
+  from: [0, 0],
+  to: [180, 0],
+  stops: [
+    { offset: 0, color: "rgba(34,28,18,0.62)" },
+    { offset: 0.4, color: "rgba(34,28,18,0.2)" },
+    { offset: 1, color: "rgba(34,28,18,0)" }
+  ]
+};
+// Outro: deep dusk backdrop + dark mountain silhouettes for a calm, natural
+// "wind over the ranges" closing card.
+const outroSky: Gradient = {
+  type: "linear",
+  from: [0, 0],
+  to: [0, height],
+  stops: [
+    { offset: 0, color: "#0a0d12" },
+    { offset: 0.5, color: "#12171d" },
+    { offset: 1, color: "#070a0e" }
+  ]
+};
 
 function track(startMs: number, durMs: number, from: number, to: number, ease = easeOutCubic, steps = 6): ScalarKeyframe[] {
   return Array.from({ length: steps + 1 }, (_, index) => {
@@ -217,6 +241,69 @@ function ridgePath(peaks: Array<[number, number]>, baseY = 720): string {
   const last = peaks[peaks.length - 1]!;
   d += ` L${last[0]} ${last[1]} L${last[0]} ${baseY} Z`;
   return d;
+}
+
+// Deterministic PRNG so ridges/figures stay identical across renders.
+function mulberry32(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Natural mountain ridge: irregular peak heights AND spacing within a band
+// (hiY = tallest crest, loY = valleys), so the skyline reads organically rather
+// than as evenly-spaced bumps.
+function naturalRidge(seed: number, hiY: number, loY: number, baseY = 720, spanX = 3400): string {
+  const rng = mulberry32(seed);
+  const peaks: Array<[number, number]> = [[0, Math.round(loY - (loY - hiY) * rng() * 0.5)]];
+  let x = 70 + rng() * 90;
+  while (x < spanX) {
+    // ~25% of crests rise tall; the rest stay low/moderate — varied skyline.
+    const peakedness = rng() < 0.26 ? 0.78 + rng() * 0.22 : rng() * 0.62;
+    peaks.push([Math.round(x), Math.round(loY - (loY - hiY) * peakedness)]);
+    x += 80 + rng() * 210;
+  }
+  peaks.push([spanX, Math.round(loY - (loY - hiY) * rng() * 0.5)]);
+  return ridgePath(peaks, baseY);
+}
+
+// Stadium (capsule) outline between two joints — the building block for a
+// fleshed-out ink figure instead of hairline strokes.
+function capsule(ax: number, ay: number, bx: number, by: number, r: number): string {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = (-dy / len) * r;
+  const py = (dx / len) * r;
+  const f = (n: number) => Math.round(n * 10) / 10;
+  return `M${f(ax + px)} ${f(ay + py)} L${f(bx + px)} ${f(by + py)} A${r} ${r} 0 0 1 ${f(bx - px)} ${f(by - py)} L${f(ax - px)} ${f(ay - py)} A${r} ${r} 0 0 1 ${f(ax + px)} ${f(ay + py)} Z`;
+}
+
+type Joint = [number, number];
+type Joints = {
+  head: Joint; neck: Joint; hipC: Joint;
+  sL: Joint; sR: Joint; eL: Joint; eR: Joint; hL: Joint; hR: Joint;
+  pL: Joint; pR: Joint; kL: Joint; kR: Joint; fL: Joint; fR: Joint;
+};
+
+// One filled ink silhouette (torso + limbs as overlapping capsules, unioned by
+// nonzero fill) — gives the martial figure real body mass.
+function silhouette(j: Joints): string {
+  const seg = (a: Joint, b: Joint, r: number) => capsule(a[0], a[1], b[0], b[1], r);
+  return [
+    seg(j.neck, j.hipC, 11),
+    seg(j.sL, j.sR, 8),
+    seg(j.hipC, j.sL, 7), seg(j.hipC, j.sR, 7),
+    seg(j.sL, j.eL, 6), seg(j.eL, j.hL, 5),
+    seg(j.sR, j.eR, 6), seg(j.eR, j.hR, 5),
+    seg(j.hipC, j.pL, 8), seg(j.hipC, j.pR, 8),
+    seg(j.pL, j.kL, 8), seg(j.kL, j.fL, 6),
+    seg(j.pR, j.kR, 8), seg(j.kR, j.fR, 6)
+  ].join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -388,21 +475,25 @@ const coverLayer: Layer = {
 // 9450ms 起绕中轴 scaleX 收拢（合书）。
 // ---------------------------------------------------------------------------
 
-const farRidge = ridgePath([[0, 420], [180, 330], [380, 392], [560, 300], [760, 382], [940, 318], [1140, 400], [1320, 308], [1520, 372], [1700, 288], [1900, 380], [2080, 326], [2300, 402], [2480, 308], [2660, 382], [2840, 318], [3060, 392], [3240, 328], [3400, 398]]);
-const midRidge = ridgePath([[0, 520], [220, 398], [420, 482], [640, 378], [820, 472], [1040, 388], [1240, 492], [1460, 398], [1660, 482], [1860, 388], [2060, 472], [2260, 378], [2460, 484], [2680, 398], [2880, 472], [3080, 388], [3280, 470], [3400, 440]]);
-const nearRidge = ridgePath([[0, 600], [260, 468], [460, 562], [700, 448], [900, 552], [1150, 458], [1380, 562], [1600, 468], [1820, 558], [2050, 458], [2280, 562], [2520, 468], [2720, 558], [2960, 478], [3160, 558], [3400, 500]]);
+const farRidge = naturalRidge(0x51a3, 250, 410);
+const midRidge = naturalRidge(0x8c27, 338, 500);
+const nearRidge = naturalRidge(0x2f19, 430, 588);
 
 const sceneStart = 3000;
 const sceneEnd = 10380;
 
-// 简笔练武小人：四式循环（马步展臂 / 弓步冲拳 / 提膝亮掌 / 仆步下势）
-const poseLimbs = [
-  "M0 -34 L0 8 M0 -26 L-34 -30 M0 -26 L34 -30 M0 8 L-26 44 M0 8 L26 44",
-  "M-4 -32 L2 8 M-4 -24 L38 -34 M-4 -24 L-24 -10 M2 8 L-30 42 M2 8 L26 26 L32 46",
-  "M0 -36 L0 8 M0 -28 L-30 -48 M0 -28 L28 -16 M0 8 L-4 46 M0 8 L24 16 L18 34",
-  "M-10 -22 L6 14 M-10 -16 L-46 -10 M-10 -16 L28 -32 M6 14 L-34 28 L-50 26 M6 14 L28 42"
+// 练武小人：四式循环（马步展臂 / 弓步冲拳 / 提膝亮掌 / 仆步下势）。
+// 用填充剪影（带身躯/四肢的水墨人形）替代发丝细线，更有体量与真实感。
+const poses: Joints[] = [
+  // 马步展臂
+  { head: [0, -44], neck: [0, -30], hipC: [0, 6], sL: [-12, -27], sR: [12, -27], eL: [-30, -28], eR: [30, -28], hL: [-46, -24], hR: [46, -24], pL: [-10, 6], pR: [10, 6], kL: [-22, 24], kR: [22, 24], fL: [-26, 46], fR: [26, 46] },
+  // 弓步冲拳（右拳前冲，左拳收）
+  { head: [4, -42], neck: [3, -28], hipC: [0, 6], sL: [-10, -26], sR: [13, -26], eL: [-20, -16], eR: [30, -28], hL: [-30, -6], hR: [50, -30], pL: [-12, 6], pR: [10, 6], kL: [-30, 26], kR: [26, 18], fL: [-46, 44], fR: [38, 46] },
+  // 提膝亮掌（右掌上举，右膝提起）
+  { head: [0, -46], neck: [0, -32], hipC: [0, 4], sL: [-11, -30], sR: [11, -30], eL: [-22, -20], eR: [18, -44], hL: [-28, -4], hR: [26, -60], pL: [-9, 4], pR: [9, 4], kL: [-6, 24], kR: [22, 6], fL: [-6, 46], fR: [34, 22] },
+  // 仆步下势（重心左沉，右腿展开）
+  { head: [-10, -28], neck: [-8, -16], hipC: [-4, 8], sL: [-18, -14], sR: [3, -14], eL: [-34, -6], eR: [16, -8], hL: [-48, 0], hR: [32, -16], pL: [-12, 8], pR: [6, 10], kL: [-22, 28], kR: [22, 40], fL: [-30, 44], fR: [50, 46] }
 ];
-const poseHeads: Array<[number, number]> = [[0, -46], [-4, -44], [0, -48], [-12, -34]];
 
 function figureLayers(): Layer[] {
   const out: Layer[] = [];
@@ -410,11 +501,12 @@ function figureLayers(): Layer[] {
   const stepMs = 520;
   let index = 0;
   for (let t = start; t < sceneEnd; t += stepMs, index += 1) {
-    const pose = index % 4;
+    const pose = poses[index % 4]!;
     const endMs = Math.min(t + stepMs, sceneEnd);
-    const [hx, hy] = poseHeads[pose]!;
-    out.push(circle(`figure-head-${index}`, t, endMs, hx, hy, 11, inkDark));
-    out.push(pathLayer(`figure-limbs-${index}`, t, endMs, poseLimbs[pose]!, inkDark, 7, 1));
+    out.push(fillPath(`figure-body-${index}`, t, endMs, silhouette(pose), inkDark, 1));
+    // 头 + 发髻
+    out.push(circle(`figure-head-${index}`, t, endMs, pose.head[0], pose.head[1], 10, inkDark));
+    out.push(circle(`figure-bun-${index}`, t, endMs, pose.head[0], pose.head[1] - 12, 5, inkDark));
   }
   return out;
 }
@@ -458,6 +550,11 @@ const paintingScene: Layer = {
       transform: { x: 570, y: 506, scale: 1.6 },
       layers: figureLayers()
     },
+    // 书缝装订阴影：印在山水之上，使画面"长"在书页里而非贴上去。
+    { type: "shape", id: "scene-gutter", shape: "rect", width: 180, height, fill: gutterGradient, startMs: sceneStart, endMs: sceneEnd, transform: { x: 0, y: 0 } },
+    rect("scene-spine-crease", sceneStart, sceneEnd, 0, 0, 3, height, "rgba(28,22,14,0.55)"),
+    // 右侧（书口）轻微暗边
+    rect("scene-foredge", sceneStart, sceneEnd, width - 60, 0, 60, height, "rgba(34,28,18,0.16)", 1, 0, 14),
     // 全屏卷动期的落款（随合书一起收起）
     text("scroll-inscription", "青\n冥\n录", 6700, 10300, 1156, 110, 46, "#39424a", hold(6700, 10300, 420, 380, 0.85), {}, 62),
     rect("scroll-seal", 6900, 10300, 1136, 292, 34, 34, "rgba(191,42,29,0.78)", hold(6900, 10300, 380, 360, 0.85))
@@ -469,18 +566,25 @@ const sceneFrame: Layer = {
   type: "group",
   id: "scene-frame",
   transform: {
-    x: 640,
     // Frame-precise cubic-bezier (emphasized) push from the right page to
-    // full-frame — per-keyframe easing, no curve sampling.
+    // full-frame, then a handscroll-style roll-off to the LEFT while fading —
+    // a natural exit instead of squeezing into a sliver.
+    x: [
+      { timeMs: 9450, value: 640 },
+      { timeMs: 10320, value: -700, easing: emphasized }
+    ],
     y: [{ timeMs: 5600, value: pageTop + 170 }, { timeMs: 6500, value: height / 2, easing: emphasized }],
-    scale: [{ timeMs: 5600, value: 0.245 }, { timeMs: 6500, value: 1, easing: emphasized }],
-    scaleX: track(9450, 900, 1, 0.015, easeInOutCubic, 8),
+    scale: [
+      { timeMs: 5600, value: 0.245 },
+      { timeMs: 6500, value: 1, easing: emphasized },
+      { timeMs: 9450, value: 1 },
+      { timeMs: 10300, value: 0.84, easing: "easeOutCubic" }
+    ],
     opacity: [
       { timeMs: sceneStart, value: 0 },
       { timeMs: sceneStart + 320, value: 1 },
-      { timeMs: 9980, value: 1 },
-      // 折到只剩细条时淡出，避免在定格书后留下竖带残影
-      { timeMs: 10260, value: 0 }
+      { timeMs: 9550, value: 1 },
+      { timeMs: 10300, value: 0 }
     ]
   },
   layers: [
@@ -568,8 +672,9 @@ const introLayers: Layer[] = [
     { timeMs: 0, value: 0 },
     { timeMs: 2600, value: 0.35 },
     { timeMs: 3900, value: 1 },
-    { timeMs: introEnd, value: 1 },
-    { timeMs: introEnd + 280, value: 0 }
+    { timeMs: 9450, value: 1 },
+    // 与卷轴左移同步淡出 → 露出底层墨色，画卷向暗处卷离（而非空白纸面）。
+    { timeMs: 10200, value: 0 }
   ]),
   ...skyLayers,
   ...bookLayers,
@@ -699,45 +804,107 @@ const clipCaptions = [
   caption("caption-5", "十年一剑", clipStarts[4]! + 560, clipStarts[4]! + 2500, 90, 506)
 ].flat();
 
+// 片尾远山（缓慢风移 + 视差），自然风版尾。
+const outroFar = naturalRidge(0x7b41, 470, 604, height, 1500);
+const outroNear = naturalRidge(0x19d7, 532, 670, height, 1500);
+
+// 随风缓移的雾霭一缕。
+function outroMist(id: string, y: number, w: number, fromX: number, toX: number, peak: number, startMs: number): Layer {
+  return {
+    type: "shape",
+    id,
+    shape: "rect",
+    width: w,
+    height: 64,
+    fill: "rgba(150,168,178,1)",
+    blur: 30,
+    startMs,
+    endMs: durationMs,
+    transform: {
+      x: [{ timeMs: startMs, value: fromX }, { timeMs: durationMs, value: toX }],
+      y,
+      opacity: scaleOpacity(hold(startMs, durationMs, 820, 460), peak)
+    }
+  };
+}
+
+// 飘动的金尘（screen 发光小点，随风上飘）。
+const outroMotes: Layer[] = [0, 1, 2, 3, 4].map((i) => {
+  const start = outroStart + 320 + i * 160;
+  const cx = 380 + i * 150;
+  const cy = 286 + (i % 2) * 150;
+  const r = 3 + (i % 2);
+  return {
+    type: "shape",
+    id: `outro-mote-${i}`,
+    shape: "circle",
+    radius: r,
+    fill: "rgba(255,224,150,1)",
+    blendMode: "screen",
+    blur: 3,
+    startMs: start,
+    endMs: durationMs,
+    transform: {
+      x: [{ timeMs: start, value: cx - r }, { timeMs: durationMs, value: cx - r - 40 - i * 8 }],
+      y: [{ timeMs: start, value: cy - r }, { timeMs: durationMs, value: cy - r - 70 - i * 10 }],
+      opacity: scaleOpacity(hold(start, durationMs, 520, 620), 0.55)
+    }
+  };
+});
+
 const outroLayers: Layer[] = [
-  rect("outro-bg", outroStart - 220, durationMs, 0, 0, width, height, "rgba(2,3,5,0.88)", hold(outroStart - 220, durationMs, 180, 0, 0.98)),
-  pathLayer("outro-ink-ring", outroStart, durationMs, "M292 365 C408 220 603 190 760 284 C915 377 930 563 760 626 C570 698 340 589 292 365", red, 7, hold(outroStart + 120, durationMs, 280, 400, 0.54), 0, 0, 4),
-  // Gold halo that springs in behind the title (screen-blended radial glow).
+  // 暮色天幕
+  { type: "shape", id: "outro-bg", shape: "rect", width, height, fill: outroSky, startMs: outroStart - 220, endMs: durationMs, transform: { x: 0, y: 0, opacity: hold(outroStart - 220, durationMs, 240, 0, 1) } },
+  // 远山剪影（缓慢风移视差）
+  { type: "shape", id: "outro-mtn-far", shape: "path", path: outroFar, fill: "rgba(28,38,46,0.92)", blur: 2, startMs: outroStart - 120, endMs: durationMs, transform: { x: [{ timeMs: outroStart - 120, value: 8 }, { timeMs: durationMs, value: -14 }], y: 0, opacity: hold(outroStart - 120, durationMs, 520, 0, 0.85) } },
+  { type: "shape", id: "outro-mtn-near", shape: "path", path: outroNear, fill: "#0b1117", startMs: outroStart - 80, endMs: durationMs, transform: { x: [{ timeMs: outroStart - 80, value: 0 }, { timeMs: durationMs, value: -32 }], y: 0, opacity: hold(outroStart - 80, durationMs, 520, 0, 0.96) } },
+  // 风中雾霭
+  outroMist("outro-mist-a", 432, 780, -140, 120, 0.2, outroStart),
+  outroMist("outro-mist-b", 548, 900, 380, 80, 0.15, outroStart + 220),
+  // 边缘压暗
+  { type: "shape", id: "outro-vignette", shape: "rect", width, height, fill: vignetteGradient, startMs: outroStart, endMs: durationMs, transform: { x: 0, y: 0, opacity: hold(outroStart, durationMs, 520, 0, 0.85) } },
+  // 标题金色光晕（spring 弹入）
   {
     type: "group",
     id: "outro-title-glow",
     blendMode: "screen",
     transform: {
       x: 592,
-      y: 212,
-      scale: springKeyframes({ from: 0.6, to: 1, startMs: outroStart + 180, fps, stiffness: 90, damping: 12 }),
-      opacity: hold(outroStart + 180, durationMs, 320, 420, 0.9)
+      y: 206,
+      scale: springKeyframes({ from: 0.6, to: 1, startMs: outroStart + 200, fps, stiffness: 90, damping: 12 }),
+      opacity: hold(outroStart + 200, durationMs, 360, 420, 0.85)
     },
     layers: [
-      {
-        type: "shape",
-        id: "outro-title-glow-core",
-        shape: "circle",
-        radius: 240,
-        fill: outroGlow,
-        startMs: outroStart + 180,
-        endMs: durationMs,
-        transform: { x: -240, y: -240 }
-      }
+      { type: "shape", id: "outro-title-glow-core", shape: "circle", radius: 250, fill: outroGlow, startMs: outroStart + 200, endMs: durationMs, transform: { x: -250, y: -250 } }
     ]
   },
-  text("outro-title", "青冥录", outroStart + 180, durationMs, 424, 244, 112, gold, hold(outroStart + 180, durationMs, 260, 380, 1), {
+  text("outro-title", "青冥录", outroStart + 200, durationMs, 424, 238, 112, gold, hold(outroStart + 200, durationMs, 320, 360, 1), {
     stroke: "rgba(0,0,0,0.82)",
     strokeWidth: 6,
-    shadowColor: "rgba(231,195,106,0.28)",
-    shadowBlur: 22,
+    shadowColor: "rgba(231,195,106,0.3)",
+    shadowBlur: 24,
     shadowDy: 7
   }),
-  text("outro-copy", "十年旧案，一剑照青冥", outroStart + 620, durationMs, 410, 410, 40, "#f9edc8", hold(outroStart + 620, durationMs, 260, 480, 0.92), {
-    stroke: "rgba(0,0,0,0.72)",
-    strokeWidth: 4
+  // 金色细线 + 中心菱形，自中心展开（替代红圈）
+  {
+    type: "group",
+    id: "outro-rule",
+    transform: {
+      x: 640,
+      y: 332,
+      scaleX: track(outroStart + 560, 760, 0, 1, easeOutCubic, 6),
+      opacity: hold(outroStart + 560, durationMs, 240, 360, 0.9)
+    },
+    layers: [
+      rect("outro-rule-bar", outroStart + 560, durationMs, -190, 0, 380, 2, "rgba(231,195,106,0.9)"),
+      { type: "shape", id: "outro-rule-gem", shape: "rect", width: 11, height: 11, fill: gold, startMs: outroStart + 560, endMs: durationMs, transform: { x: -5.5, y: -5, rotate: 45 } }
+    ]
+  },
+  text("outro-copy", "十年旧案，一剑照青冥", outroStart + 760, durationMs, 410, 392, 38, "#f4e6c2", hold(outroStart + 760, durationMs, 300, 480, 0.92), {
+    stroke: "rgba(0,0,0,0.6)",
+    strokeWidth: 3
   }),
-  ...swordSlash("outro-final-slash", outroStart + 1160, 356, "rgba(255,240,184,0.88)")
+  ...outroMotes
 ];
 
 export default defineComposition({
