@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { defineComposition } from "openhypercore";
-import type { Composition, Layer } from "openhypercore";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { defineComposition, resolveFrame } from "openhypercore";
+import type { Composition, Layer, ResolvedFrame } from "openhypercore";
 import { PreviewRenderer } from "./preview.ts";
 import { sampleComposition } from "./sample.ts";
 
 const DEFAULT_SERVICE = "http://localhost:8787";
 const EMPH: [number, number, number, number] = [0.2, 0, 0, 1];
 const BACK: [number, number, number, number] = [0.34, 1.56, 0.64, 1];
+const KEY_EPS = 16; // ms tolerance (~1 frame) for "is there a key at the playhead"
 
 const FACTORIES: Record<string, () => Layer> = {
   Rect: () => ({ type: "shape", shape: "rect", width: 320, height: 180, fill: "#3a7bd5", transform: { x: 200, y: 200 } }),
@@ -14,12 +15,15 @@ const FACTORIES: Record<string, () => Layer> = {
   Text: () => ({ type: "text", text: "Hello", size: 96, color: "#ffffff", align: "left", transform: { x: 160, y: 380 } }),
   Group: () => ({ type: "group", transform: { x: 220, y: 200 }, layers: [{ type: "shape", shape: "rect", width: 260, height: 150, fill: "#d76d77" }] })
 };
-
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "add", "color-dodge", "color-burn", "soft-light", "hard-light", "difference", "exclusion"];
 const TRANSFORM_KEYS = ["x", "y", "scale", "rotate", "opacity"] as const;
+type TKey = (typeof TRANSFORM_KEYS)[number];
 
 type AnyLayer = Layer & Record<string, unknown>;
 type Kf = { timeMs: number; value: number; easing?: unknown };
+
+const dfltVal = (k: string): number => (k === "scale" || k === "opacity" ? 1 : 0);
+const r2 = (n: number): number => Math.round(n * 100) / 100;
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -35,6 +39,10 @@ export function App() {
   const [timeMs, setTimeMs] = useState(0);
   const [serviceUrl, setServiceUrl] = useState(DEFAULT_SERVICE);
   const [status, setStatus] = useState("");
+
+  const resolved = useMemo<ResolvedFrame | null>(() => {
+    try { return resolveFrame(composition, timeMs); } catch { return null; }
+  }, [composition, timeMs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,11 +69,17 @@ export function App() {
   function patchLayer(i: number, patch: Record<string, unknown>): void {
     apply({ ...composition, layers: composition.layers.map((l, idx) => (idx === i ? { ...l, ...patch } as Layer : l)) });
   }
-  function patchTransform(i: number, patch: Record<string, unknown>): void {
-    const l = composition.layers[i] as AnyLayer | undefined;
-    if (!l) return;
-    patchLayer(i, { transform: { ...(l.transform as Record<string, unknown> ?? {}), ...patch } });
+  function transformOf(i: number): Record<string, unknown> {
+    return ((composition.layers[i] as AnyLayer | undefined)?.transform as Record<string, unknown>) ?? {};
   }
+  function patchTransform(i: number, patch: Record<string, unknown>): void {
+    patchLayer(i, { transform: { ...transformOf(i), ...patch } });
+  }
+  function resolvedVal(i: number, key: string): number {
+    const t = resolved?.layers[i]?.transform as Record<string, number> | undefined;
+    return t?.[key] ?? dfltVal(key);
+  }
+
   function addLayer(make: () => Layer): void {
     const layers = [...composition.layers, make()];
     apply({ ...composition, layers });
@@ -89,12 +103,56 @@ export function App() {
     catch (e) { setJsonError(e instanceof Error ? e.message : String(e)); }
   }
 
-  // Apply a one-click animation preset by writing keyframe tracks onto the
-  // selected layer's transform (using cubic-bezier easing).
+  // --- keyframe editing -----------------------------------------------------
+  function editTransform(i: number, key: TKey, v: number): void {
+    if (Array.isArray(transformOf(i)[key])) upsertKey(i, key, v);
+    else patchTransform(i, { [key]: v });
+  }
+  function upsertKey(i: number, key: TKey, value: number): void {
+    const cur = transformOf(i)[key];
+    const arr: Kf[] = Array.isArray(cur) ? [...cur as Kf[]] : [];
+    const at = Math.round(timeMs);
+    const idx = arr.findIndex((k) => Math.abs(k.timeMs - at) <= KEY_EPS);
+    if (idx >= 0) arr[idx] = { ...arr[idx]!, value };
+    else { arr.push({ timeMs: at, value, easing: EMPH }); arr.sort((a, b) => a.timeMs - b.timeMs); }
+    patchTransform(i, { [key]: arr });
+  }
+  function toggleKey(i: number, key: TKey): void {
+    const cur = transformOf(i)[key];
+    const at = Math.round(timeMs);
+    if (Array.isArray(cur)) {
+      const arr = [...cur as Kf[]];
+      const idx = arr.findIndex((k) => Math.abs(k.timeMs - at) <= KEY_EPS);
+      if (idx >= 0) {
+        arr.splice(idx, 1);
+        if (arr.length === 0) { patchTransform(i, { [key]: (cur as Kf[])[(cur as Kf[]).length - 1]!.value }); return; }
+      } else arr.push({ timeMs: at, value: resolvedVal(i, key), easing: EMPH });
+      arr.sort((a, b) => a.timeMs - b.timeMs);
+      patchTransform(i, { [key]: arr });
+    } else {
+      patchTransform(i, { [key]: [{ timeMs: at, value: typeof cur === "number" ? cur : resolvedVal(i, key), easing: EMPH }] });
+    }
+  }
+  function moveKey(i: number, key: TKey, kfIdx: number, newTime: number): void {
+    const cur = transformOf(i)[key];
+    if (!Array.isArray(cur)) return;
+    const arr = [...cur as Kf[]];
+    if (!arr[kfIdx]) return;
+    arr[kfIdx] = { ...arr[kfIdx]!, timeMs: Math.round(Math.max(0, Math.min(composition.durationMs, newTime))) };
+    arr.sort((a, b) => a.timeMs - b.timeMs);
+    patchTransform(i, { [key]: arr });
+  }
+  function deleteKey(i: number, key: TKey, kfIdx: number): void {
+    const cur = transformOf(i)[key];
+    if (!Array.isArray(cur)) return;
+    const arr = [...cur as Kf[]];
+    arr.splice(kfIdx, 1);
+    patchTransform(i, { [key]: arr.length ? arr : (cur as Kf[])[(cur as Kf[]).length - 1]!.value });
+  }
+
+  // --- preset animations ----------------------------------------------------
   function applyAnim(name: string): void {
-    const l = composition.layers[selected] as AnyLayer | undefined;
-    if (!l) return;
-    const tr = (l.transform as Record<string, unknown>) ?? {};
+    const tr = transformOf(selected);
     const base = (k: string, d: number) => { const v = tr[k]; return typeof v === "number" ? v : Array.isArray(v) && v.length ? (v[0] as Kf).value : d; };
     const dur = composition.durationMs;
     const enter = Math.min(700, Math.round(dur * 0.4));
@@ -111,13 +169,9 @@ export function App() {
       case "Pop In": patch = { scale: [{ timeMs: 0, value: 0.3 }, { timeMs: enter, value: bs || 1, easing: BACK }] }; break;
       case "Zoom In": patch = { scale: [{ timeMs: 0, value: 0.7 }, { timeMs: enter, value: bs || 1, easing: EMPH }] }; break;
       case "Clear": {
-        const collapsed: Record<string, unknown> = {};
-        for (const k of TRANSFORM_KEYS) {
-          const v = tr[k];
-          if (Array.isArray(v) && v.length) collapsed[k] = (v[v.length - 1] as Kf).value;
-        }
-        patch = collapsed;
-        break;
+        const c: Record<string, unknown> = {};
+        for (const k of TRANSFORM_KEYS) { const v = tr[k]; if (Array.isArray(v) && v.length) c[k] = (v[v.length - 1] as Kf).value; }
+        patch = c; break;
       }
     }
     if (patch) patchTransform(selected, patch);
@@ -137,10 +191,12 @@ export function App() {
   }
 
   const layer = composition.layers[selected] as AnyLayer | undefined;
+  const trRaw = transformOf(selected);
+  const animOf = (k: TKey) => Array.isArray(trRaw[k]);
+  const keyOf = (k: TKey) => Array.isArray(trRaw[k]) && (trRaw[k] as Kf[]).some((kf) => Math.abs(kf.timeMs - timeMs) <= KEY_EPS);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontFamily: "system-ui, sans-serif", color: "#e6e8ec", background: "#0d1117", fontSize: 13 }}>
-      {/* Top bar */}
       <header style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderBottom: "1px solid #21262d", background: "#161b22" }}>
         <strong style={{ fontSize: 15 }}>openHyperEditor</strong>
         <span style={{ opacity: 0.4 }}>|</span>
@@ -154,7 +210,6 @@ export function App() {
       </header>
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-        {/* Left: layers */}
         <aside style={{ width: 190, borderRight: "1px solid #21262d", display: "flex", flexDirection: "column", padding: 10, gap: 4, overflow: "auto" }}>
           <div style={lbl}>Layers</div>
           {composition.layers.map((l, i) => (
@@ -168,13 +223,11 @@ export function App() {
           ))}
         </aside>
 
-        {/* Center: preview */}
         <div style={{ flex: 1, display: "grid", placeItems: "center", minWidth: 0, padding: 14, background: "#010409" }}>
           <canvas ref={canvasRef} width={composition.width} height={composition.height} style={{ width: "100%", maxHeight: "100%", aspectRatio: `${composition.width} / ${composition.height}`, height: "auto", boxShadow: "0 8px 40px #0008", borderRadius: 4 }} />
         </div>
 
-        {/* Right: properties */}
-        <aside style={{ width: 300, borderLeft: "1px solid #21262d", display: "flex", flexDirection: "column", padding: 12, gap: 10, overflow: "auto" }}>
+        <aside style={{ width: 308, borderLeft: "1px solid #21262d", display: "flex", flexDirection: "column", padding: 12, gap: 9, overflow: "auto" }}>
           {layer ? (
             <>
               <div style={lbl}>Animation — {layerLabel(layer, selected)}</div>
@@ -183,10 +236,23 @@ export function App() {
                 <button onClick={() => applyAnim("Clear")} style={{ ...chip, color: "#f0a0a0" }}>Clear</button>
               </div>
 
-              <div style={lbl}>Transform</div>
-              <Row><TNum l={layer} k="x" label="x" set={(p) => patchTransform(selected, p)} /><TNum l={layer} k="y" label="y" set={(p) => patchTransform(selected, p)} /></Row>
-              <Row><TNum l={layer} k="scale" label="scale" step={0.05} dflt={1} set={(p) => patchTransform(selected, p)} /><TNum l={layer} k="rotate" label="rotate°" set={(p) => patchTransform(selected, p)} /></Row>
-              <TRange l={layer} k="opacity" label="opacity" set={(p) => patchTransform(selected, p)} />
+              <div style={lbl}>Transform <span style={{ textTransform: "none", opacity: 0.7 }}>· scrub timeline, type a value or ◆ to key</span></div>
+              <Row>
+                <KfNum label="x" value={resolvedVal(selected, "x")} animated={animOf("x")} hasKey={keyOf("x")} onChange={(v) => editTransform(selected, "x", v)} onToggle={() => toggleKey(selected, "x")} />
+                <KfNum label="y" value={resolvedVal(selected, "y")} animated={animOf("y")} hasKey={keyOf("y")} onChange={(v) => editTransform(selected, "y", v)} onToggle={() => toggleKey(selected, "y")} />
+              </Row>
+              <Row>
+                <KfNum label="scale" step={0.05} value={resolvedVal(selected, "scale")} animated={animOf("scale")} hasKey={keyOf("scale")} onChange={(v) => editTransform(selected, "scale", v)} onToggle={() => toggleKey(selected, "scale")} />
+                <KfNum label="rotate°" value={resolvedVal(selected, "rotate")} animated={animOf("rotate")} hasKey={keyOf("rotate")} onChange={(v) => editTransform(selected, "rotate", v)} onToggle={() => toggleKey(selected, "rotate")} />
+              </Row>
+              <KfRange label="opacity" value={resolvedVal(selected, "opacity")} animated={animOf("opacity")} hasKey={keyOf("opacity")} onChange={(v) => editTransform(selected, "opacity", v)} onToggle={() => toggleKey(selected, "opacity")} />
+
+              <div style={lbl}>Layer</div>
+              <Col label="id"><input value={(layer.id as string) ?? ""} onChange={(e) => patchLayer(selected, { id: e.target.value || undefined })} style={input} /></Col>
+              <Row>
+                <Num label="startMs" value={(layer.startMs as number) ?? 0} onChange={(v) => patchLayer(selected, { startMs: v || undefined })} />
+                <Num label="endMs" value={(layer.endMs as number) ?? composition.durationMs} onChange={(v) => patchLayer(selected, { endMs: v })} />
+              </Row>
 
               <div style={lbl}>Effects</div>
               <Sel label="blendMode" value={(layer.blendMode as string) ?? "normal"} options={BLEND_MODES} onChange={(v) => patchLayer(selected, { blendMode: v === "normal" ? undefined : v })} />
@@ -212,46 +278,53 @@ export function App() {
         </aside>
       </div>
 
-      {/* Bottom: timeline */}
-      <Timeline composition={composition} timeMs={timeMs} selected={selected} onSeek={setTimeMs} onSelect={setSelected} />
+      <Timeline composition={composition} timeMs={timeMs} selected={selected} onSeek={setTimeMs} onSelect={setSelected} onKfDrag={moveKey} onKfDelete={deleteKey} />
     </div>
   );
 }
 
-function Timeline({ composition, timeMs, selected, onSeek, onSelect }: { composition: Composition; timeMs: number; selected: number; onSeek: (t: number) => void; onSelect: (i: number) => void }) {
+function Timeline({ composition, timeMs, selected, onSeek, onSelect, onKfDrag, onKfDelete }: {
+  composition: Composition; timeMs: number; selected: number; onSeek: (t: number) => void; onSelect: (i: number) => void;
+  onKfDrag: (i: number, key: TKey, kfIdx: number, t: number) => void; onKfDelete: (i: number, key: TKey, kfIdx: number) => void;
+}) {
   const dur = composition.durationMs || 1;
   const trackRef = useRef<HTMLDivElement>(null);
   const seek = (clientX: number) => {
     const el = trackRef.current; if (!el) return;
     const r = el.getBoundingClientRect();
-    onSeek(Math.max(0, Math.min(dur, ((clientX - r.left) / r.width) * dur)));
+    onSeek(Math.max(0, Math.min(dur, ((clientX - r.left - 120) / (r.width - 120)) * dur)));
   };
   const pct = (t: number) => `${(t / dur) * 100}%`;
   return (
-    <div style={{ height: 168, borderTop: "1px solid #21262d", background: "#161b22", display: "flex", flexDirection: "column" }}>
+    <div style={{ height: 180, borderTop: "1px solid #21262d", background: "#161b22", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 12px", borderBottom: "1px solid #21262d" }}>
         <span style={{ fontSize: 11, opacity: 0.6, textTransform: "uppercase", letterSpacing: 0.5 }}>Timeline</span>
         <span style={{ fontVariantNumeric: "tabular-nums", opacity: 0.8 }}>{(timeMs / 1000).toFixed(2)}s</span>
         <span style={{ opacity: 0.4 }}>/ {(dur / 1000).toFixed(2)}s</span>
+        <span style={{ flex: 1 }} />
+        <span style={{ opacity: 0.45, fontSize: 11 }}>drag ◆ to retime · double-click ◆ to delete</span>
       </div>
       <div ref={trackRef} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); seek(e.clientX); }} onPointerMove={(e) => { if (e.buttons) seek(e.clientX); }}
         style={{ position: "relative", flex: 1, overflow: "auto", cursor: "text", paddingLeft: 120 }}>
-        {/* tracks */}
         {composition.layers.map((l, i) => {
           const al = l as AnyLayer;
           const start = (al.startMs as number) ?? 0;
           const end = (al.endMs as number) ?? dur;
           const tr = (al.transform as Record<string, unknown>) ?? {};
-          const kfs: Kf[] = TRANSFORM_KEYS.flatMap((k) => (Array.isArray(tr[k]) ? (tr[k] as Kf[]) : []));
           return (
-            <div key={i} style={{ position: "relative", height: 26, borderBottom: "1px solid #1c2128" }}>
+            <div key={i} style={{ position: "relative", height: 28, borderBottom: "1px solid #1c2128" }}>
               <div onClick={() => onSelect(i)} style={{ position: "absolute", left: -120, width: 116, height: "100%", display: "flex", alignItems: "center", padding: "0 6px", fontSize: 11, color: i === selected ? "#58a6ff" : "#8b949e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}>{layerLabel(al, i)}</div>
-              <div style={{ position: "absolute", top: 5, height: 16, left: pct(start), width: `calc(${pct(end - start)})`, background: i === selected ? "#1f6feb55" : "#30363d", border: `1px solid ${i === selected ? "#1f6feb" : "#3d444d"}`, borderRadius: 4 }} />
-              {kfs.map((kf, j) => <div key={j} title={`${kf.timeMs}ms`} style={{ position: "absolute", top: 8, left: pct(kf.timeMs), width: 9, height: 9, marginLeft: -4, transform: "rotate(45deg)", background: "#e7c36a", border: "1px solid #b9962f" }} />)}
+              <div style={{ position: "absolute", top: 6, height: 16, left: pct(start), width: pct(end - start), background: i === selected ? "#1f6feb44" : "#30363d", border: `1px solid ${i === selected ? "#1f6feb" : "#3d444d"}`, borderRadius: 4 }} />
+              {TRANSFORM_KEYS.flatMap((key) => Array.isArray(tr[key]) ? (tr[key] as Kf[]).map((kf, j) => (
+                <div key={`${key}-${j}`} title={`${key} @ ${Math.round(kf.timeMs)}ms`}
+                  onPointerDown={(e) => { e.stopPropagation(); onSelect(i); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }}
+                  onPointerMove={(e) => { if (e.buttons) { e.stopPropagation(); const r = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect(); onKfDrag(i, key, j, ((e.clientX - r.left) / r.width) * dur); } }}
+                  onDoubleClick={(e) => { e.stopPropagation(); onKfDelete(i, key, j); }}
+                  style={{ position: "absolute", top: 9, left: pct(kf.timeMs), width: 11, height: 11, marginLeft: -5, transform: "rotate(45deg)", background: i === selected ? "#e7c36a" : "#9c834a", border: "1px solid #b9962f", cursor: "ew-resize" }} />
+              )) : [])}
             </div>
           );
         })}
-        {/* playhead */}
         <div style={{ position: "absolute", top: 0, bottom: 0, left: `calc(120px + (100% - 120px) * ${timeMs / dur})`, width: 2, background: "#f85149", pointerEvents: "none" }}>
           <div style={{ position: "absolute", top: -1, left: -4, width: 10, height: 8, background: "#f85149", clipPath: "polygon(0 0, 100% 0, 50% 100%)" }} />
         </div>
@@ -270,8 +343,12 @@ function ShapeProps({ layer, set }: { layer: AnyLayer; set: (p: Record<string, u
         ? <Num label="radius" value={(layer.radius as number) ?? 0} onChange={(v) => set({ radius: v })} />
         : <Row><Num label="width" value={(layer.width as number) ?? 0} onChange={(v) => set({ width: v })} /><Num label="height" value={(layer.height as number) ?? 0} onChange={(v) => set({ height: v })} /></Row>}
       {fill !== undefined
-        ? <Col label="fill"><input type="color" value={fill} onChange={(e) => set({ fill: e.target.value })} style={{ width: "100%", height: 30, border: "none", background: "none" }} /></Col>
+        ? <Col label="fill"><input type="color" value={fill} onChange={(e) => set({ fill: e.target.value })} style={swatch} /></Col>
         : <div style={{ opacity: 0.6, fontSize: 11 }}>fill is a gradient — edit in JSON</div>}
+      <Row>
+        <Col label="stroke"><input type="color" value={typeof layer.stroke === "string" ? layer.stroke : "#000000"} onChange={(e) => set({ stroke: e.target.value })} style={swatch} /></Col>
+        <Num label="strokeWidth" value={(layer.strokeWidth as number) ?? 0} onChange={(v) => set({ strokeWidth: v || undefined, stroke: v ? layer.stroke : undefined })} />
+      </Row>
     </>
   );
 }
@@ -281,23 +358,26 @@ function TextProps({ layer, set }: { layer: AnyLayer; set: (p: Record<string, un
   return (
     <>
       <div style={lbl}>Text</div>
-      <Col label="text"><input value={(layer.text as string) ?? ""} onChange={(e) => set({ text: e.target.value })} style={input} /></Col>
+      <Col label="text"><textarea value={(layer.text as string) ?? ""} onChange={(e) => set({ text: e.target.value })} rows={2} style={{ ...input, resize: "vertical" }} /></Col>
       <Row><Num label="size" value={(layer.size as number) ?? 16} onChange={(v) => set({ size: v })} /><Sel label="align" value={(layer.align as string) ?? "left"} options={["left", "center", "right"]} onChange={(v) => set({ align: v })} /></Row>
-      <Col label="color"><input type="color" value={color} onChange={(e) => set({ color: e.target.value })} style={{ width: "100%", height: 30, border: "none", background: "none" }} /></Col>
+      <Row><Num label="lineHeight" step={0.1} value={(layer.lineHeight as number) ?? 1.3} onChange={(v) => set({ lineHeight: v })} /><Col label="color"><input type="color" value={color} onChange={(e) => set({ color: e.target.value })} style={swatch} /></Col></Row>
+      <Col label="font (URL, optional)"><input value={(layer.font as string) ?? ""} placeholder="https://…/Font.ttf" onChange={(e) => set({ font: e.target.value || undefined })} style={input} /></Col>
     </>
   );
 }
 
-function num(v: unknown, d = 0): number { return typeof v === "number" ? v : d; }
-function TNum({ l, k, label, step, dflt = 0, set }: { l: AnyLayer; k: string; label: string; step?: number; dflt?: number; set: (p: Record<string, unknown>) => void }) {
-  const v = ((l.transform as Record<string, unknown>) ?? {})[k];
-  if (Array.isArray(v)) return <Col label={label}><span style={animated}>● animated</span></Col>;
-  return <Num label={label} value={num(v, dflt)} step={step} onChange={(nv) => set({ [k]: nv })} />;
+// --- field components --------------------------------------------------------
+function KfNum({ label, value, step, animated, hasKey, onChange, onToggle }: { label: string; value: number; step?: number; animated: boolean; hasKey: boolean; onChange: (v: number) => void; onToggle: () => void }) {
+  return <Col label={label}><div style={{ display: "flex", gap: 4 }}>
+    <input type="number" value={r2(value)} step={step ?? 1} onChange={(e) => onChange(Number(e.target.value))} style={input} />
+    <button onClick={onToggle} title="keyframe at playhead" style={kfBtn(animated, hasKey)}>◆</button>
+  </div></Col>;
 }
-function TRange({ l, k, label, set }: { l: AnyLayer; k: string; label: string; set: (p: Record<string, unknown>) => void }) {
-  const v = ((l.transform as Record<string, unknown>) ?? {})[k];
-  if (Array.isArray(v)) return <Col label={label}><span style={animated}>● animated</span></Col>;
-  return <Col label={label}><input type="range" min={0} max={1} step={0.01} value={num(v, 1)} onChange={(e) => set({ [k]: Number(e.target.value) })} style={{ width: "100%" }} /></Col>;
+function KfRange({ label, value, animated, hasKey, onChange, onToggle }: { label: string; value: number; animated: boolean; hasKey: boolean; onChange: (v: number) => void; onToggle: () => void }) {
+  return <Col label={`${label} · ${r2(value)}`}><div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+    <input type="range" min={0} max={1} step={0.01} value={value} onChange={(e) => onChange(Number(e.target.value))} style={{ flex: 1 }} />
+    <button onClick={onToggle} title="keyframe at playhead" style={kfBtn(animated, hasKey)}>◆</button>
+  </div></Col>;
 }
 function Num({ label, value, step, onChange }: { label: string; value: number; step?: number; onChange: (v: number) => void }) {
   return <Col label={label}><input type="number" value={value} step={step ?? 1} onChange={(e) => onChange(Number(e.target.value))} style={input} /></Col>;
@@ -319,12 +399,15 @@ function dot(l: AnyLayer): React.CSSProperties {
   const c = l.type === "text" ? "#58a6ff" : l.type === "group" ? "#d2a8ff" : l.type === "video" || l.type === "image" ? "#7ee787" : "#e7c36a";
   return { width: 8, height: 8, borderRadius: 2, background: c, flexShrink: 0 };
 }
+function kfBtn(animated: boolean, hasKey: boolean): React.CSSProperties {
+  return { width: 28, background: hasKey ? "#3d3416" : "#1c2128", color: animated ? (hasKey ? "#e7c36a" : "#b9962f") : "#484f58", border: `1px solid ${animated ? "#6e5a1f" : "#30363d"}`, borderRadius: 6, cursor: "pointer", fontSize: 11 };
+}
 
 const lbl: React.CSSProperties = { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.5, marginTop: 4 };
-const animated: React.CSSProperties = { color: "#e7c36a", fontSize: 11, padding: "6px 0" };
 const btn: React.CSSProperties = { background: "#238636", color: "#fff", border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer", fontWeight: 600 };
 const btnSm: React.CSSProperties = { background: "#21262d", color: "#e6e8ec", border: "1px solid #30363d", borderRadius: 6, padding: "5px 9px", cursor: "pointer" };
 const chip: React.CSSProperties = { background: "#1c2128", color: "#c9d1d9", border: "1px solid #30363d", borderRadius: 14, padding: "4px 11px", cursor: "pointer", fontSize: 12 };
 const iconBtn: React.CSSProperties = { background: "none", color: "#8b949e", border: "none", cursor: "pointer", padding: "0 3px" };
 const rowItem: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6, padding: "5px 7px", borderRadius: 5, cursor: "pointer" };
 const input: React.CSSProperties = { background: "#010409", color: "#c9d1d9", border: "1px solid #21262d", borderRadius: 6, padding: "6px 8px", fontSize: 12, width: "100%", boxSizing: "border-box" };
+const swatch: React.CSSProperties = { width: "100%", height: 30, border: "none", background: "none" };
