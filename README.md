@@ -47,7 +47,21 @@ npx openhyper render my-composition.ts --out out.mp4
 npx openhyper render my-composition.ts --out out.mp4 --renderer native --workers auto
 ```
 
-Subpath entries: `openhypercore` (≡ `openhypercore/core`, authoring IR + animation), `openhypercore/renderer-skia` (CanvasKit raster), `openhypercore/renderer-svg`, `openhypercore/encoder-ffmpeg`, `openhypercore/assets`, `openhypercore/jsx-runtime`, `openhypercore/cli`.
+### Render service (HTTP)
+
+Run the same render pipeline as an HTTP service — `POST /render` a composition IR (JSON) and get an MP4 back. The same engine serves both agents (scripted) and the editor (browser); IR assets must be reachable from the server's filesystem.
+
+```bash
+npx openhyper serve --port 8787
+# POST a composition IR -> MP4
+curl -X POST -H "content-type: application/json" \
+  --data '{"type":"composition","fps":30,"width":1280,"height":720,"durationMs":1000,"layers":[...]}' \
+  http://localhost:8787/render --output out.mp4
+```
+
+`GET /healthz` for liveness; the response carries `X-OpenHyper-Frames/Render-Ms/Total-Ms/Renderer` headers and CORS is enabled. Programmatic: `import { createRenderServer } from "openhypercore/server"`.
+
+Subpath entries: `openhypercore` (≡ `openhypercore/core`, authoring IR + animation), `openhypercore/renderer-skia` (CanvasKit raster), `openhypercore/renderer-svg`, `openhypercore/encoder-ffmpeg`, `openhypercore/assets`, `openhypercore/jsx-runtime`, `openhypercore/server` (HTTP render service), `openhypercore/cli`.
 
 The default renderer is the portable CanvasKit/wasm backend (no native binary required). The native (Rust + skia-safe) backend — ~8–14× faster — is an opt-in: build it from source with `pnpm build:native` and select with `--renderer native` (or `OPENHYPERCORE_RENDERER=native`); prebuilt per-platform binaries are planned.
 

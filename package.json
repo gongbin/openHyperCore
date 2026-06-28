@@ -65,6 +65,10 @@
       "types": "./dist/packages/cli/src/index.d.ts",
       "import": "./dist/packages/cli/src/index.js"
     },
+    "./server": {
+      "types": "./dist/packages/server/src/index.d.ts",
+      "import": "./dist/packages/server/src/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
