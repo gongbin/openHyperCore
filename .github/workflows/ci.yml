@@ -35,3 +35,19 @@ jobs:
       # so the suite runs entirely on the portable wasm renderer.
       - name: Test
         run: pnpm test
+
+  # The editor is a standalone app (not in the engine workspace); typecheck +
+  # build it on its own, consuming the published openhypercore package.
+  editor:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/editor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: pnpm install --ignore-workspace --frozen-lockfile
+      - run: pnpm build
