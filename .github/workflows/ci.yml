@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deterministic text rendering: install the Latin + CJK fonts the renderer
+      # looks for on Linux (matches its font candidate paths), so text/emoji
+      # fallback tests are stable in CI.
+      - name: Install fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-dejavu-core fonts-noto-cjk
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm check
+
+      # The native (Rust) backend isn't built here; its parity tests self-skip,
+      # so the suite runs entirely on the portable wasm renderer.
+      - name: Test
+        run: pnpm test
