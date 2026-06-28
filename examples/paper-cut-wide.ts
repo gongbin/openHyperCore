@@ -114,7 +114,7 @@ export default defineComposition({
     text("rib-meta", "A WEEK IN MY LIFE", centerX("A WEEK IN MY LIFE", 18), 706, 18, red, 1120, decorExit + 300, exitOp(1120)),
 
     // avatar — video cropped to a circle, growing to fill the frame
-    { type: "video", id: "av-vid", src: SRC, startMs: avatarAppear, endMs: fullStart + 500, trimStartMs: 5000, width: vW, height: vH, clip: "circle", transform: { x: vX, y: vY, scale: vS, opacity: [{ timeMs: avatarAppear, value: 0 }, { timeMs: avatarAppear + 110, value: 1 }] } },
+    { type: "video", id: "av-vid", src: SRC, startMs: avatarAppear, endMs: fullStart + 500, trimStartMs: 5000, width: vW, height: vH, clip: { type: "circle", radius: Math.min(vW, vH) / 2, cx: vW / 2, cy: vH / 2 }, transform: { x: vX, y: vY, scale: vS, opacity: [{ timeMs: avatarAppear, value: 0 }, { timeMs: avatarAppear + 110, value: 1 }] } },
     circle("av-ring", avatarAppear, zoomEnd + 60, rX, rY, aR, "rgba(0,0,0,0)", [{ timeMs: avatarAppear, value: 0 }, { timeMs: avatarAppear + 110, value: 1 }, { timeMs: 3300, value: 1 }, { timeMs: 3650, value: 0 }], vS, cream, 9, [17, 12]),
     text("av-cap", "[ 你的头像 ]", centerX("[ 你的头像 ]", 22), aCy - aR - 22, 22, "#6c5c3b", avatarAppear + 200, zoomStart, [{ timeMs: avatarAppear + 200, value: 0 }, { timeMs: avatarAppear + 320, value: 1 }, { timeMs: zoomStart - 100, value: 1 }, { timeMs: zoomStart, value: 0 }]),
 

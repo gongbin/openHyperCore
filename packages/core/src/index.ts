@@ -12,20 +12,45 @@ export type {
   TimelineContext,
   TimelineMarker
 } from "./effects.ts";
+export { cubicBezier, resolveEasing } from "./easing.ts";
+export type { CubicBezierPoints, Easing, EasingFn, EasingLike } from "./easing.ts";
 export { composeTimeline, delayTransition, fadeTransition, mergeTransforms, scaleTransition, slideTransition } from "./transitions.ts";
-export type { Easing, EasingFn, FadeTransitionOptions, ScaleTransitionOptions, SlideTransitionOptions, TimedTransitionOptions } from "./transitions.ts";
+export type { FadeTransitionOptions, ScaleTransitionOptions, SlideTransitionOptions, TimedTransitionOptions } from "./transitions.ts";
+export { TransitionSeriesBuilder, createTransitionSeries } from "./scene-transitions.ts";
+export type {
+  SceneTransitionDirection,
+  SceneTransitionSpec,
+  SceneTransitionType,
+  TransitionSceneContext,
+  TransitionSceneFactory,
+  TransitionSeriesBuild,
+  TransitionSeriesMarker,
+  TransitionSeriesTransitionMarker
+} from "./scene-transitions.ts";
+export { interpolate, spring, springDurationMs, springKeyframes } from "./interpolate.ts";
+export type { ExtrapolateType, InterpolateOptions, SpringConfig, SpringKeyframesOptions, SpringOptions } from "./interpolate.ts";
 export { parseSubtitles, subtitlesToCaptions } from "./subtitles.ts";
 export type { SubtitleCaptionOptions, SubtitleCue } from "./subtitles.ts";
 export type {
   AnimatedScalar,
   AudioLayer,
   BaseLayer,
+  BlendMode,
   CaptionLayer,
   Composition,
+  Fill,
+  Gradient,
+  GradientStop,
+  GroupLayer,
+  GroupReveal,
   ImageLayer,
   Layer,
+  LayerClip,
   LayerTransform,
+  MotionBlur,
   ResolvedFrame,
+  ResolvedGroupLayer,
+  ResolvedGroupReveal,
   ResolvedLayer,
   ResolvedTransform,
   ScalarKeyframe,

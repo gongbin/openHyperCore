@@ -1,6 +1,6 @@
 import { parentPort } from "node:worker_threads";
 import { performance } from "node:perf_hooks";
-import { createRgbaFrameRenderer, createVideoFrameCache, prefetchVideoFrameBatch } from "../../renderer-skia/src/index.ts";
+import { createFrameRenderer, createVideoFrameCache, prefetchVideoFrameBatch } from "../../renderer-skia/src/index.ts";
 import type { ResolvedFrame } from "../../core/src/index.ts";
 
 // A run = a contiguous slice of frames. The worker batch-extracts all the video
@@ -12,10 +12,11 @@ type RenderWorkerRequest = {
   frames: ResolvedFrame[];
   ffmpegPath?: string;
   diskCacheDir?: string;
+  layerCache?: boolean;
 };
 
 const videoFrameCaches = new Map<string, ReturnType<typeof createVideoFrameCache>>();
-const rgbaRenderer = createRgbaFrameRenderer();
+const rgbaRenderer = createFrameRenderer();
 
 if (!parentPort) {
   throw new Error("render-worker must run inside a worker thread");
@@ -29,7 +30,9 @@ parentPort.on("message", async (message: RenderWorkerRequest) => {
     await prefetchVideoFrameBatch(message.frames, cache);
     const frames: Uint8Array[] = [];
     for (const frame of message.frames) {
-      frames.push(await rgbaRenderer.render(frame, { videoFrameCache: cache }));
+      frames.push(await rgbaRenderer.render(frame, message.layerCache === false
+        ? { videoFrameCache: cache, layerCache: false }
+        : { videoFrameCache: cache }));
     }
     parentPort?.postMessage({
       runIndex: message.runIndex,

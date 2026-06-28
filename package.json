@@ -20,6 +20,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:native": "cargo build --manifest-path packages/renderer-native/Cargo.toml && node packages/renderer-native/scripts/copy-artifact.mjs",
+    "build:native:release": "cargo build --release --manifest-path packages/renderer-native/Cargo.toml && NATIVE_PROFILE=release node packages/renderer-native/scripts/copy-artifact.mjs",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "node --experimental-strip-types --test packages/*/test/*.test.ts",
     "cli": "node --experimental-strip-types packages/cli/src/index.ts",

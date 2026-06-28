@@ -8,8 +8,9 @@ import { Worker } from "node:worker_threads";
 import { encodeRawVideoFrames } from "../../encoder-ffmpeg/src/index.ts";
 import type { AudioInput, EncodePngFramesOptions } from "../../encoder-ffmpeg/src/index.ts";
 import { defineComposition, frameCount, resolveFrame, timeForFrame } from "../../core/src/index.ts";
-import type { AudioLayer, Composition, ResolvedFrame } from "../../core/src/index.ts";
-import { createRgbaFrameRenderer, createVideoFrameCache, prefetchVideoFrameBatch, renderPngFrame } from "../../renderer-skia/src/index.ts";
+import type { Composition, Layer, ResolvedFrame, ResolvedLayer } from "../../core/src/index.ts";
+import { createFrameRenderer, createVideoFrameCache, prefetchVideoFrameBatch, renderPngFrame } from "../../renderer-skia/src/index.ts";
+import type { LayerRasterCacheStats } from "../../renderer-skia/src/index.ts";
 import { renderSvgFrame } from "../../renderer-svg/src/index.ts";
 
 type CliIO = {
@@ -33,6 +34,8 @@ type RenderOptions = {
   workers?: WorkerSelection;
   workerWindow?: number;
   diskCacheDir?: string;
+  // `false` disables the in-renderer static-layer raster cache (--no-layer-cache).
+  layerCache?: boolean;
 };
 
 type BenchOptions = Omit<RenderOptions, "out"> & {
@@ -55,6 +58,7 @@ type RenderStats = {
   renderWallMs: number;
   renderCpuMs: number;
   peakRssBytes: number;
+  layerCache?: LayerRasterCacheStats;
 };
 
 type CompositionAudio = {
@@ -73,6 +77,7 @@ type RenderRunJob = {
   frames: ResolvedFrame[];
   ffmpegPath?: string;
   diskCacheDir?: string;
+  layerCache?: boolean;
 };
 
 type FramePlan = {
@@ -222,6 +227,7 @@ function parseRenderOptions(args: string[]): RenderOptions {
   let workers: WorkerSelection | undefined;
   let workerWindow: number | undefined;
   let diskCacheDir: string | undefined;
+  let layerCache: boolean | undefined;
   const ffmpegArgsPrefix: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -278,6 +284,11 @@ function parseRenderOptions(args: string[]): RenderOptions {
       continue;
     }
 
+    if (name === "--no-layer-cache") {
+      layerCache = false;
+      continue;
+    }
+
     throw new Error(`Unknown option: ${name}`);
   }
 
@@ -290,7 +301,8 @@ function parseRenderOptions(args: string[]): RenderOptions {
     ffmpegArgsPrefix,
     workers,
     workerWindow,
-    diskCacheDir
+    diskCacheDir,
+    layerCache
   }) as RenderOptions;
 }
 
@@ -304,6 +316,7 @@ function parseBenchOptions(args: string[]): BenchOptions {
   let workers: WorkerSelection | undefined;
   let workerWindow: number | undefined;
   let diskCacheDir: string | undefined;
+  let layerCache: boolean | undefined;
   const ffmpegArgsPrefix: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -366,6 +379,11 @@ function parseBenchOptions(args: string[]): BenchOptions {
       continue;
     }
 
+    if (name === "--no-layer-cache") {
+      layerCache = false;
+      continue;
+    }
+
     throw new Error(`Unknown option: ${name}`);
   }
 
@@ -379,7 +397,8 @@ function parseBenchOptions(args: string[]): BenchOptions {
     ffmpegArgsPrefix,
     workers,
     workerWindow,
-    diskCacheDir
+    diskCacheDir,
+    layerCache
   }) as BenchOptions;
 }
 
@@ -603,7 +622,7 @@ async function renderVideo(composition: Composition, options: RenderOptions, aud
     encodeOptions.audioInputs = audio.audioInputs;
   }
 
-  await encodeRawVideoFrames(renderCompositionRgbaFrames(composition, stats, workerCount, workerWindow, options.ffmpegPath, options.diskCacheDir), encodeOptions);
+  await encodeRawVideoFrames(renderCompositionRgbaFrames(composition, stats, workerCount, workerWindow, options.ffmpegPath, options.diskCacheDir, options.layerCache), encodeOptions);
   stats.peakRssBytes = Math.max(stats.peakRssBytes, process.memoryUsage().rss);
   const totalMs = performance.now() - startedAt;
 
@@ -628,6 +647,7 @@ async function renderVideo(composition: Composition, options: RenderOptions, aud
     encodedVideoDurationMs: roundMs((stats.frames / composition.fps) * 1000),
     audio: Boolean(audio.audioFile) || Boolean(audio.audioInputs?.length),
     ...summarizeAudioTimeline(audio, composition.durationMs),
+    layerCache: stats.layerCache ?? null,
     renderMs: roundMs(stats.renderWallMs),
     renderWallMs: roundMs(stats.renderWallMs),
     renderCpuMs: roundMs(stats.renderCpuMs),
@@ -638,26 +658,56 @@ async function renderVideo(composition: Composition, options: RenderOptions, aud
 }
 
 function extractAudioInputs(composition: Composition): CompositionAudio {
-  const audioLayers = composition.layers.filter((layer): layer is AudioLayer => layer.type === "audio");
-  if (audioLayers.length === 0) {
+  const audioInputs: AudioInput[] = [];
+  collectAudioInputs(composition.layers, 0, composition.durationMs, true, audioInputs);
+  if (audioInputs.length === 0) {
     return {};
   }
-
-  const audioInputs = audioLayers.map((layer) => omitUndefined({
-    src: layer.src,
-    startMs: layer.startMs,
-    endMs: layer.endMs,
-    volume: layer.volume,
-    fadeInMs: layer.fadeInMs,
-    fadeOutMs: layer.fadeOutMs
-  }) as AudioInput);
 
   return { audioInputs };
 }
 
-async function* renderCompositionRgbaFrames(composition: Composition, stats?: RenderStats, workerCount = 1, workerWindow = workerCount * 2, ffmpegPath?: string, diskCacheDir?: string): AsyncIterable<Buffer> {
+// Audio layers may sit inside groups; group children live on the group's
+// LOCAL timeline, so nested audio is shifted by the accumulated group start
+// and clamped to the group's window on the composition timeline.
+function collectAudioInputs(layers: Layer[], offsetMs: number, windowEndMs: number, topLevel: boolean, out: AudioInput[]): void {
+  for (const layer of layers) {
+    if (layer.type === "group") {
+      const groupStartMs = offsetMs + (layer.startMs ?? 0);
+      const groupEndMs = Math.min(layer.endMs !== undefined ? offsetMs + layer.endMs : windowEndMs, windowEndMs);
+      collectAudioInputs(layer.layers, groupStartMs, groupEndMs, false, out);
+      continue;
+    }
+    if (layer.type !== "audio") {
+      continue;
+    }
+    if (topLevel) {
+      // Preserve the legacy pass-through shape for top-level audio (undefined
+      // startMs/endMs keep their encoder defaults).
+      out.push(omitUndefined({
+        src: layer.src,
+        startMs: layer.startMs,
+        endMs: layer.endMs,
+        volume: layer.volume,
+        fadeInMs: layer.fadeInMs,
+        fadeOutMs: layer.fadeOutMs
+      }) as AudioInput);
+      continue;
+    }
+    out.push(omitUndefined({
+      src: layer.src,
+      startMs: offsetMs + (layer.startMs ?? 0),
+      endMs: Math.min(offsetMs + (layer.endMs ?? (windowEndMs - offsetMs)), windowEndMs),
+      volume: layer.volume,
+      fadeInMs: layer.fadeInMs,
+      fadeOutMs: layer.fadeOutMs
+    }) as AudioInput);
+  }
+}
+
+async function* renderCompositionRgbaFrames(composition: Composition, stats?: RenderStats, workerCount = 1, workerWindow = workerCount * 2, ffmpegPath?: string, diskCacheDir?: string, layerCache?: boolean): AsyncIterable<Buffer> {
   if (workerCount > 1) {
-    yield* renderCompositionRgbaFramesWithWorkers(composition, workerCount, workerWindow, stats, ffmpegPath, diskCacheDir);
+    yield* renderCompositionRgbaFramesWithWorkers(composition, workerCount, workerWindow, stats, ffmpegPath, diskCacheDir, layerCache);
     return;
   }
 
@@ -666,7 +716,7 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
   let prefetchedUntilFrameIndex = 0;
   const totalFrames = frameCount(composition);
   const videoFrameCache = createVideoFrameCache(videoFrameCacheOptions(ffmpegPath, diskCacheDir));
-  const rgbaRenderer = createRgbaFrameRenderer();
+  const rgbaRenderer = createFrameRenderer(layerCache === false ? { layerCache: false } : {});
 
   try {
     for (let frameIndex = 0; frameIndex < totalFrames; frameIndex += 1) {
@@ -705,11 +755,17 @@ async function* renderCompositionRgbaFrames(composition: Composition, stats?: Re
       yield frame;
     }
   } finally {
+    if (stats) {
+      const cacheStats = rgbaRenderer.layerCacheStats();
+      if (cacheStats) {
+        stats.layerCache = cacheStats;
+      }
+    }
     rgbaRenderer.dispose();
   }
 }
 
-async function* renderCompositionRgbaFramesWithWorkers(composition: Composition, workerCount: number, workerWindow: number, stats?: RenderStats, ffmpegPath?: string, diskCacheDir?: string): AsyncIterable<Buffer> {
+async function* renderCompositionRgbaFramesWithWorkers(composition: Composition, workerCount: number, workerWindow: number, stats?: RenderStats, ffmpegPath?: string, diskCacheDir?: string, layerCache?: boolean): AsyncIterable<Buffer> {
   const totalFrames = frameCount(composition);
   // `workerWindow` caps how many fresh frames are buffered (memory window) per
   // dispatch; spread across up to `workerCount` contiguous runs.
@@ -754,7 +810,7 @@ async function* renderCompositionRgbaFramesWithWorkers(composition: Composition,
           frameIndex += 1;
         }
         if (frames.length > 0) {
-          runs.push(omitUndefined({ runIndex: runs.length, sourceIndices, frames, ffmpegPath, diskCacheDir }) as RenderRunJob);
+          runs.push(omitUndefined({ runIndex: runs.length, sourceIndices, frames, ffmpegPath, diskCacheDir, layerCache }) as RenderRunJob);
         }
       }
 
@@ -939,12 +995,25 @@ function resolveFrameWindow(composition: Composition, startFrameIndex: number, e
 }
 
 function visualFrameKey(frame: ReturnType<typeof resolveFrame>): string {
-  const hasVideoLayer = frame.layers.some((layer) => layer.type === "video");
   return JSON.stringify({
-    timeMs: hasVideoLayer ? frame.timeMs : null,
+    timeMs: hasVideoLayer(frame.layers) ? frame.timeMs : null,
     composition: frame.composition,
-    layers: frame.layers.filter((layer) => layer.type !== "audio")
+    layers: stripAudioLayers(frame.layers)
   });
+}
+
+// Video makes a frame time-dependent even when the resolved layer JSON is
+// stable, including video nested inside groups.
+function hasVideoLayer(layers: ResolvedLayer[]): boolean {
+  return layers.some((layer) => layer.type === "video" || (layer.type === "group" && hasVideoLayer(layer.layers)));
+}
+
+// Audio never affects pixels, so it must not break frame reuse — strip it
+// recursively before hashing.
+function stripAudioLayers(layers: ResolvedLayer[]): ResolvedLayer[] {
+  return layers
+    .filter((layer) => layer.type !== "audio")
+    .map((layer) => (layer.type === "group" ? { ...layer, layers: stripAudioLayers(layer.layers) } : layer));
 }
 
 function applyRenderOverrides(composition: Composition, options: Pick<RenderOptions, "fps" | "width" | "height">): Composition {

@@ -1,3 +1,4 @@
+import { resolveEasing } from "./easing.ts";
 import type { AnimatedScalar, ScalarKeyframe } from "./types.ts";
 
 export function resolveScalar(value: AnimatedScalar | undefined, timeMs: number, fallback: number): number {
@@ -27,7 +28,12 @@ export function resolveScalar(value: AnimatedScalar | undefined, timeMs: number,
   const nextIndex = sorted.findIndex((frame) => frame.timeMs >= timeMs);
   const previous = sorted[nextIndex - 1]!;
   const next = sorted[nextIndex] as ScalarKeyframe;
-  const progress = (timeMs - previous.timeMs) / (next.timeMs - previous.timeMs);
+  let progress = (timeMs - previous.timeMs) / (next.timeMs - previous.timeMs);
+  // The segment's curve is carried by its END keyframe ("ease into this value").
+  const ease = resolveEasing(next.easing);
+  if (ease) {
+    progress = ease(progress);
+  }
 
   return previous.value + (next.value - previous.value) * progress;
 }

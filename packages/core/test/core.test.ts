@@ -4,15 +4,21 @@ import {
   cinematicBars,
   composeTimeline,
   createTimeline,
+  createTransitionSeries,
+  cubicBezier,
   defineComposition,
   delayTransition,
   fadeTransition,
   flashTransitionLayer,
   glitchTitle,
   frameCount,
+  interpolate,
   mergeTransforms,
   parseSubtitles,
+  resolveEasing,
   resolveFrame,
+  spring,
+  springKeyframes,
   scaleTransition,
   slideTransition,
   speedLineBurst,
@@ -190,6 +196,81 @@ test("custom easing function is sampled into the transition curve", () => {
   assert.ok(Math.abs(midpoint!.value - 0.25) < 1e-9);
 });
 
+test("cubicBezier matches CSS endpoints and eases between them", () => {
+  const ease = cubicBezier(0.25, 0.1, 0.25, 1);
+  assert.equal(ease(0), 0);
+  assert.equal(ease(1), 1);
+  // Standard CSS "ease" front-loads progress: midpoint is well past 0.5.
+  assert.ok(ease(0.5) > 0.5);
+  // A linear control polygon reduces to the identity curve.
+  const linear = cubicBezier(0, 0, 1, 1);
+  assert.ok(Math.abs(linear(0.5) - 0.5) < 1e-6);
+  // overshoot curves can exceed 1 mid-flight (y unclamped).
+  const overshoot = cubicBezier(0.34, 1.56, 0.64, 1);
+  assert.ok(Math.max(overshoot(0.6), overshoot(0.7), overshoot(0.8)) > 1);
+  assert.throws(() => cubicBezier(Number.NaN, 0, 1, 1), /finite/);
+});
+
+test("resolveEasing accepts presets, functions and cubic-bezier tuples", () => {
+  assert.equal(resolveEasing(undefined), undefined);
+  assert.equal(resolveEasing("linear"), undefined);
+  const fn = (t: number) => t * t;
+  assert.equal(resolveEasing(fn), fn);
+  const preset = resolveEasing("easeOutCubic")!;
+  assert.ok(Math.abs(preset(1) - 1) < 1e-9);
+  const tuple = resolveEasing([0.25, 0.1, 0.25, 1])!;
+  assert.equal(tuple(0), 0);
+  assert.equal(tuple(1), 1);
+});
+
+test("per-keyframe easing curves a single keyframe track", () => {
+  const composition = defineComposition({
+    fps: 30,
+    width: 100,
+    height: 100,
+    durationMs: 1000,
+    layers: [
+      {
+        type: "text",
+        text: "Eased",
+        transform: {
+          // The easing on the END keyframe governs the segment into it.
+          x: [
+            { timeMs: 0, value: 0 },
+            { timeMs: 1000, value: 100, easing: "easeInCubic" }
+          ],
+          // Cubic-bezier tuple form is serializable and frame-precise.
+          opacity: [
+            { timeMs: 0, value: 0 },
+            { timeMs: 1000, value: 1, easing: [0.25, 0.1, 0.25, 1] }
+          ]
+        }
+      }
+    ]
+  });
+  const mid = resolveFrame(composition, 500).layers[0]!;
+  // easeInCubic at t=0.5 → 0.125 → x = 12.5 (well below the linear 50).
+  assert.ok(Math.abs((mid.transform.x as number) - 12.5) < 1e-6);
+  // The bezier "ease" front-loads opacity past the linear midpoint.
+  assert.ok((mid.transform.opacity as number) > 0.5);
+});
+
+test("mergeTransforms and delayTransition cover scaleX/scaleY and keep easing", () => {
+  const merged = mergeTransforms({ scaleX: 0.5 }, { scaleY: 2 }, { rotate: 10 });
+  assert.equal(merged.scaleX, 0.5);
+  assert.equal(merged.scaleY, 2);
+  assert.equal(merged.rotate, 10);
+
+  const delayed = delayTransition(
+    { x: [{ timeMs: 0, value: 0 }, { timeMs: 200, value: 50, easing: "easeOutBack" }] },
+    100
+  );
+  assert.deepEqual(delayed.x, [
+    { timeMs: 100, value: 0 },
+    { timeMs: 300, value: 50, easing: "easeOutBack" }
+  ]);
+});
+
 test("parseSubtitles reads SRT cues into milliseconds", () => {
   const srt = "1\n00:00:01,000 --> 00:00:04,500\nHello world\n\n2\n00:00:05,000 --> 00:00:08,000\nSecond line\nwrapped\n";
   const cues = parseSubtitles(srt);
@@ -304,6 +385,248 @@ test("createTimeline composes scenes and transitions in sequence", () => {
   assert.equal(timeline.markers.main!.startMs, 1440);
   assert.equal(timeline.composition.type, "composition");
   assert.equal(timeline.composition.durationMs, 2440);
+});
+
+test("interpolate maps multi-segment ranges with extrapolation options", () => {
+  assert.equal(interpolate(0.5, [0, 1], [0, 100]), 50);
+  // Multi-segment.
+  assert.equal(interpolate(1.5, [0, 1, 2], [0, 10, 110]), 60);
+  // Default extrapolation extends the edge segments.
+  assert.equal(interpolate(2, [0, 1], [0, 100]), 200);
+  assert.equal(interpolate(-1, [0, 1], [0, 100]), -100);
+  // Clamp pins to the range edges; identity returns the input.
+  assert.equal(interpolate(2, [0, 1], [0, 100], { extrapolateRight: "clamp" }), 100);
+  assert.equal(interpolate(-5, [0, 1], [0, 100], { extrapolateLeft: "identity" }), -5);
+  // Easing applies within a segment.
+  assert.equal(interpolate(0.5, [0, 1], [0, 100], { easing: (t) => t * t }), 25);
+
+  assert.throws(() => interpolate(0, [1], [1]), /at least 2/);
+  assert.throws(() => interpolate(0, [0, 0], [0, 1]), /monotonically increasing/);
+  assert.throws(() => interpolate(0, [0, 1, 2], [0, 1]), /same length/);
+});
+
+test("spring settles at the target and supports overshoot clamping", () => {
+  assert.equal(spring(0, { from: 10, to: 20 }), 10);
+  // Default config is underdamped: it overshoots the target on the way in.
+  const values = Array.from({ length: 60 }, (_, i) => spring(i * (1000 / 30), { from: 0, to: 1 }));
+  assert.ok(Math.max(...values) > 1.001, "expected overshoot past the target");
+  // Far in the future the spring has settled.
+  assert.ok(Math.abs(spring(5000, { from: 0, to: 1 }) - 1) < 1e-3);
+  // Clamping never passes the target.
+  const clamped = Array.from({ length: 60 }, (_, i) => spring(i * (1000 / 30), { from: 0, to: 1, overshootClamping: true }));
+  assert.ok(Math.max(...clamped) <= 1 + 1e-9);
+  // Critically/over-damped configs approach monotonically.
+  assert.ok(spring(200, { damping: 30, stiffness: 100, mass: 1 }) < 1);
+});
+
+test("springKeyframes samples a keyframe track that ends pinned to the target", () => {
+  const frames = springKeyframes({ startMs: 500, fps: 30, from: 0, to: 100 });
+  assert.equal(frames[0]!.timeMs, 500);
+  assert.equal(frames[0]!.value, 0);
+  assert.equal(frames.at(-1)!.value, 100);
+  assert.ok(frames.length > 5);
+
+  // Plugs straight into the keyframe IR.
+  const composition = defineComposition({
+    fps: 30,
+    width: 100,
+    height: 100,
+    durationMs: 3000,
+    layers: [{ type: "text", text: "Spring", transform: { y: frames } }]
+  });
+  const settled = resolveFrame(composition, 2900).layers[0]!;
+  assert.equal(settled.transform.y, 100);
+});
+
+test("group layers resolve children on the group's local timeline", () => {
+  const composition = defineComposition({
+    fps: 30,
+    width: 1920,
+    height: 1080,
+    durationMs: 4000,
+    layers: [
+      {
+        type: "group",
+        id: "scene-2",
+        startMs: 1000,
+        endMs: 3000,
+        transform: {
+          x: 100,
+          // The group's own keyframes are local too: this fade runs over the
+          // group's first second (parent 1000..2000ms).
+          opacity: [
+            { timeMs: 0, value: 0 },
+            { timeMs: 1000, value: 1 }
+          ]
+        },
+        layers: [
+          {
+            type: "text",
+            id: "title",
+            text: "Scene 2",
+            // Local timeline: visible for the group's first second.
+            startMs: 0,
+            endMs: 1000,
+            transform: {
+              x: [
+                { timeMs: 0, value: 0 },
+                { timeMs: 1000, value: 50 }
+              ]
+            }
+          },
+          { type: "shape", id: "late", shape: "rect", width: 10, height: 10, startMs: 1500 }
+        ]
+      }
+    ]
+  });
+
+  // Before the group starts, nothing is active.
+  assert.equal(resolveFrame(composition, 500).layers.length, 0);
+
+  // At t=1500 (local 500): group opacity is mid-fade, title is halfway
+  // through its local slide, the late shape is not active yet.
+  const frame = resolveFrame(composition, 1500);
+  assert.equal(frame.layers.length, 1);
+  const group = frame.layers[0]!;
+  assert.equal(group.type, "group");
+  if (group.type !== "group") {
+    return;
+  }
+  assert.equal(group.transform.opacity, 0.5);
+  assert.equal(group.layers.length, 1);
+  assert.equal(group.layers[0]!.id, "title");
+  assert.equal(group.layers[0]!.transform.x, 25);
+
+  // At t=2700 (local 1700): title is gone, the late shape is active.
+  const later = resolveFrame(composition, 2700);
+  const laterGroup = later.layers[0]!;
+  if (laterGroup.type !== "group") {
+    return;
+  }
+  assert.deepEqual(laterGroup.layers.map((layer) => layer.id), ["late"]);
+
+  // After the group's endMs the whole subtree deactivates.
+  assert.equal(resolveFrame(composition, 3200).layers.length, 0);
+});
+
+test("createTransitionSeries overlaps adjacent scenes by the transition duration", () => {
+  const series = createTransitionSeries({ width: 1280, height: 720, fps: 30 })
+    .scene("a", 2000, ({ width, height }) => [
+      { type: "shape", shape: "rect", width, height, fill: "#111111" }
+    ])
+    .transition({ type: "wipe", durationMs: 500, direction: "from-left" })
+    .scene("b", 2000, ({ width, height }) => [
+      { type: "shape", shape: "rect", width, height, fill: "#222222" }
+    ])
+    .transition({ type: "slide", durationMs: 400, direction: "from-right" })
+    .scene("c", 1500, ({ width, height }) => [
+      { type: "shape", shape: "rect", width, height, fill: "#333333" }
+    ])
+    .build();
+
+  // total = 2000 + 2000 + 1500 - 500 - 400
+  assert.equal(series.durationMs, 4600);
+  assert.deepEqual(series.markers.a, { startMs: 0, endMs: 2000, durationMs: 2000 });
+  assert.deepEqual(series.markers.b, { startMs: 1500, endMs: 3500, durationMs: 2000 });
+  assert.deepEqual(series.markers.c, { startMs: 3100, endMs: 4600, durationMs: 1500 });
+  assert.equal(series.transitions.length, 2);
+  assert.deepEqual(series.transitions[0], { type: "wipe", from: "a", to: "b", startMs: 1500, endMs: 2000, durationMs: 500 });
+
+  // During the wipe overlap both scene groups are active; the incoming one
+  // carries a reveal whose progress runs on its local timeline.
+  const mid = resolveFrame(series.composition, 1750);
+  assert.deepEqual(mid.layers.map((layer) => layer.id), ["scene-a", "scene-b"]);
+  const incoming = mid.layers[1]!;
+  if (incoming.type !== "group") {
+    return;
+  }
+  assert.equal(incoming.reveal?.type, "wipe");
+  assert.equal(incoming.reveal?.direction, "from-left");
+  assert.equal(incoming.reveal?.progress, 0.5);
+
+  // After the transition the reveal holds at 1 (fully shown).
+  const after = resolveFrame(series.composition, 2500);
+  const shown = after.layers[0]!;
+  if (shown.type !== "group") {
+    return;
+  }
+  assert.equal(shown.reveal?.progress, 1);
+
+  // Slide push: outgoing b exits to -width while incoming c enters from +width.
+  const slideMid = resolveFrame(series.composition, 3300);
+  assert.deepEqual(slideMid.layers.map((layer) => layer.id), ["scene-b", "scene-c"]);
+  assert.equal(slideMid.layers[0]!.transform.x, -640);
+  assert.equal(slideMid.layers[1]!.transform.x, 640);
+});
+
+test("createTransitionSeries flip wraps scenes in a centre pivot with per-axis scale", () => {
+  const series = createTransitionSeries({ width: 800, height: 600, fps: 30 })
+    .scene("out", 1000, () => [{ type: "text", text: "out" }])
+    .transition({ type: "flip", durationMs: 400 })
+    .scene("in", 1000, () => [{ type: "text", text: "in" }])
+    .build();
+
+  // First half of the overlap (t=700): outgoing folds, incoming still hidden.
+  const early = resolveFrame(series.composition, 700);
+  const outScene = early.layers[0]!;
+  const inScene = early.layers[1]!;
+  if (outScene.type !== "group" || inScene.type !== "group") {
+    return;
+  }
+  const outPivot = outScene.layers[0]!;
+  const inPivot = inScene.layers[0]!;
+  if (outPivot.type !== "group" || inPivot.type !== "group") {
+    return;
+  }
+  assert.equal(outPivot.id, "out-flip-pivot");
+  assert.equal(outPivot.transform.x, 400);
+  assert.equal(outPivot.transform.y, 300);
+  assert.equal(outPivot.transform.scaleX, 0.5);
+  assert.equal(inPivot.transform.scaleX, 0);
+
+  // Second half (t=900): outgoing fully folded, incoming unfolding.
+  const late = resolveFrame(series.composition, 900);
+  const lateOut = late.layers[0]!;
+  const lateIn = late.layers[1]!;
+  if (lateOut.type !== "group" || lateIn.type !== "group") {
+    return;
+  }
+  const lateOutPivot = lateOut.layers[0]!;
+  const lateInPivot = lateIn.layers[0]!;
+  if (lateOutPivot.type !== "group" || lateInPivot.type !== "group") {
+    return;
+  }
+  assert.equal(lateOutPivot.transform.scaleX, 0);
+  assert.equal(lateInPivot.transform.scaleX, 0.5);
+});
+
+test("createTransitionSeries validates ordering and durations", () => {
+  assert.throws(
+    () => createTransitionSeries({ width: 100, height: 100, fps: 30 }).transition({ type: "wipe", durationMs: 100 }),
+    /requires a preceding scene/
+  );
+  assert.throws(
+    () => createTransitionSeries({ width: 100, height: 100, fps: 30 })
+      .scene("a", 500, () => [])
+      .transition({ type: "wipe", durationMs: 100 })
+      .transition({ type: "slide", durationMs: 100 }),
+    /two consecutive transitions/
+  );
+  assert.throws(
+    () => createTransitionSeries({ width: 100, height: 100, fps: 30 })
+      .scene("a", 500, () => [])
+      .transition({ type: "wipe", durationMs: 100 })
+      .build(),
+    /trailing transition/
+  );
+  assert.throws(
+    () => createTransitionSeries({ width: 100, height: 100, fps: 30 })
+      .scene("a", 300, () => [])
+      .transition({ type: "wipe", durationMs: 400 })
+      .scene("b", 1000, () => [])
+      .build(),
+    /must be shorter than both scenes/
+  );
 });
 
 test("mergeTransforms rejects duplicate animated properties", () => {
