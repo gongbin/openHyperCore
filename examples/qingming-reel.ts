@@ -5,8 +5,8 @@
 // 版头分镜：天空云彩 → 云散现古籍（竖排「青冥录」）→ 翻开书页 →
 // 右页水墨山水（叠嶂远近 + 水面 + 简笔小人练武）→ 右页放大全屏 →
 // 山水从右向左卷动、小人原地变招 → 收拢书籍 → 切入 f01–f05 视频。
-import { cinematicBars, defineComposition, flashTransitionLayer } from "../packages/core/src/index.ts";
-import type { Layer, ScalarKeyframe, TextStyle } from "../packages/core/src/index.ts";
+import { cinematicBars, defineComposition, flashTransitionLayer, springKeyframes } from "../packages/core/src/index.ts";
+import type { CubicBezierPoints, Gradient, Layer, ScalarKeyframe, TextStyle } from "../packages/core/src/index.ts";
 
 const width = 1280;
 const height = 720;
@@ -38,6 +38,62 @@ const paper = "#e9e1cf";
 
 const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
 const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+// Material "emphasized" cubic-bezier — a snappy cinematic ease-out, applied
+// frame-precisely as per-keyframe easing (no sampling).
+const emphasized: CubicBezierPoints = [0.2, 0, 0, 1];
+
+// Dawn sky as a vertical gradient (cool zenith → warm horizon) and luminous
+// radial glows for the sun and the title bloom.
+const skyGradient: Gradient = {
+  type: "linear",
+  from: [0, 0],
+  to: [0, height],
+  stops: [
+    { offset: 0, color: "#8ca3b6" },
+    { offset: 0.55, color: "#aebcc4" },
+    { offset: 1, color: "#dcd5c0" }
+  ]
+};
+const sunGlow: Gradient = {
+  type: "radial",
+  center: [120, 120],
+  radius: 120,
+  stops: [
+    { offset: 0, color: "rgba(255,244,210,0.9)" },
+    { offset: 0.5, color: "rgba(238,223,174,0.38)" },
+    { offset: 1, color: "rgba(238,223,174,0)" }
+  ]
+};
+const titleGlow: Gradient = {
+  type: "radial",
+  center: [170, 170],
+  radius: 170,
+  stops: [
+    { offset: 0, color: "rgba(255,236,170,0.85)" },
+    { offset: 0.45, color: "rgba(231,195,106,0.42)" },
+    { offset: 1, color: "rgba(231,195,106,0)" }
+  ]
+};
+const vignetteGradient: Gradient = {
+  type: "radial",
+  center: [width / 2, height / 2],
+  radius: Math.hypot(width, height) / 2,
+  stops: [
+    { offset: 0, color: "rgba(0,0,0,0)" },
+    { offset: 0.6, color: "rgba(0,0,0,0)" },
+    { offset: 1, color: "rgba(6,7,10,0.55)" }
+  ]
+};
+const outroGlow: Gradient = {
+  type: "radial",
+  center: [240, 240],
+  radius: 240,
+  stops: [
+    { offset: 0, color: "rgba(255,228,150,0.7)" },
+    { offset: 0.5, color: "rgba(231,195,106,0.3)" },
+    { offset: 1, color: "rgba(231,195,106,0)" }
+  ]
+};
 
 function track(startMs: number, durMs: number, from: number, to: number, ease = easeOutCubic, steps = 6): ScalarKeyframe[] {
   return Array.from({ length: steps + 1 }, (_, index) => {
@@ -191,12 +247,47 @@ function cloudCluster(id: string, cx: number, cy: number, scatterX: number, puff
 }
 
 const skyLayers: Layer[] = [
-  rect("sky", 0, 4300, 0, 0, width, height, "#a9bac6", [
-    { timeMs: 0, value: 1 },
-    { timeMs: 2300, value: 1 },
-    { timeMs: 3500, value: 0.3 },
-    { timeMs: 4200, value: 0 }
-  ]),
+  {
+    type: "shape",
+    id: "sky",
+    shape: "rect",
+    width,
+    height,
+    fill: skyGradient,
+    startMs: 0,
+    endMs: 4300,
+    transform: {
+      x: 0,
+      y: 0,
+      opacity: [
+        { timeMs: 0, value: 1 },
+        { timeMs: 2300, value: 1 },
+        { timeMs: 3500, value: 0.3 },
+        { timeMs: 4200, value: 0 }
+      ]
+    }
+  },
+  // Soft luminous sun halo (screen-blended radial glow over the sky).
+  {
+    type: "shape",
+    id: "sky-sun-glow",
+    shape: "circle",
+    radius: 120,
+    fill: sunGlow,
+    blendMode: "screen",
+    startMs: 0,
+    endMs: 5400,
+    transform: {
+      x: 950 - 120,
+      y: 150 - 120,
+      opacity: [
+        { timeMs: 350, value: 0 },
+        { timeMs: 1500, value: 0.9 },
+        { timeMs: 3600, value: 0.7 },
+        { timeMs: 5300, value: 0 }
+      ]
+    }
+  },
   rect("sky-horizon", 0, 4200, 0, 430, width, 290, "#cfd6cf", [
     { timeMs: 0, value: 0.8 },
     { timeMs: 3400, value: 0.5 },
@@ -379,8 +470,10 @@ const sceneFrame: Layer = {
   id: "scene-frame",
   transform: {
     x: 640,
-    y: track(5600, 900, pageTop + 170, height / 2, easeInOutCubic),
-    scale: track(5600, 900, 0.245, 1, easeInOutCubic, 8),
+    // Frame-precise cubic-bezier (emphasized) push from the right page to
+    // full-frame — per-keyframe easing, no curve sampling.
+    y: [{ timeMs: 5600, value: pageTop + 170 }, { timeMs: 6500, value: height / 2, easing: emphasized }],
+    scale: [{ timeMs: 5600, value: 0.245 }, { timeMs: 6500, value: 1, easing: emphasized }],
     scaleX: track(9450, 900, 1, 0.015, easeInOutCubic, 8),
     opacity: [
       { timeMs: sceneStart, value: 0 },
@@ -425,6 +518,50 @@ const bookFinale: Layer = {
   ]
 };
 
+// Title bloom: a screen-blended gold radial glow that springs in around the
+// book's title slip as the volume settles, then fades before the cover folds.
+const titleBloom: Layer = {
+  type: "group",
+  id: "title-bloom",
+  blendMode: "screen",
+  transform: {
+    x: 741,
+    y: 327,
+    scale: springKeyframes({ from: 0.5, to: 1, startMs: 1700, fps, stiffness: 120, damping: 11 }),
+    opacity: [
+      { timeMs: 1500, value: 0 },
+      { timeMs: 2050, value: 0.95 },
+      { timeMs: 2650, value: 0.95 },
+      { timeMs: 2920, value: 0 }
+    ]
+  },
+  layers: [
+    {
+      type: "shape",
+      id: "title-bloom-core",
+      shape: "circle",
+      radius: 170,
+      fill: titleGlow,
+      startMs: 1500,
+      endMs: 3000,
+      transform: { x: -170, y: -170 }
+    }
+  ]
+};
+
+// Cinematic vignette (radial darkening at the edges) over the painting act.
+const vignette: Layer = {
+  type: "shape",
+  id: "intro-vignette",
+  shape: "rect",
+  width,
+  height,
+  fill: vignetteGradient,
+  startMs: 3000,
+  endMs: introEnd + 280,
+  transform: { x: 0, y: 0, opacity: hold(3000, introEnd + 280, 600, 300, 1) }
+};
+
 const introLayers: Layer[] = [
   rect("intro-ink-bg", 0, introEnd + 320, 0, 0, width, height, ink),
   rect("intro-paper-bg", 0, introEnd + 280, 0, 0, width, height, paper, [
@@ -438,7 +575,9 @@ const introLayers: Layer[] = [
   ...bookLayers,
   sceneFrame,
   coverLayer,
+  titleBloom,
   bookFinale,
+  vignette,
   flashTransitionLayer({ id: "intro-hit", width, height, startMs: introEnd - 140, durationMs: 380, color: "#fff4d2", peakOpacity: 0.85 })
 ];
 
@@ -454,7 +593,22 @@ function swordSlash(id: string, timeMs: number, y: number, color = "rgba(255,235
     { timeMs: timeMs + 560, value: 0 }
   ];
   return [
-    rect(`${id}-glow`, timeMs, timeMs + 560, -170, y, 1630, 7, color, scaleOpacity(opacity, 0.45), -13, 10),
+    // Luminous streak: screen-blended glow with directional motion blur along
+    // the blade's angle, so the light smears into a fast sword arc.
+    {
+      type: "shape",
+      id: `${id}-glow`,
+      shape: "rect",
+      width: 1630,
+      height: 7,
+      fill: color,
+      blur: 10,
+      blendMode: "screen",
+      motionBlur: { angle: -13, distance: 80, samples: 8 },
+      startMs: timeMs,
+      endMs: timeMs + 560,
+      transform: { x: -170, y, rotate: -13, opacity: scaleOpacity(opacity, 0.45) }
+    },
     rect(`${id}-core`, timeMs + 40, timeMs + 430, -120, y + 8, 1500, 2, "#fffbe6", opacity, -13)
   ];
 }
@@ -469,7 +623,11 @@ function inkWipe(id: string, timeMs: number, direction: "left" | "right"): Layer
     ...layer,
     transform: {
       ...layer.transform,
-      x: track(layer.startMs ?? timeMs, (layer.endMs ?? timeMs + 600) - (layer.startMs ?? timeMs), from, to, easeInOutCubic, 5)
+      // Per-keyframe cubic-bezier sweep — snappier than the sampled curve.
+      x: [
+        { timeMs: layer.startMs ?? timeMs, value: from },
+        { timeMs: layer.endMs ?? timeMs + 600, value: to, easing: emphasized }
+      ]
     }
   }));
 }
@@ -544,6 +702,30 @@ const clipCaptions = [
 const outroLayers: Layer[] = [
   rect("outro-bg", outroStart - 220, durationMs, 0, 0, width, height, "rgba(2,3,5,0.88)", hold(outroStart - 220, durationMs, 180, 0, 0.98)),
   pathLayer("outro-ink-ring", outroStart, durationMs, "M292 365 C408 220 603 190 760 284 C915 377 930 563 760 626 C570 698 340 589 292 365", red, 7, hold(outroStart + 120, durationMs, 280, 400, 0.54), 0, 0, 4),
+  // Gold halo that springs in behind the title (screen-blended radial glow).
+  {
+    type: "group",
+    id: "outro-title-glow",
+    blendMode: "screen",
+    transform: {
+      x: 592,
+      y: 212,
+      scale: springKeyframes({ from: 0.6, to: 1, startMs: outroStart + 180, fps, stiffness: 90, damping: 12 }),
+      opacity: hold(outroStart + 180, durationMs, 320, 420, 0.9)
+    },
+    layers: [
+      {
+        type: "shape",
+        id: "outro-title-glow-core",
+        shape: "circle",
+        radius: 240,
+        fill: outroGlow,
+        startMs: outroStart + 180,
+        endMs: durationMs,
+        transform: { x: -240, y: -240 }
+      }
+    ]
+  },
   text("outro-title", "青冥录", outroStart + 180, durationMs, 424, 244, 112, gold, hold(outroStart + 180, durationMs, 260, 380, 1), {
     stroke: "rgba(0,0,0,0.82)",
     strokeWidth: 6,
