@@ -20,9 +20,11 @@ export {
   registerEmojiFont,
   renderPngFrame,
   renderRgbaFrame,
-  videoTimeForLayer
+  videoTimeForLayer,
+  createNodeAssetProvider
 } from "./render-png.ts";
 export type {
+  AssetProvider,
   RgbaVideoFrame,
   RenderFrameOptions,
   RgbaFrameRendererOptions,
