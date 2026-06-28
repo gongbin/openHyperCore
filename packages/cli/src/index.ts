@@ -26,7 +26,7 @@ type StillOptions = {
   format: "svg" | "png";
 };
 
-type RenderOptions = {
+export type RenderOptions = {
   out: string;
   fps?: number;
   width?: number;
@@ -65,7 +65,7 @@ type RenderStats = {
   layerCache?: LayerRasterCacheStats;
 };
 
-type CompositionAudio = {
+export type CompositionAudio = {
   audioFile?: string;
   audioInputs?: AudioInput[];
 };
@@ -151,6 +151,15 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
     await writeFile(options.out, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     stdout(options.out);
     return;
+  }
+
+  if (command === "serve") {
+    const port = parseServePort(args.slice(1));
+    // Dynamic import avoids a static cycle (server reuses renderVideo from here).
+    const { startRenderServer } = await import("../../server/src/index.ts");
+    await startRenderServer(port);
+    stdout(`openhypercore render service on http://localhost:${port}  (POST /render with a composition IR → MP4)`);
+    return; // the listening server keeps the process alive
   }
 
   throw new Error(`Unknown command: ${command ?? "(missing)"}`);
@@ -610,7 +619,7 @@ function numericCaseName(results: Array<{ name: string; metrics: Record<string, 
   return bestName;
 }
 
-async function renderVideo(composition: Composition, options: RenderOptions, audio: CompositionAudio = {}): Promise<Record<string, unknown>> {
+export async function renderVideo(composition: Composition, options: RenderOptions, audio: CompositionAudio = {}): Promise<Record<string, unknown>> {
   const workerSelection = options.workers === "auto" ? "auto" : "manual";
   const backend = resolveBackend(options.renderer);
   const plan = planRenderResources(composition, options.workers, options.workerWindow);
@@ -680,7 +689,7 @@ async function renderVideo(composition: Composition, options: RenderOptions, aud
   };
 }
 
-function extractAudioInputs(composition: Composition): CompositionAudio {
+export function extractAudioInputs(composition: Composition): CompositionAudio {
   const audioInputs: AudioInput[] = [];
   collectAudioInputs(composition.layers, 0, composition.durationMs, true, audioInputs);
   if (audioInputs.length === 0) {
@@ -1074,6 +1083,15 @@ function parsePositiveInteger(value: string, name: string): number {
     throw new Error(`${name} must be an integer`);
   }
   return parsed;
+}
+
+function parseServePort(args: string[]): number {
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--port") {
+      return parsePositiveInteger(requiredArg(args[index + 1], "--port value"), "--port");
+    }
+  }
+  return 8787;
 }
 
 function parseWorkerSelection(value: string): WorkerSelection {

@@ -1,0 +1,80 @@
+# Build prebuilt native (Rust + skia-safe) addons per platform and publish them
+# as `@openhypercore/native-<triple>` packages, which `openhypercore` picks up
+# automatically at runtime (see packages/renderer-native/src/index.ts).
+#
+# NOTE: cross-compilation of skia-safe (esp. linux musl / arm64) and the npm
+# publish flow can only be validated on GitHub. Treat this as a starting point:
+# the first runs will likely need iteration on toolchains and the NPM_TOKEN
+# secret. The regular `ci.yml` stays the source of truth for correctness; this
+# is opt-in (manual / tag-triggered) so it never blocks PRs.
+name: native-prebuild
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest, cross: false }
+          - { target: x86_64-apple-darwin, os: macos-latest, cross: false }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, cross: false }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-latest, cross: true }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, cross: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, cross: true }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `--use-napi-cross` cross-compiles linux gnu/musl targets via
+      # @napi-rs/cross-toolchain; native targets build directly.
+      - name: Build addon
+        run: >-
+          pnpm exec napi build --release --platform
+          --target ${{ matrix.target }}
+          --manifest-path packages/renderer-native/Cargo.toml
+          --output-dir packages/renderer-native
+          ${{ matrix.cross && '--use-napi-cross' || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: packages/renderer-native/*.node
+          if-no-files-found: error
+
+  publish:
+    name: publish platform packages
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble + publish @openhypercore/native-* packages
+        run: |
+          pnpm exec napi artifacts --npm-dir artifacts --output-dir packages/renderer-native
+          pnpm exec napi create-npm-dirs --npm-dir npm
+          pnpm exec napi pre-publish -t npm --npm-dir npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

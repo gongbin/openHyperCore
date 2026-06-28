@@ -18,11 +18,28 @@ const CanvasKitInit = CanvasKitInitModule as unknown as CanvasKitInitFn;
 let canvasKitPromise: Promise<CanvasKit> | undefined;
 let defaultTypefacePromise: Promise<Typeface | null> | undefined;
 
+type ResolvedVideoLayer = Extract<ResolvedLayer, { type: "video" }>;
+
+// Pluggable asset access — decouples the draw logic from HOW fonts/images/video
+// frames are fetched. The Node backend reads them from disk/ffmpeg (see
+// createNodeAssetProvider); a browser host can supply fetch/<video>-based
+// implementations so the SAME draw tree renders a live preview.
+export type AssetProvider = {
+  loadTypeface(CanvasKit: CanvasKit, font?: string): Promise<Typeface | null>;
+  loadEmojiTypeface(CanvasKit: CanvasKit): Promise<Typeface | null>;
+  loadDefaultTypeface(CanvasKit: CanvasKit): Promise<Typeface | null>;
+  loadImage(CanvasKit: CanvasKit, src: string): Promise<Image | null>;
+  loadVideoImage(CanvasKit: CanvasKit, layer: ResolvedVideoLayer, frameTimeMs: number): Promise<Image | null>;
+};
+
 export type RenderFrameOptions = {
   videoFrameCache?: VideoFrameCache;
   // Cross-frame raster cache for static group subtrees. RgbaFrameRenderer
   // supplies its own by default; pass `false` to disable for a call.
   layerCache?: LayerRasterCache | false;
+  // Asset access; defaults to the Node provider (disk fonts/images, ffmpeg
+  // video) when omitted.
+  assetProvider?: AssetProvider;
 };
 
 export type VideoFrameCacheOptions = {
@@ -404,9 +421,37 @@ async function drawFrameToCanvas(CanvasKit: CanvasKit, canvas: Canvas, frame: Re
   if (options.videoFrameCache) {
     await prefetchVideoFrames(frame, options.videoFrameCache);
   }
+  // Ensure an asset provider is present for the whole draw — default to the Node
+  // backend (disk fonts/images, ffmpeg video) so the draw tree never reaches for
+  // node APIs directly.
+  const ctx: RenderFrameOptions = options.assetProvider
+    ? options
+    : { ...options, assetProvider: createNodeAssetProvider(options.videoFrameCache) };
   for (const layer of frame.layers) {
-    await drawLayer(CanvasKit, canvas, layer, frame.timeMs, options);
+    await drawLayer(CanvasKit, canvas, layer, frame.timeMs, ctx);
   }
+}
+
+// The default Node asset provider: typefaces/images from disk, video frames via
+// the ffmpeg-backed VideoFrameCache (or a direct ffmpeg extraction).
+export function createNodeAssetProvider(videoFrameCache?: VideoFrameCache): AssetProvider {
+  return {
+    loadTypeface,
+    loadEmojiTypeface,
+    loadDefaultTypeface,
+    loadImage: loadDecodedImage,
+    async loadVideoImage(CanvasKit, layer, frameTimeMs) {
+      const videoTimeMs = videoTimeForLayer(layer, frameTimeMs);
+      const sourceSize = videoFrameCache && layer.width && layer.height
+        ? await videoFrameCache.getSourceSize(layer.src)
+        : undefined;
+      return videoFrameCache && sourceSize
+        ? makeImageFromRgbaFrame(CanvasKit, await videoFrameCache.getRgbaFrame(layer.src, videoTimeMs, sourceSize.width, sourceSize.height))
+        : CanvasKit.MakeImageFromEncoded(videoFrameCache
+          ? await videoFrameCache.getFrame(layer.src, videoTimeMs)
+          : await extractVideoFramePng(layer.src, videoTimeMs));
+    }
+  };
 }
 
 async function loadCanvasKit(): Promise<CanvasKit> {
@@ -618,13 +663,13 @@ async function drawLayerSample(CanvasKit: CanvasKit, canvas: Canvas, layer: Reso
         drawShape(CanvasKit, canvas, layer);
         return;
       case "text":
-        await drawText(CanvasKit, canvas, layer);
+        await drawText(CanvasKit, canvas, layer, options.assetProvider!);
         return;
       case "caption":
-        await drawCaption(CanvasKit, canvas, layer);
+        await drawCaption(CanvasKit, canvas, layer, options.assetProvider!);
         return;
       case "image":
-        await drawImage(CanvasKit, canvas, layer);
+        await drawImage(CanvasKit, canvas, layer, options.assetProvider!);
         return;
       case "video":
         await drawVideo(CanvasKit, canvas, layer, frameTimeMs, options);
@@ -767,7 +812,7 @@ async function rasterGroupEntry(
   localTimeMs: number,
   options: RenderFrameOptions
 ): Promise<LayerRasterEntry | undefined> {
-  const bounds = await groupContentBounds(CanvasKit, layer.layers);
+  const bounds = await groupContentBounds(CanvasKit, layer.layers, options.assetProvider!);
   if (!bounds || bounds.w <= 0 || bounds.h <= 0) {
     cache.reject(key);
     return undefined;
@@ -1073,11 +1118,11 @@ function drawStyledText(CanvasKit: CanvasKit, canvas: Canvas, text: string, x: n
 
 // Build the per-character fallback stack for a layer's font at a given size:
 // [primary, emoji, default], de-duplicated by typeface identity.
-async function loadFontStack(CanvasKit: CanvasKit, size: number, font?: string): Promise<Font[]> {
+async function loadFontStack(CanvasKit: CanvasKit, size: number, font: string | undefined, provider: AssetProvider): Promise<Font[]> {
   const typefaces = [
-    await loadTypeface(CanvasKit, font),
-    await loadEmojiTypeface(CanvasKit),
-    await loadDefaultTypeface(CanvasKit)
+    await provider.loadTypeface(CanvasKit, font),
+    await provider.loadEmojiTypeface(CanvasKit),
+    await provider.loadDefaultTypeface(CanvasKit)
   ].filter((t, i, all): t is Typeface => t !== null && all.indexOf(t) === i);
 
   return typefaces.map((typeface) => {
@@ -1132,9 +1177,9 @@ function lineX(align: Extract<ResolvedLayer, { type: "caption" }>["align"], widt
   return 0;
 }
 
-async function drawText(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "text" }>): Promise<void> {
+async function drawText(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "text" }>, provider: AssetProvider): Promise<void> {
   const size = layer.size ?? 16;
-  const stack = await loadFontStack(CanvasKit, size, layer.font);
+  const stack = await loadFontStack(CanvasKit, size, layer.font, provider);
 
   try {
     const lineHeight = layer.lineHeight ?? size * 1.2;
@@ -1148,12 +1193,12 @@ async function drawText(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Res
   }
 }
 
-async function drawCaption(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "caption" }>): Promise<void> {
+async function drawCaption(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "caption" }>, provider: AssetProvider): Promise<void> {
   const size = layer.size ?? 32;
   const lineHeight = layer.lineHeight ?? size * 1.2;
   const padding = layer.padding ?? 8;
 
-  const stack = await loadFontStack(CanvasKit, size, layer.font);
+  const stack = await loadFontStack(CanvasKit, size, layer.font, provider);
   try {
     const measure = (t: string) => measureStack(stack, t);
     const lines = layer.maxWidth ? wrapText(measure, layer.text, layer.maxWidth) : layer.text.split("\n");
@@ -1236,8 +1281,8 @@ async function loadDecodedImage(CanvasKit: CanvasKit, src: string): Promise<Imag
   return pending;
 }
 
-async function drawImage(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "image" }>): Promise<void> {
-  const image = await loadDecodedImage(CanvasKit, layer.src);
+async function drawImage(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "image" }>, provider: AssetProvider): Promise<void> {
+  const image = await provider.loadImage(CanvasKit, layer.src);
   if (!image) {
     throw new Error(`CanvasKit failed to decode image: ${layer.src}`);
   }
@@ -1260,10 +1305,10 @@ async function drawImage(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Re
 // `undefined` means "unknown" and disables caching for the subtree.
 // ---------------------------------------------------------------------------
 
-async function groupContentBounds(CanvasKit: CanvasKit, layers: ResolvedLayer[]): Promise<Rect | undefined> {
+async function groupContentBounds(CanvasKit: CanvasKit, layers: ResolvedLayer[], provider: AssetProvider): Promise<Rect | undefined> {
   let union: Rect | undefined;
   for (const layer of layers) {
-    const local = await layerLocalBounds(CanvasKit, layer);
+    const local = await layerLocalBounds(CanvasKit, layer, provider);
     if (!local) {
       return undefined;
     }
@@ -1276,18 +1321,18 @@ async function groupContentBounds(CanvasKit: CanvasKit, layers: ResolvedLayer[])
   return union ?? { x: 0, y: 0, w: 0, h: 0 };
 }
 
-async function layerLocalBounds(CanvasKit: CanvasKit, layer: ResolvedLayer): Promise<Rect | undefined> {
+async function layerLocalBounds(CanvasKit: CanvasKit, layer: ResolvedLayer, provider: AssetProvider): Promise<Rect | undefined> {
   switch (layer.type) {
     case "shape":
       return shapeBounds(CanvasKit, layer);
     case "text":
-      return await textLayerBounds(CanvasKit, layer);
+      return await textLayerBounds(CanvasKit, layer, provider);
     case "caption":
-      return await captionLayerBounds(CanvasKit, layer);
+      return await captionLayerBounds(CanvasKit, layer, provider);
     case "image":
-      return await imageLayerBounds(CanvasKit, layer);
+      return await imageLayerBounds(CanvasKit, layer, provider);
     case "group":
-      return await groupContentBounds(CanvasKit, layer.layers);
+      return await groupContentBounds(CanvasKit, layer.layers, provider);
     case "audio":
       return { x: 0, y: 0, w: 0, h: 0 };
     default:
@@ -1365,8 +1410,8 @@ function textStylePad(layer: { stroke?: string; strokeWidth?: number; shadowColo
 
 // Bounds of the drawn text block: baselines run y = 0, lineHeight, …; allow a
 // generous ascent above the first baseline and descent below the last.
-async function textBlockBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLayer, { type: "text" | "caption" }>, size: number, lineHeight: number): Promise<{ rect: Rect; lines: number; blockWidth: number }> {
-  const stack = await loadFontStack(CanvasKit, size, layer.font);
+async function textBlockBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLayer, { type: "text" | "caption" }>, size: number, lineHeight: number, provider: AssetProvider): Promise<{ rect: Rect; lines: number; blockWidth: number }> {
+  const stack = await loadFontStack(CanvasKit, size, layer.font, provider);
   try {
     const measure = (t: string) => measureStack(stack, t);
     const lines = layer.maxWidth ? wrapText(measure, layer.text, layer.maxWidth) : layer.text.split("\n");
@@ -1392,18 +1437,18 @@ async function textBlockBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLaye
   }
 }
 
-async function textLayerBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLayer, { type: "text" }>): Promise<Rect> {
+async function textLayerBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLayer, { type: "text" }>, provider: AssetProvider): Promise<Rect> {
   const size = layer.size ?? 16;
   const lineHeight = layer.lineHeight ?? size * 1.2;
-  const { rect } = await textBlockBounds(CanvasKit, layer, size, lineHeight);
+  const { rect } = await textBlockBounds(CanvasKit, layer, size, lineHeight, provider);
   return expandRect(rect, textStylePad(layer, size));
 }
 
-async function captionLayerBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLayer, { type: "caption" }>): Promise<Rect> {
+async function captionLayerBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLayer, { type: "caption" }>, provider: AssetProvider): Promise<Rect> {
   const size = layer.size ?? 32;
   const lineHeight = layer.lineHeight ?? size * 1.2;
   const padding = layer.padding ?? 8;
-  const { rect, lines, blockWidth } = await textBlockBounds(CanvasKit, layer, size, lineHeight);
+  const { rect, lines, blockWidth } = await textBlockBounds(CanvasKit, layer, size, lineHeight, provider);
   const bgWidth = layer.maxWidth ?? blockWidth;
   const background: Rect = {
     x: lineX(layer.align, bgWidth) - padding,
@@ -1414,11 +1459,11 @@ async function captionLayerBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedL
   return expandRect(unionRect(rect, background), textStylePad(layer, size));
 }
 
-async function imageLayerBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLayer, { type: "image" }>): Promise<Rect | undefined> {
+async function imageLayerBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLayer, { type: "image" }>, provider: AssetProvider): Promise<Rect | undefined> {
   if (layer.width !== undefined && layer.height !== undefined) {
     return { x: 0, y: 0, w: layer.width, h: layer.height };
   }
-  const image = await loadDecodedImage(CanvasKit, layer.src);
+  const image = await provider.loadImage(CanvasKit, layer.src);
   if (!image) {
     return undefined;
   }
@@ -1426,15 +1471,7 @@ async function imageLayerBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLay
 }
 
 async function drawVideo(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "video" }>, frameTimeMs: number, options: RenderFrameOptions): Promise<void> {
-  const videoTimeMs = videoTimeForLayer(layer, frameTimeMs);
-  const sourceSize = options.videoFrameCache && layer.width && layer.height
-    ? await options.videoFrameCache.getSourceSize(layer.src)
-    : undefined;
-  const image = options.videoFrameCache && sourceSize
-    ? makeImageFromRgbaFrame(CanvasKit, await options.videoFrameCache.getRgbaFrame(layer.src, videoTimeMs, sourceSize.width, sourceSize.height))
-    : CanvasKit.MakeImageFromEncoded(options.videoFrameCache
-      ? await options.videoFrameCache.getFrame(layer.src, videoTimeMs)
-      : await extractVideoFramePng(layer.src, videoTimeMs));
+  const image = await options.assetProvider!.loadVideoImage(CanvasKit, layer, frameTimeMs);
   if (!image) {
     throw new Error(`CanvasKit failed to create video frame image: ${layer.src}`);
   }
