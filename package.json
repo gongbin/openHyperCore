@@ -90,7 +90,20 @@
   "publishConfig": {
     "access": "public"
   },
+  "napi": {
+    "binaryName": "renderer-native",
+    "packageName": "@openhypercore/native",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl"
+    ]
+  },
   "devDependencies": {
+    "@napi-rs/cli": "^3.7.2",
     "@types/node": "^25.9.1",
     "typescript": "^6.0.3"
   },

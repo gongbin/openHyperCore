@@ -6,11 +6,6 @@ import type { ResolvedFrame, ResolvedLayer } from "../../core/src/index.ts";
 import { videoTimeForLayer } from "../../renderer-skia/src/index.ts";
 import type { FrameRenderer, RenderFrameOptions } from "../../renderer-skia/src/index.ts";
 
-// The compiled napi-rs addon (gitignored build artifact at the package root).
-// Multi-platform naming + a resolver will arrive with @napi-rs/cli adoption in
-// the CI/prebuild phase; for now this is the single dev-machine artifact.
-const addonPath = join(dirname(fileURLToPath(import.meta.url)), "..", "renderer-native.node");
-
 export type NativeAddon = {
   renderSmoke(width: number, height: number, r: number, g: number, b: number, a: number): Buffer;
   // The frame is plain numeric data, so JSON is a safe transport across napi;
@@ -19,21 +14,62 @@ export type NativeAddon = {
   renderFrame(frameJson: string, videoFrames: Buffer[]): Buffer;
 };
 
-let cached: NativeAddon | undefined;
+const requireAddon = createRequire(import.meta.url);
+// Local dev build (gitignored), produced by `pnpm build:native`.
+const localAddonPath = join(dirname(fileURLToPath(import.meta.url)), "..", "renderer-native.node");
 
-export function isNativeAddonAvailable(): boolean {
-  return existsSync(addonPath);
+// glibc runtimes report a glibc version; its absence implies musl (Alpine).
+function isMusl(): boolean {
+  try {
+    const report = process.report?.getReport() as { header?: { glibcVersionRuntime?: string } } | undefined;
+    return report ? !report.header?.glibcVersionRuntime : false;
+  } catch {
+    return false;
+  }
 }
 
-export function loadNativeAddon(): NativeAddon {
+// Prebuilt platform package published by CI (an optionalDependency), e.g.
+// `@openhypercore/native-darwin-arm64` / `-linux-x64-gnu` / `-linux-arm64-musl`.
+function platformPackageName(): string {
+  const { platform, arch } = process;
+  const abi = platform === "linux" ? (isMusl() ? "-musl" : "-gnu") : platform === "win32" ? "-msvc" : "";
+  return `@openhypercore/native-${platform}-${arch}${abi}`;
+}
+
+let cached: NativeAddon | undefined;
+
+// Resolve the native addon: a published prebuilt platform package first (so an
+// installed `openhypercore` auto-selects native), then a local build. Returns
+// undefined when neither is present — callers fall back to the wasm backend.
+function resolveAddon(): NativeAddon | undefined {
   if (cached) {
     return cached;
   }
-  if (!existsSync(addonPath)) {
-    throw new Error(`native renderer addon not built at ${addonPath} — run \`pnpm build:native\` (requires the Rust toolchain)`);
+  try {
+    cached = requireAddon(platformPackageName()) as NativeAddon;
+    return cached;
+  } catch {
+    // no prebuilt for this platform — try a local build
   }
-  cached = createRequire(import.meta.url)(addonPath) as NativeAddon;
-  return cached;
+  if (existsSync(localAddonPath)) {
+    cached = requireAddon(localAddonPath) as NativeAddon;
+    return cached;
+  }
+  return undefined;
+}
+
+export function isNativeAddonAvailable(): boolean {
+  return resolveAddon() !== undefined;
+}
+
+export function loadNativeAddon(): NativeAddon {
+  const addon = resolveAddon();
+  if (!addon) {
+    throw new Error(
+      "native renderer addon not found — install a prebuilt `@openhypercore/native-*` package or run `pnpm build:native` (needs the Rust toolchain). The wasm backend is the default."
+    );
+  }
+  return addon;
 }
 
 export function renderSmoke(width: number, height: number, r: number, g: number, b: number, a: number): Buffer {
