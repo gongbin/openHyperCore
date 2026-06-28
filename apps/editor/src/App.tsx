@@ -24,6 +24,29 @@ type Kf = { timeMs: number; value: number; easing?: unknown };
 
 const dfltVal = (k: string): number => (k === "scale" || k === "opacity" ? 1 : 0);
 const r2 = (n: number): number => Math.round(n * 100) / 100;
+const clamp = (lo: number, hi: number, v: number): number => Math.max(lo, Math.min(hi, v));
+
+// Editor-only easing presets, each a serializable cubic-bezier [x1,y1,x2,y2]
+// tuple (the engine accepts these directly; named easing functions aren't JSON).
+type Bezier = [number, number, number, number];
+const EASINGS: Record<string, Bezier> = {
+  linear: [0, 0, 1, 1],
+  ease: [0.25, 0.1, 0.25, 1],
+  easeIn: [0.42, 0, 1, 1],
+  easeOut: [0, 0, 0.58, 1],
+  easeInOut: [0.42, 0, 0.58, 1],
+  emphasized: [0.2, 0, 0, 1],
+  overshoot: [0.34, 1.56, 0.64, 1]
+};
+function easingTuple(e: unknown): Bezier {
+  if (Array.isArray(e) && e.length === 4 && e.every((n) => typeof n === "number")) return e as Bezier;
+  if (typeof e === "string" && EASINGS[e]) return EASINGS[e]!;
+  return [0, 0, 1, 1];
+}
+function presetName(t: Bezier): string {
+  for (const [n, v] of Object.entries(EASINGS)) if (v.every((x, i) => x === t[i])) return n;
+  return "custom";
+}
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -39,6 +62,10 @@ export function App() {
   const [timeMs, setTimeMs] = useState(0);
   const [serviceUrl, setServiceUrl] = useState(DEFAULT_SERVICE);
   const [status, setStatus] = useState("");
+  const [selKf, setSelKf] = useState<{ i: number; key: TKey; kfIdx: number } | null>(null);
+  // Drag session for retiming a keyframe: tracks it by a stable id so crossing
+  // another keyframe (which re-sorts the array) never hands off to the wrong one.
+  const dragRef = useRef<{ i: number; key: TKey; items: { id: number; timeMs: number; value: number; easing?: unknown }[]; dragId: number } | null>(null);
 
   const resolved = useMemo<ResolvedFrame | null>(() => {
     try { return resolveFrame(composition, timeMs); } catch { return null; }
@@ -133,21 +160,40 @@ export function App() {
       patchTransform(i, { [key]: [{ timeMs: at, value: typeof cur === "number" ? cur : resolvedVal(i, key), easing: EMPH }] });
     }
   }
-  function moveKey(i: number, key: TKey, kfIdx: number, newTime: number): void {
+  function startKfDrag(i: number, key: TKey, kfIdx: number): void {
     const cur = transformOf(i)[key];
     if (!Array.isArray(cur)) return;
-    const arr = [...cur as Kf[]];
-    if (!arr[kfIdx]) return;
-    arr[kfIdx] = { ...arr[kfIdx]!, timeMs: Math.round(Math.max(0, Math.min(composition.durationMs, newTime))) };
-    arr.sort((a, b) => a.timeMs - b.timeMs);
-    patchTransform(i, { [key]: arr });
+    const items = (cur as Kf[]).map((k, idx) => ({ id: idx, timeMs: k.timeMs, value: k.value, easing: k.easing }));
+    dragRef.current = { i, key, items, dragId: items[kfIdx]!.id };
+    setSelected(i);
+    setSelKf({ i, key, kfIdx });
   }
+  function dragKfTo(newTime: number): void {
+    const d = dragRef.current;
+    if (!d) return;
+    const t = Math.round(clamp(0, composition.durationMs, newTime));
+    d.items = d.items.map((it) => (it.id === d.dragId ? { ...it, timeMs: t } : it));
+    const sortedItems = [...d.items].sort((a, b) => a.timeMs - b.timeMs);
+    const newIdx = sortedItems.findIndex((it) => it.id === d.dragId);
+    setSelKf({ i: d.i, key: d.key, kfIdx: newIdx });
+    patchTransform(d.i, { [d.key]: sortedItems.map(({ id: _id, ...rest }) => rest) });
+  }
+  function endKfDrag(): void { dragRef.current = null; }
   function deleteKey(i: number, key: TKey, kfIdx: number): void {
     const cur = transformOf(i)[key];
     if (!Array.isArray(cur)) return;
     const arr = [...cur as Kf[]];
     arr.splice(kfIdx, 1);
     patchTransform(i, { [key]: arr.length ? arr : (cur as Kf[])[(cur as Kf[]).length - 1]!.value });
+    setSelKf(null);
+  }
+  function setKfEasing(i: number, key: TKey, kfIdx: number, easing: Bezier): void {
+    const cur = transformOf(i)[key];
+    if (!Array.isArray(cur)) return;
+    const arr = [...cur as Kf[]];
+    if (!arr[kfIdx]) return;
+    arr[kfIdx] = { ...arr[kfIdx]!, easing };
+    patchTransform(i, { [key]: arr });
   }
 
   // --- preset animations ----------------------------------------------------
@@ -194,6 +240,9 @@ export function App() {
   const trRaw = transformOf(selected);
   const animOf = (k: TKey) => Array.isArray(trRaw[k]);
   const keyOf = (k: TKey) => Array.isArray(trRaw[k]) && (trRaw[k] as Kf[]).some((kf) => Math.abs(kf.timeMs - timeMs) <= KEY_EPS);
+  const selKfData = selKf && selKf.i === selected && Array.isArray(trRaw[selKf.key]) && selKf.kfIdx < (trRaw[selKf.key] as Kf[]).length
+    ? (trRaw[selKf.key] as Kf[])[selKf.kfIdx]! : null;
+  const selTuple = selKfData ? easingTuple(selKfData.easing) : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontFamily: "system-ui, sans-serif", color: "#e6e8ec", background: "#0d1117", fontSize: 13 }}>
@@ -247,6 +296,15 @@ export function App() {
               </Row>
               <KfRange label="opacity" value={resolvedVal(selected, "opacity")} animated={animOf("opacity")} hasKey={keyOf("opacity")} onChange={(v) => editTransform(selected, "opacity", v)} onToggle={() => toggleKey(selected, "opacity")} />
 
+              {selKfData && selTuple ? (
+                <>
+                  <div style={lbl}>Easing — {selKf!.key} key @ {Math.round(selKfData.timeMs)}ms</div>
+                  <Sel label="preset" value={presetName(selTuple)} options={["custom", ...Object.keys(EASINGS)]} onChange={(n) => { if (EASINGS[n]) setKfEasing(selKf!.i, selKf!.key, selKf!.kfIdx, EASINGS[n]!); }} />
+                  <BezierEditor value={selTuple} onChange={(v) => setKfEasing(selKf!.i, selKf!.key, selKf!.kfIdx, v)} />
+                  <div style={{ opacity: 0.5, fontSize: 11, fontFamily: "ui-monospace, monospace" }}>cubic-bezier({selTuple.map(r2).join(", ")})</div>
+                </>
+              ) : <div style={{ opacity: 0.45, fontSize: 11 }}>Click a ◆ keyframe on the timeline to edit its easing curve.</div>}
+
               <div style={lbl}>Layer</div>
               <Col label="id"><input value={(layer.id as string) ?? ""} onChange={(e) => patchLayer(selected, { id: e.target.value || undefined })} style={input} /></Col>
               <Row>
@@ -278,14 +336,15 @@ export function App() {
         </aside>
       </div>
 
-      <Timeline composition={composition} timeMs={timeMs} selected={selected} onSeek={setTimeMs} onSelect={setSelected} onKfDrag={moveKey} onKfDelete={deleteKey} />
+      <Timeline composition={composition} timeMs={timeMs} selected={selected} selKf={selKf} onSeek={setTimeMs} onSelect={setSelected} onKfDragStart={startKfDrag} onKfDragMove={dragKfTo} onKfDragEnd={endKfDrag} onKfDelete={deleteKey} />
     </div>
   );
 }
 
-function Timeline({ composition, timeMs, selected, onSeek, onSelect, onKfDrag, onKfDelete }: {
-  composition: Composition; timeMs: number; selected: number; onSeek: (t: number) => void; onSelect: (i: number) => void;
-  onKfDrag: (i: number, key: TKey, kfIdx: number, t: number) => void; onKfDelete: (i: number, key: TKey, kfIdx: number) => void;
+function Timeline({ composition, timeMs, selected, selKf, onSeek, onSelect, onKfDragStart, onKfDragMove, onKfDragEnd, onKfDelete }: {
+  composition: Composition; timeMs: number; selected: number; selKf: { i: number; key: TKey; kfIdx: number } | null;
+  onSeek: (t: number) => void; onSelect: (i: number) => void;
+  onKfDragStart: (i: number, key: TKey, kfIdx: number) => void; onKfDragMove: (t: number) => void; onKfDragEnd: () => void; onKfDelete: (i: number, key: TKey, kfIdx: number) => void;
 }) {
   const dur = composition.durationMs || 1;
   const trackRef = useRef<HTMLDivElement>(null);
@@ -315,13 +374,17 @@ function Timeline({ composition, timeMs, selected, onSeek, onSelect, onKfDrag, o
             <div key={i} style={{ position: "relative", height: 28, borderBottom: "1px solid #1c2128" }}>
               <div onClick={() => onSelect(i)} style={{ position: "absolute", left: -120, width: 116, height: "100%", display: "flex", alignItems: "center", padding: "0 6px", fontSize: 11, color: i === selected ? "#58a6ff" : "#8b949e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}>{layerLabel(al, i)}</div>
               <div style={{ position: "absolute", top: 6, height: 16, left: pct(start), width: pct(end - start), background: i === selected ? "#1f6feb44" : "#30363d", border: `1px solid ${i === selected ? "#1f6feb" : "#3d444d"}`, borderRadius: 4 }} />
-              {TRANSFORM_KEYS.flatMap((key) => Array.isArray(tr[key]) ? (tr[key] as Kf[]).map((kf, j) => (
-                <div key={`${key}-${j}`} title={`${key} @ ${Math.round(kf.timeMs)}ms`}
-                  onPointerDown={(e) => { e.stopPropagation(); onSelect(i); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }}
-                  onPointerMove={(e) => { if (e.buttons) { e.stopPropagation(); const r = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect(); onKfDrag(i, key, j, ((e.clientX - r.left) / r.width) * dur); } }}
-                  onDoubleClick={(e) => { e.stopPropagation(); onKfDelete(i, key, j); }}
-                  style={{ position: "absolute", top: 9, left: pct(kf.timeMs), width: 11, height: 11, marginLeft: -5, transform: "rotate(45deg)", background: i === selected ? "#e7c36a" : "#9c834a", border: "1px solid #b9962f", cursor: "ew-resize" }} />
-              )) : [])}
+              {TRANSFORM_KEYS.flatMap((key) => Array.isArray(tr[key]) ? (tr[key] as Kf[]).map((kf, j) => {
+                const sel = selKf?.i === i && selKf.key === key && selKf.kfIdx === j;
+                return (
+                  <div key={`${key}-${j}`} title={`${key} @ ${Math.round(kf.timeMs)}ms`}
+                    onPointerDown={(e) => { e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); onKfDragStart(i, key, j); }}
+                    onPointerMove={(e) => { if (e.buttons) { e.stopPropagation(); const r = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect(); onKfDragMove(((e.clientX - r.left) / r.width) * dur); } }}
+                    onPointerUp={(e) => { e.stopPropagation(); onKfDragEnd(); }}
+                    onDoubleClick={(e) => { e.stopPropagation(); onKfDelete(i, key, j); }}
+                    style={{ position: "absolute", top: 9, left: pct(kf.timeMs), width: 11, height: 11, marginLeft: -5, transform: "rotate(45deg)", background: sel ? "#58a6ff" : i === selected ? "#e7c36a" : "#9c834a", border: `1px solid ${sel ? "#58a6ff" : "#b9962f"}`, cursor: "ew-resize" }} />
+                );
+              }) : [])}
             </div>
           );
         })}
@@ -389,6 +452,37 @@ function Col({ label, children }: { label: string; children: React.ReactNode }) 
   return <label style={{ display: "flex", flexDirection: "column", gap: 3, flex: 1, minWidth: 0 }}><span style={{ opacity: 0.6, fontSize: 11 }}>{label}</span>{children}</label>;
 }
 function Row({ children }: { children: React.ReactNode }) { return <div style={{ display: "flex", gap: 8 }}>{children}</div>; }
+
+// Draggable cubic-bezier curve editor. Y is allowed to overshoot (-0.5..1.5) so
+// "back"/spring-like eases are authorable. Emits a [x1,y1,x2,y2] tuple.
+function BezierEditor({ value, onChange }: { value: Bezier; onChange: (v: Bezier) => void }) {
+  const S = 180, pad = 20, span = S - pad * 2;
+  const ref = useRef<SVGSVGElement>(null);
+  const [drag, setDrag] = useState<0 | 1 | null>(null);
+  const toPx = (x: number, y: number): [number, number] => [pad + x * span, pad + (1 - y) * span];
+  const onMove = (e: React.PointerEvent) => {
+    if (drag === null || !ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const x = clamp(0, 1, (e.clientX - r.left - pad) / span);
+    const y = clamp(-0.5, 1.5, 1 - (e.clientY - r.top - pad) / span);
+    const v: Bezier = [...value];
+    if (drag === 0) { v[0] = r2(x); v[1] = r2(y); } else { v[2] = r2(x); v[3] = r2(y); }
+    onChange(v);
+  };
+  const [x1, y1, x2, y2] = value;
+  const p0 = toPx(0, 0), p1 = toPx(x1, y1), p2 = toPx(x2, y2), p3 = toPx(1, 1);
+  return (
+    <svg ref={ref} width={S} height={S} onPointerMove={onMove} onPointerUp={() => setDrag(null)} onPointerLeave={() => setDrag(null)}
+      style={{ background: "#010409", border: "1px solid #21262d", borderRadius: 6, touchAction: "none", alignSelf: "center" }}>
+      <rect x={pad} y={pad} width={span} height={span} fill="none" stroke="#21262d" />
+      <line x1={p0[0]} y1={p0[1]} x2={p1[0]} y2={p1[1]} stroke="#3d444d" />
+      <line x1={p3[0]} y1={p3[1]} x2={p2[0]} y2={p2[1]} stroke="#3d444d" />
+      <path d={`M ${p0[0]} ${p0[1]} C ${p1[0]} ${p1[1]} ${p2[0]} ${p2[1]} ${p3[0]} ${p3[1]}`} fill="none" stroke="#58a6ff" strokeWidth={2} />
+      <circle cx={p1[0]} cy={p1[1]} r={6} fill="#e7c36a" style={{ cursor: "grab" }} onPointerDown={(e) => { ref.current?.setPointerCapture(e.pointerId); setDrag(0); }} />
+      <circle cx={p2[0]} cy={p2[1]} r={6} fill="#e7c36a" style={{ cursor: "grab" }} onPointerDown={(e) => { ref.current?.setPointerCapture(e.pointerId); setDrag(1); }} />
+    </svg>
+  );
+}
 
 function layerLabel(l: AnyLayer, i: number): string {
   const id = typeof l.id === "string" ? l.id : "";
