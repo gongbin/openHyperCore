@@ -1,52 +1,15 @@
+import { resolveEasing } from "./easing.ts";
+import type { EasingLike } from "./easing.ts";
 import type { AnimatedScalar, LayerTransform, ScalarKeyframe } from "./types.ts";
-
-// Named easing presets. The render engine only interpolates linearly between
-// keyframes, so non-linear easings are baked by sampling the curve into a
-// handful of intermediate keyframes (see `keyframes`).
-export type Easing =
-  | "linear"
-  | "easeIn"
-  | "easeOut"
-  | "easeInOut"
-  | "easeInCubic"
-  | "easeOutCubic"
-  | "easeInOutCubic"
-  | "easeOutBack";
-
-export type EasingFn = (t: number) => number;
-
-const EASINGS: Record<Exclude<Easing, "linear">, EasingFn> = {
-  easeIn: (t) => t * t,
-  easeOut: (t) => t * (2 - t),
-  easeInOut: (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t),
-  easeInCubic: (t) => t * t * t,
-  easeOutCubic: (t) => 1 - (1 - t) ** 3,
-  easeInOutCubic: (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2),
-  easeOutBack: (t) => {
-    const c1 = 1.70158;
-    const c3 = c1 + 1;
-    return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2;
-  }
-};
 
 // How many segments to sample non-linear easings into. 16 keeps the baked
 // curve visually smooth at typical transition durations.
 const EASING_SAMPLES = 16;
 
-function easingFn(easing?: Easing | EasingFn): EasingFn | undefined {
-  if (easing === undefined || easing === "linear") {
-    return undefined;
-  }
-  if (typeof easing === "function") {
-    return easing;
-  }
-  return EASINGS[easing];
-}
-
 export type TimedTransitionOptions = {
   startMs: number;
   durationMs: number;
-  easing?: Easing | EasingFn;
+  easing?: EasingLike;
 };
 
 export type FadeTransitionOptions = TimedTransitionOptions & {
@@ -96,7 +59,7 @@ export function scaleTransition(options: ScaleTransitionOptions): LayerTransform
   };
 }
 
-const TRANSFORM_PROPERTIES = ["x", "y", "scale", "rotate", "opacity"] as const;
+const TRANSFORM_PROPERTIES = ["x", "y", "scale", "scaleX", "scaleY", "rotate", "opacity"] as const;
 
 export function mergeTransforms(...transforms: LayerTransform[]): LayerTransform {
   const merged: LayerTransform = {};
@@ -148,14 +111,14 @@ export function delayTransition(transform: LayerTransform, offsetMs: number): La
     if (value === undefined) {
       continue;
     }
-    out[property] = toKeyframes(value).map((frame) => ({ timeMs: frame.timeMs + offsetMs, value: frame.value }));
+    out[property] = toKeyframes(value).map((frame) => ({ ...frame, timeMs: frame.timeMs + offsetMs }));
   }
   return out;
 }
 
 function keyframes(options: TimedTransitionOptions, from: number, to: number): ScalarKeyframe[] {
   assertTransitionTiming(options);
-  const ease = easingFn(options.easing);
+  const ease = resolveEasing(options.easing);
   if (!ease) {
     return [
       { timeMs: options.startMs, value: from },

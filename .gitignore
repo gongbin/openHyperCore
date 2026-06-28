@@ -10,6 +10,11 @@ Plans.md
 bench-results/
 renders/
 
+# Rust toolchain installer + native addon build artifacts
+rustup-init.sh
+**/target/
+*.node
+
 # Demo source + generated/downloaded binary assets (regenerate with the
 # examples/assets/build-*.ts scripts, or re-download the fonts/textures).
 examples/demo.mp4
@@ -18,4 +23,5 @@ examples/assets/*.m4a
 examples/assets/*.jpg
 examples/assets/*.png
 examples/assets/*.ttf
+examples/assets/*.wav
 examples/cover-design/screenshots/

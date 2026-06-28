@@ -10,11 +10,15 @@ export type ImagePipeArgsOptions = {
   audioInputs?: AudioInput[];
 };
 
+// A volume automation point (time relative to the audio's own start).
+export type VolumePoint = { timeMs: number; value: number };
+
 export type AudioInput = {
   src: string;
   startMs?: number;
   endMs?: number;
-  volume?: number;
+  // Constant gain, or a piecewise-linear envelope (keyframes) for ducking/swells.
+  volume?: number | VolumePoint[];
   fadeInMs?: number;
   fadeOutMs?: number;
 };
@@ -138,6 +142,12 @@ function assertPositive(name: string, value: number): void {
   }
 }
 
+function assertNonNegative(name: string, value: number): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be non-negative`);
+  }
+}
+
 function normalizeAudioInputs(options: ImagePipeArgsOptions): AudioInput[] {
   if (options.audioInputs && options.audioInputs.length > 0) {
     return options.audioInputs;
@@ -187,8 +197,10 @@ function audioFilters(audio: AudioInput): string[] {
   }
   filters.push("asetpts=PTS-STARTPTS");
   if (audio.volume !== undefined) {
-    assertPositive("audio volume", audio.volume);
-    filters.push(`volume=${formatNumber(audio.volume)}`);
+    const filter = volumeFilter(audio.volume);
+    if (filter) {
+      filters.push(filter);
+    }
   }
   if (audio.fadeInMs !== undefined) {
     assertPositive("audio fadeInMs", audio.fadeInMs);
@@ -207,6 +219,48 @@ function audioFilters(audio: AudioInput): string[] {
     filters.push(`adelay=${delayMs}|${delayMs}`);
   }
   return filters;
+}
+
+// Build the `volume` filter for a constant gain or a keyframe envelope. A
+// single number is a static gain; an array becomes a per-frame-evaluated
+// piecewise-linear envelope expression. `t` is seconds from the audio's start
+// (the filter runs after asetpts, before adelay).
+function volumeFilter(volume: number | VolumePoint[]): string | undefined {
+  if (typeof volume === "number") {
+    assertNonNegative("audio volume", volume);
+    return `volume=${formatNumber(volume)}`;
+  }
+
+  const points = volume
+    .filter((point) => Number.isFinite(point.timeMs) && Number.isFinite(point.value))
+    .map((point) => ({ t: Math.max(0, point.timeMs) / 1000, v: point.value }))
+    .sort((a, b) => a.t - b.t);
+  for (const point of points) {
+    assertNonNegative("audio volume", point.v);
+  }
+  if (points.length === 0) {
+    return undefined;
+  }
+  if (points.length === 1) {
+    return `volume=${formatNumber(points[0]!.v)}`;
+  }
+  // Single-quote the expression so its commas/parens aren't parsed as filter
+  // separators inside -filter_complex.
+  return `volume='${buildVolumeExpr(points)}':eval=frame`;
+}
+
+function buildVolumeExpr(points: Array<{ t: number; v: number }>): string {
+  let expr = formatNumber(points[points.length - 1]!.v);
+  for (let i = points.length - 2; i >= 0; i -= 1) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    const segment = a.v === b.v
+      ? formatNumber(a.v)
+      : `(${formatNumber(a.v)}+(${formatNumber(b.v - a.v)})*(t-${formatNumber(a.t)})/(${formatNumber(b.t - a.t)}))`;
+    expr = `if(lt(t,${formatNumber(b.t)}),${segment},${expr})`;
+  }
+  const first = points[0]!;
+  return `if(lt(t,${formatNumber(first.t)}),${formatNumber(first.v)},${expr})`;
 }
 
 function codecArgs(audioInputs: AudioInput[]): string[] {

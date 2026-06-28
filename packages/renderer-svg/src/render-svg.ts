@@ -1,4 +1,16 @@
-import type { ResolvedFrame, ResolvedLayer } from "../../core/src/index.ts";
+import type { Fill, ResolvedFrame, ResolvedLayer } from "../../core/src/index.ts";
+
+// The SVG still renderer is a lightweight preview: approximate a gradient fill
+// with a representative stop color so output stays a flat, valid SVG.
+function solidColor(fill: Fill | undefined, fallback: string): string {
+  if (fill === undefined) {
+    return fallback;
+  }
+  if (typeof fill === "string") {
+    return fill;
+  }
+  return fill.stops.length > 0 ? fill.stops[fill.stops.length - 1]!.color : fallback;
+}
 
 export function renderSvgFrame(frame: ResolvedFrame): string {
   const { width, height } = frame.composition;
@@ -19,8 +31,10 @@ function renderLayer(layer: ResolvedLayer): string {
 
 function renderLayerContent(layer: ResolvedLayer): string {
   switch (layer.type) {
+    case "group":
+      return layer.layers.map(renderLayer).join("");
     case "text":
-      return `<text x="0" y="0" font-family="${escapeAttribute(layer.font ?? "sans-serif")}" font-size="${layer.size ?? 16}" fill="${escapeAttribute(layer.color ?? "#000")}" text-anchor="${textAnchor(layer.align)}">${escapeText(layer.text)}</text>`;
+      return `<text x="0" y="0" font-family="${escapeAttribute(layer.font ?? "sans-serif")}" font-size="${layer.size ?? 16}" fill="${escapeAttribute(solidColor(layer.color, "#000"))}" text-anchor="${textAnchor(layer.align)}">${escapeText(layer.text)}</text>`;
     case "caption":
       return renderCaption(layer);
     case "shape":
@@ -39,9 +53,9 @@ function renderCaption(layer: Extract<ResolvedLayer, { type: "caption" }>): stri
   const textWidth = layer.maxWidth ?? estimateTextWidth(layer.text, size);
   const x = alignedX(layer.align, textWidth);
   const background = layer.backgroundColor
-    ? `<rect x="${formatNumber(x - padding)}" y="${formatNumber(-lineHeight - padding)}" width="${formatNumber(textWidth + padding * 2)}" height="${formatNumber(lineHeight + padding * 2)}" fill="${escapeAttribute(layer.backgroundColor)}" />`
+    ? `<rect x="${formatNumber(x - padding)}" y="${formatNumber(-lineHeight - padding)}" width="${formatNumber(textWidth + padding * 2)}" height="${formatNumber(lineHeight + padding * 2)}" fill="${escapeAttribute(solidColor(layer.backgroundColor, "#000"))}" />`
     : "";
-  const text = `<text x="0" y="0" font-family="${escapeAttribute(layer.font ?? "sans-serif")}" font-size="${size}" fill="${escapeAttribute(layer.color ?? "#fff")}" text-anchor="${textAnchor(layer.align)}">${escapeText(layer.text)}</text>`;
+  const text = `<text x="0" y="0" font-family="${escapeAttribute(layer.font ?? "sans-serif")}" font-size="${size}" fill="${escapeAttribute(solidColor(layer.color, "#fff"))}" text-anchor="${textAnchor(layer.align)}">${escapeText(layer.text)}</text>`;
   return [background, text].filter(Boolean).join("");
 }
 
@@ -61,15 +75,15 @@ function renderShape(layer: Extract<ResolvedLayer, { type: "shape" }>): string {
 }
 
 function groupAttributes(layer: ResolvedLayer): string {
-  const { x, y, scale, rotate, opacity } = layer.transform;
-  const transform = `translate(${formatNumber(x)} ${formatNumber(y)}) scale(${formatNumber(scale)}) rotate(${formatNumber(rotate)})`;
+  const { x, y, scale, scaleX, scaleY, rotate, opacity } = layer.transform;
+  const transform = `translate(${formatNumber(x)} ${formatNumber(y)}) scale(${formatNumber(scale * scaleX)} ${formatNumber(scale * scaleY)}) rotate(${formatNumber(rotate)})`;
   const id = layer.id ? ` id="${escapeAttribute(layer.id)}"` : "";
   return `${id} transform="${transform}" opacity="${formatNumber(opacity)}"`;
 }
 
 function shapeAttributes(layer: Extract<ResolvedLayer, { type: "shape" }>): string {
   const attrs = [
-    `fill="${escapeAttribute(layer.fill ?? "none")}"`,
+    `fill="${escapeAttribute(solidColor(layer.fill, "none"))}"`,
     layer.stroke ? `stroke="${escapeAttribute(layer.stroke)}"` : undefined,
     layer.strokeWidth !== undefined ? `stroke-width="${layer.strokeWidth}"` : undefined
   ].filter(Boolean);

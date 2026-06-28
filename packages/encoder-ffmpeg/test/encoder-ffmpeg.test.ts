@@ -200,6 +200,37 @@ test("buildRawVideoPipeArgs maps audio fadeInMs and fadeOutMs to afade filters",
   ]);
 });
 
+test("buildRawVideoPipeArgs builds a piecewise-linear volume envelope from keyframes", () => {
+  const args = buildRawVideoPipeArgs({
+    fps: 24,
+    width: 640,
+    height: 360,
+    outFile: "/tmp/out.mp4",
+    audioInputs: [
+      { src: "/tmp/a.wav", volume: [{ timeMs: 0, value: 0 }, { timeMs: 1000, value: 1 }, { timeMs: 2000, value: 0.2 }] }
+    ]
+  });
+
+  const graph = args[args.indexOf("-filter_complex") + 1]!;
+  assert.equal(
+    graph,
+    "[1:a]asetpts=PTS-STARTPTS,volume='if(lt(t,0),0,if(lt(t,1),(0+(1)*(t-0)/(1)),if(lt(t,2),(1+(-0.8)*(t-1)/(1)),0.2)))':eval=frame[a0];[a0]apad[aout]"
+  );
+});
+
+test("buildRawVideoPipeArgs rejects negative volume", () => {
+  assert.throws(
+    () => buildRawVideoPipeArgs({
+      fps: 24,
+      width: 640,
+      height: 360,
+      outFile: "/tmp/out.mp4",
+      audioInputs: [{ src: "/tmp/a.wav", volume: -1 }]
+    }),
+    /audio volume must be non-negative/
+  );
+});
+
 test("buildRawVideoPipeArgs requires endMs when fadeOutMs is set", () => {
   assert.throws(
     () => buildRawVideoPipeArgs({

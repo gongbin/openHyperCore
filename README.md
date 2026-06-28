@@ -4,28 +4,80 @@
 
 OpenHyperCore is a lightweight video editing and rendering engine prototype for low-cost CPU servers. It describes video compositions as a TypeScript scene graph, renders frames with CanvasKit/Skia, and writes H.264/AAC MP4 output through FFmpeg. The goal is to provide a rendering pipeline that is lighter, more controllable, and easier to deploy than browser-based renderers, without requiring Chromium or a GPU.
 
-The project is currently in alpha. The core CLI and rendering pipeline are usable, but OpenHyperCore is not yet a complete HyperFrames replacement. Implemented capabilities include graphic/text composition, captions, basic transition helpers, PNG still export, silent MP4 rendering, audio muxing, multi-audio mixing, VideoLayer, local asset probe/cache, batched raw RGBA video-frame decoding, incremental frame reuse, worker_threads frame rendering, and AWS 2CPU/2G benchmark validation. HTTP service APIs and release packaging remain on the roadmap.
+The project is currently in alpha. The core CLI and rendering pipeline are usable, but OpenHyperCore is not yet a complete HyperFrames replacement. Implemented capabilities include graphic/text composition, captions, reusable cinematic effect helpers, timeline composition, PNG still export, silent MP4 rendering, audio muxing, multi-audio mixing, VideoLayer, local asset probe/cache, batched raw RGBA video-frame decoding, incremental frame reuse, worker_threads frame rendering, and AWS 2CPU/2G benchmark validation. HTTP service APIs and release packaging remain on the roadmap.
 
 ## Open Source
 
 OpenHyperCore is an open-source TypeScript video rendering core for template video generation, batch editing, server-side rendering, and automated content production pipelines. The project is released under the MIT License. See [LICENSE](LICENSE).
+
+## Use As A Package
+
+```bash
+npm install openhypercore
+```
+
+The composition IR is plain JSON-serializable data, so authoring is decoupled from rendering — author anywhere (incl. the browser), render on a Node server.
+
+```ts
+// Authoring (browser-safe, no Node/ffmpeg deps): the main entry re-exports core.
+import { defineComposition, interpolate, cubicBezier } from "openhypercore";
+
+const composition = defineComposition({
+  fps: 30, width: 1280, height: 720, durationMs: 2000,
+  layers: [
+    { type: "shape", shape: "rect", width: 1280, height: 720, fill: { type: "linear", from: [0, 0], to: [0, 720], stops: [{ offset: 0, color: "#1b2a4a" }, { offset: 1, color: "#070b14" }] } },
+    { type: "text", text: "Hello", size: 96, color: "#fff", align: "center",
+      transform: { x: 640, y: 380, opacity: [{ timeMs: 0, value: 0 }, { timeMs: 600, value: 1, easing: [0.2, 0, 0, 1] }] } }
+  ]
+});
+```
+
+```ts
+// Rendering (Node): resolve a frame and rasterise it, or encode to MP4.
+import { resolveFrame } from "openhypercore";
+import { renderPngFrame } from "openhypercore/renderer-skia";
+
+const png = await renderPngFrame(resolveFrame(composition, 600));
+```
+
+CLI (handy for scripts and agents — `probe`/`still`/`render`/`bench`):
+
+```bash
+npx openhyper render my-composition.ts --out out.mp4
+npx openhyper render my-composition.ts --out out.mp4 --renderer native --workers auto
+```
+
+Subpath entries: `openhypercore` (≡ `openhypercore/core`, authoring IR + animation), `openhypercore/renderer-skia` (CanvasKit raster), `openhypercore/renderer-svg`, `openhypercore/encoder-ffmpeg`, `openhypercore/assets`, `openhypercore/jsx-runtime`, `openhypercore/cli`.
+
+The default renderer is the portable CanvasKit/wasm backend (no native binary required). The native (Rust + skia-safe) backend — ~8–14× faster — is an opt-in: build it from source with `pnpm build:native` and select with `--renderer native` (or `OPENHYPERCORE_RENDERER=native`); prebuilt per-platform binaries are planned.
 
 ## Features
 
 - Scene Graph IR: describes compositions, layers, transforms, and keyframes as plain data for caching, testing, and future service integration.
 - TypeScript API and lightweight JSX runtime: no React dependency; JSX and imperative APIs both compile into the same Composition IR.
 - CanvasKit/Skia renderer: supports text, rectangles, circles, paths, images, and the first local VideoLayer implementation.
+- Native renderer backend (Rust + skia-safe, optional): renders whole frames natively behind the same `FrameRenderer` seam, reaching full feature parity with the wasm renderer (verified by golden tests) at much higher throughput — measured ~8x faster rendering / ~6x faster end-to-end on an effects-heavy 1080p scene. Build it with `pnpm build:native` (needs the Rust toolchain), then select it via `--renderer native` (or `OPENHYPERCORE_RENDERER=native`); the wasm backend stays the default and portable fallback. The native backend draws every frame directly (no static-layer raster cache needed — direct draw already beats cached wasm blits). Benchmark with `node --experimental-strip-types packages/renderer-native/scripts/bench-vs-wasm.mjs`.
 - SVG debug stills and PNG stills: quickly inspect layout as SVG or render a real CanvasKit PNG frame.
 - CaptionLayer: supports timed captions, font size, color, background color, padding, alignment, and transform position.
-- Transition helpers: fade, slide, and scale presets that return reusable transform keyframes, with named easing presets (`easeIn/easeOut/easeInOut/...`, plus custom easing functions) baked into sampled keyframes.
+- Full transform stack: every layer animates `x/y/scale/scaleX/scaleY/rotate/opacity` via keyframe tracks. Each keyframe carries optional easing (named preset, custom function, or a CSS-style `cubicBezier(x1,y1,x2,y2)` / `[x1,y1,x2,y2]` tuple) applied to the segment ending at it — so any track gets frame-precise curves without baking. See `examples/full-transform-easing.ts`.
+- Transition helpers: fade, slide, and scale presets that return reusable transform keyframes, with named easing presets (`easeIn/easeOut/easeInOut/sine/quart/expo/back/elastic/bounce/...`, custom functions, or cubic-bezier tuples) baked into sampled keyframes.
 - Timeline DSL: `composeTimeline` chains multiple animations of the same property over time (e.g. entrance fade-in + exit fade-out on one layer), and `delayTransition` shifts a transform in time for staggering.
-- Layer fit modes: `ImageLayer.fit` and `VideoLayer.fit` support `fill` (stretch), `cover` (centre-crop), and `contain` (letterbox); circular video clips default to `cover`.
+- GroupLayer pre-composition: a `group` layer nests children under a shared transform and group opacity (composited as one unit via saveLayer, no double blending). Children and the group's own keyframes live on the group's local timeline, so a whole animated block relocates by changing `startMs` alone (Remotion `<Sequence>` semantics). See `examples/group-spring.ts`.
+- Remotion-style animation APIs: `interpolate(t, inputRange, outputRange, { easing, extrapolateLeft/Right })` for multi-segment mappings, and a closed-form damped `spring()` plus `springKeyframes()` that bakes physical spring motion into keyframe tracks.
+- Scene transitions: `createTransitionSeries(...).scene(...).transition({ type, durationMs, direction, easing })` chains full-frame scenes with real overlapping transitions — `wipe`, `clockWipe` (mask reveals), `slide` (push), and `flip` (centre-pivot fold) — where adjacent scenes overlap for the transition duration (Remotion TransitionSeries semantics). See `examples/scene-transitions.ts`.
+- Per-axis scale and reveal masks in the IR: `transform.scaleX/scaleY` (multiplied with uniform `scale`), and `GroupLayer.reveal` (`wipe`/`clock` with an animated 0→1 `progress`) clip a group to a swept rect or clock wedge.
+- Static-layer raster cache: groups whose resolved content repeats across frames (only their transform/opacity/reveal animating) are rastered once and blitted afterwards. Cost-driven and self-tuning — it times every direct draw and caches only subtrees that draw slower than the predicted blit, so cheap flat scenes never regress while glow/text-heavy cards speed up. Opt out per group with `cache: false` or globally with `--no-layer-cache`; image layers are also decode-cached across frames.
+- Cinematic effect helpers: `cinematicBars`, `flashTransitionLayer`, `speedLineBurst`, and `glitchTitle` generate reusable intro/transition layer stacks for high-energy reels without hand-writing dozens of layers.
+- Scene timeline builder: `createTimeline(...).scene(...).transition(...).build()` lays out named scenes and transitions sequentially, returning both a ready Composition and timing markers.
+- Layer fit modes: `ImageLayer.fit` and `VideoLayer.fit` support `fill` (stretch), `cover` (centre-crop), and `contain` (letterbox); circular clips default to `cover`.
+- Visual effects: gradient fills (`fill`/`color`/`backgroundColor` accept `{ type: "linear"|"radial", stops }`), per-layer `blendMode` (multiply/screen/overlay/add/...), full-layer `blur` (Gaussian), and directional `motionBlur` ({ angle, distance, samples }). See `examples/effects-showcase.ts`.
+- Arbitrary clipping: any layer (or whole group) sets `clip` to a `rect` (with optional corner `radius`), `circle`, or SVG `path` region in its local space.
 - Text layout: multi-line text/captions with explicit `\n` and automatic word/CJK wrapping via `maxWidth`, plus per-line `align` (left/center/right).
 - Fonts: a named font registry (`registerFont(name, path)`) and per-character fallback stack with optional colour-emoji fallback (`registerEmojiFont`).
 - Subtitles: `parseSubtitles` reads SRT/WebVTT into timed cues and `subtitlesToCaptions` turns them into styled, time-bounded CaptionLayers.
 - FFmpeg encoder backend: pipes raw RGBA frames to FFmpeg and outputs H.264/yuv420p MP4; with audio layers it outputs AAC audio.
-- AudioLayer: supports single audio, multi-audio `amix`, start/end timing, volume, fade in, and fade out.
-- VideoLayer: extracts frames from local video by timeline time and draws them into the Skia canvas. Video layers with `width/height` use source-sized batched raw RGBA decoding, bypassing the PNG intermediate format and CanvasKit per-frame image decoding.
+- AudioLayer: supports single audio, multi-audio `amix`, start/end timing, fade in/out, and `volume` as either a constant or a keyframe envelope (ducking/swells) compiled to an FFmpeg per-frame volume expression.
+- VideoLayer: extracts frames from local video by timeline time and draws them into the Skia canvas, with `playbackRate` (speed up/slow down) and `loop` over the trimmed window. Video layers with `width/height` use source-sized batched raw RGBA decoding, bypassing the PNG intermediate format and CanvasKit per-frame image decoding.
 - Asset probe/cache: provides metadata probing and task-level cache APIs for images, video, and audio.
 - Frame-level reuse: visually identical consecutive frames reuse the same RGBA buffer while preserving encoded frame order and PTS.
 - worker_threads render pool: supports `--workers N`, `--workers auto`, and `--worker-window N` to control parallelism and memory buffering.
@@ -38,7 +90,7 @@ OpenHyperCore is an open-source TypeScript video rendering core for template vid
 - VideoLayer supports source-size probing, task-level raw RGBA caching, windowed batched prefetch, and (via `--cache-dir`) a cross-task persistent disk cache that is also shared between workers. Decode already runs as contiguous sequential batch passes (no per-frame seeks); explicit GOP/keyframe-aligned scheduling is still a future refinement.
 - Text layout supports multi-line wrapping, alignment, font registration, and emoji fallback, but not yet full rich-text runs (mixed styles within a line) or bidirectional/complex-script shaping.
 - Colour-emoji fallback depends on an emoji font being available on the host (auto-detected, or set via `registerEmojiFont`); without one, emoji fall back to the default typeface.
-- Transition helpers support easing presets and a composed timeline DSL (`composeTimeline`/`delayTransition`); a higher-level scene/track timeline abstraction is still future work.
+- Transition helpers support easing presets, a composed property timeline DSL (`composeTimeline`/`delayTransition`), and a lightweight scene timeline builder. A richer track-based editor timeline is still future work.
 - HTTP service APIs, visual editor, and release packaging are not implemented yet.
 
 ## Requirements
@@ -63,6 +115,7 @@ pnpm cli probe examples/simple-video.ts
 pnpm cli still examples/simple-video.ts --t 1 --out /tmp/openhyper-frame.svg
 pnpm cli still examples/simple-video.ts --t 1 --out /tmp/openhyper-frame.png --format png
 pnpm cli render examples/simple-video.ts --out /tmp/openhyper.mp4
+pnpm cli render examples/effects-opener.ts --out /tmp/openhyper-effects.mp4
 pnpm cli bench examples/simple-video.ts --out /tmp/openhyper-bench.json --video-out /tmp/openhyper-bench.mp4
 pnpm cli bench-suite examples/bench/animated-workload.ts --static examples/bench/static-reuse.ts --out /tmp/openhyper-bench-suite.json --video-dir /tmp/openhyper-bench-suite
 ```
@@ -312,6 +365,31 @@ import {
 }
 ```
 
+Effect/timeline opener example:
+
+```ts
+import {
+  cinematicBars,
+  createTimeline,
+  flashTransitionLayer,
+  glitchTitle,
+  speedLineBurst
+} from "openhypercore/core";
+
+const timeline = createTimeline({ width: 1280, height: 720, fps: 30 })
+  .scene("intro", 1600, ({ startMs, endMs, width, height }) => [
+    ...speedLineBurst({ width, height, startMs, endMs, count: 18, seed: 9 }),
+    ...cinematicBars({ width, height, startMs, endMs }),
+    ...glitchTitle({ text: "METRO RUN", startMs, endMs, x: 120, y: 340, size: 96 })
+  ])
+  .transition("flash", 240, ({ startMs, width, height }) => [
+    flashTransitionLayer({ width, height, startMs, durationMs: 240 })
+  ])
+  .build();
+
+export default timeline.composition;
+```
+
 Asset probe/cache example:
 
 ```ts
@@ -336,7 +414,7 @@ const rgba = await renderRgbaFrame(frame, { videoFrameCache });
 
 ```text
 packages/
-  core/             Scene Graph IR, composition validation, scheduler, keyframe evaluation
+  core/             Scene Graph IR, composition validation, scheduler, keyframes, effects/timeline helpers
   jsx-runtime/      Custom JSX runtime that emits IR
   renderer-svg/     SVG debug still backend
   renderer-skia/    CanvasKit PNG/RGBA renderer backend
@@ -352,11 +430,12 @@ examples/bench/     M4.1 benchmark fixtures
 - M3.5: completed `packages/assets`, with image/video/audio probe, size/duration metadata, and task-level cache.
 - M3.6: completed task-level video frame cache, windowed batch prefetch, and raw RGBA VideoLayer decoding to avoid repeated FFmpeg extraction and bypass the PNG intermediate format.
 - M3.7: completed basic CaptionLayer with timed text, style, and position.
-- M3.8: completed basic transition presets: fade, slide, scale, and reusable scene-graph helpers.
+- M3.8: completed transition presets, easing, composed transform timelines, cinematic effect helpers, and the lightweight scene timeline builder.
 - M4.1: completed benchmark fixtures and `bench-suite`, comparing single-thread, worker, worker+window, and static-reuse paths.
 - M4.2: completed AWS 2CPU/2G benchmark validation for the 1080p30/5s and <800MB memory targets.
 - M4.3: completed benchmark summary JSON output for CI and server acceptance checks.
-- M5: fill in project templates, user documentation, error messages, and release packaging.
+- M4.4: completed persistent disk video-frame cache hardening and batch-order preservation for partial cache hits.
+- M5: fill in project templates, user documentation, error messages, richer track-based timelines, and release packaging.
 
 ## Goal
 

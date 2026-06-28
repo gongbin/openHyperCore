@@ -1,7 +1,10 @@
 import { parentPort } from "node:worker_threads";
 import { performance } from "node:perf_hooks";
-import { createRgbaFrameRenderer, createVideoFrameCache, prefetchVideoFrameBatch } from "../../renderer-skia/src/index.ts";
+import { createVideoFrameCache, prefetchVideoFrameBatch } from "../../renderer-skia/src/index.ts";
+import type { FrameRenderer } from "../../renderer-skia/src/index.ts";
 import type { ResolvedFrame } from "../../core/src/index.ts";
+import { createBackendRenderer } from "./renderer-backend.ts";
+import type { RendererBackend } from "./renderer-backend.ts";
 
 // A run = a contiguous slice of frames. The worker batch-extracts all the video
 // frames the slice needs in one ffmpeg pass (sequential decode, no per-frame
@@ -12,10 +15,14 @@ type RenderWorkerRequest = {
   frames: ResolvedFrame[];
   ffmpegPath?: string;
   diskCacheDir?: string;
+  layerCache?: boolean;
+  backend?: RendererBackend;
 };
 
 const videoFrameCaches = new Map<string, ReturnType<typeof createVideoFrameCache>>();
-const rgbaRenderer = createRgbaFrameRenderer();
+// The backend is fixed for a render, but only known on the first job, so the
+// renderer is created lazily.
+let rgbaRenderer: FrameRenderer | undefined;
 
 if (!parentPort) {
   throw new Error("render-worker must run inside a worker thread");
@@ -24,12 +31,16 @@ if (!parentPort) {
 parentPort.on("message", async (message: RenderWorkerRequest) => {
   try {
     const startedAt = performance.now();
+    rgbaRenderer ??= createBackendRenderer(message.backend ?? "wasm");
+    const renderer = rgbaRenderer;
     const cache = videoFrameCacheFor(message.ffmpegPath, message.diskCacheDir);
     cache.clear();
     await prefetchVideoFrameBatch(message.frames, cache);
     const frames: Uint8Array[] = [];
     for (const frame of message.frames) {
-      frames.push(await rgbaRenderer.render(frame, { videoFrameCache: cache }));
+      frames.push(await renderer.render(frame, message.layerCache === false
+        ? { videoFrameCache: cache, layerCache: false }
+        : { videoFrameCache: cache }));
     }
     parentPort?.postMessage({
       runIndex: message.runIndex,
@@ -44,7 +55,7 @@ parentPort.on("message", async (message: RenderWorkerRequest) => {
   }
 });
 
-process.once("exit", () => rgbaRenderer.dispose());
+process.once("exit", () => rgbaRenderer?.dispose());
 
 function videoFrameCacheFor(ffmpegPath: string | undefined, diskCacheDir: string | undefined): ReturnType<typeof createVideoFrameCache> {
   const key = `${ffmpegPath ?? "default"}|${diskCacheDir ?? ""}`;

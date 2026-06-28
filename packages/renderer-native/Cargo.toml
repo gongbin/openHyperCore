@@ -1,0 +1,24 @@
+[package]
+name = "renderer-native"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+# cdylib so Node can dlopen the built artifact as a `.node` addon.
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", default-features = false, features = ["napi8"] }
+napi-derive = "2"
+# Native Skia (rust-skia) — pulls a prebuilt Skia by default, so feature parity
+# with canvaskit-wasm is ~100% (same engine).
+skia-safe = "0.84"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true

@@ -1,5 +1,5 @@
 import { defineComposition } from "../../core/src/index.ts";
-import type { CaptionLayer as CaptionLayerIR, Composition as CompositionIR, ImageLayer as ImageLayerIR, Layer, ShapeLayer as ShapeLayerIR, TextLayer as TextLayerIR } from "../../core/src/index.ts";
+import type { CaptionLayer as CaptionLayerIR, Composition as CompositionIR, GroupLayer as GroupLayerIR, ImageLayer as ImageLayerIR, Layer, ShapeLayer as ShapeLayerIR, TextLayer as TextLayerIR } from "../../core/src/index.ts";
 
 type Props = Record<string, unknown>;
 type Component<T = unknown> = (props: Props) => T;
@@ -95,6 +95,21 @@ export function ImageLayer(props: Props): ImageLayerIR {
     endMs: optionalNumberAlias(props, "endMs", "to"),
     transform: props.transform as ImageLayerIR["transform"]
   }) as ImageLayerIR;
+}
+
+// Pre-composition wrapper; children live on the group's local timeline
+// (relative to its startMs), so a group subtree is reusable at any offset.
+export function GroupLayer(props: Props): GroupLayerIR {
+  return omitUndefined({
+    type: "group",
+    id: optionalStringProp(props, "id"),
+    startMs: optionalNumberAlias(props, "startMs", "from"),
+    endMs: optionalNumberAlias(props, "endMs", "to"),
+    transform: props.transform as GroupLayerIR["transform"],
+    reveal: props.reveal as GroupLayerIR["reveal"],
+    cache: props.cache as GroupLayerIR["cache"],
+    layers: normalizeChildren(props.children) as Layer[]
+  }) as GroupLayerIR;
 }
 
 function createElement(type: string | Component, props: Props): unknown {

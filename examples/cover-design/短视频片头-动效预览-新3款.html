@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>短视频片头 · 动效预览 (新增 3 款)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;700;800;900&family=Noto+Serif+SC:wght@500;700&family=ZCOOL+QingKe+HuangYou&family=ZCOOL+KuaiLe&family=Ma+Shan+Zheng&family=Anton&family=Bebas+Neue&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(130% 90% at 50% -10%, #1b1b22 0%, #0b0b0f 62%);
+    color: #ece9e1;
+    font-family: 'Noto Sans SC', system-ui, sans-serif;
+    min-height: 100%;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 30px 22px 56px;
+  }
+
+  /* ───────── newly-designed header ───────── */
+  .head { width: 100%; max-width: 1280px; }
+  .head .bar {
+    display: flex; align-items: center; gap: 14px;
+    font-family: 'Space Mono', monospace; font-size: 11px;
+    letter-spacing: .22em; color: #6f6e68; text-transform: uppercase;
+  }
+  .head .bar .line { flex: 1; height: 1px; background: linear-gradient(90deg, #2b2b32, transparent); }
+  .head .bar .dot { width: 7px; height: 7px; border-radius: 50%; background: #ff5a1f; box-shadow: 0 0 12px #ff5a1f; animation: livePulse 1.8s ease-in-out infinite; }
+  @keyframes livePulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+
+  .head .titlerow { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-top: 18px; flex-wrap: wrap; }
+  .head h1 { font-size: 30px; font-weight: 900; letter-spacing: .01em; line-height: 1.05; }
+  .head h1 em { font-style: normal; color: #ff5a1f; }
+  .head .sub { font-family: 'Space Mono', monospace; font-size: 12px; color: #8b8a84; letter-spacing: .04em; margin-top: 8px; }
+  .head .replayAll {
+    border: 1px solid #34343c; background: #16161b; color: #ece9e1;
+    font-family: 'Space Mono', monospace; font-size: 12px; letter-spacing: .08em;
+    padding: 10px 18px; border-radius: 999px; cursor: pointer;
+    transition: background .15s, border-color .15s; white-space: nowrap;
+  }
+  .head .replayAll:hover { background: #22222a; border-color: #4a4a54; }
+  .head .replayAll .ic { display: inline-block; transition: transform .5s; }
+  .head .replayAll:active .ic { transform: rotate(-360deg); }
+
+  /* ───────── stage grid ───────── */
+  .wrap { display: flex; gap: 44px; justify-content: center; align-items: flex-start; flex-wrap: wrap; margin-top: 40px; }
+  .col { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .slot { position: relative; }
+  .stage {
+    width: 405px; height: 720px; position: relative; overflow: hidden;
+    border-radius: 18px; transform-origin: top center; color: #fff;
+    box-shadow: 0 34px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06);
+  }
+  .caprow { display: flex; align-items: center; gap: 11px; }
+  .caprow .idx { font-family: 'Space Mono', monospace; font-size: 11px; color: #5f5e58; }
+  .caprow .name { font-size: 14px; font-weight: 800; }
+  .caprow .en { font-family: 'Space Mono', monospace; font-size: 10px; color: #7c7b75; letter-spacing: .12em; text-transform: uppercase; }
+  .caprow .swatches { display: flex; gap: 4px; margin-left: 2px; }
+  .caprow .swatches i { width: 12px; height: 12px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); }
+  .replay {
+    border: 1px solid #34343c; background: #16161b; color: #cfcdc6; cursor: pointer;
+    width: 30px; height: 30px; border-radius: 50%; font-size: 14px; line-height: 1;
+    display: flex; align-items: center; justify-content: center; margin-left: 2px;
+    transition: background .15s, transform .4s;
+  }
+  .replay:hover { background: #24242c; }
+  .replay:active { transform: rotate(-360deg); }
+
+  /* ════════════════════════════════════════════════════
+     A · 糖果孟菲斯  CANDY MEMPHIS
+     ════════════════════════════════════════════════════ */
+  .mem { background: #fff1dc; color: #221a3a; }
+  .mem .dots { position: absolute; inset: 0; opacity: .5;
+    background-image: radial-gradient(#221a3a22 1.5px, transparent 1.7px); background-size: 22px 22px; }
+
+  .mem .sh { position: absolute; opacity: 0; }
+  .mem .triA { top: 64px; right: 40px;
+    width: 0; height: 0; border-left: 46px solid transparent; border-right: 46px solid transparent; border-bottom: 80px solid #12c2a0; }
+  .mem .ringA { top: 150px; left: -34px; width: 132px; height: 132px; border: 13px solid #6b3df5; border-radius: 50%; }
+  .mem .diaA { top: 96px; left: 120px; width: 40px; height: 40px; background: #ff3d7f; }
+  .mem .arcA { bottom: 250px; right: -36px; width: 130px; height: 130px; border: 12px dashed #ff5a1f; border-radius: 50%;
+    clip-path: polygon(0 0, 55% 0, 55% 100%, 0 100%); }
+  .mem .halfA { bottom: 196px; left: -10px; width: 110px; height: 55px; background: #ffd23f; border-radius: 110px 110px 0 0; }
+  .mem .plusA { top: 250px; right: 56px; width: 44px; height: 44px; }
+  .mem .plusA::before, .mem .plusA::after { content: ''; position: absolute; background: #6b3df5; border-radius: 3px; }
+  .mem .plusA::before { left: 17px; top: 0; width: 10px; height: 44px; }
+  .mem .plusA::after { top: 17px; left: 0; height: 10px; width: 44px; }
+  .mem .squig { position: absolute; bottom: 300px; left: 132px; opacity: 0; }
+  .mem .dotcol { position: absolute; bottom: 150px; right: 40px; display: grid; grid-template-columns: repeat(3, 12px); gap: 9px; opacity: 0; }
+  .mem .dotcol i { width: 12px; height: 12px; border-radius: 50%; background: #ff3d7f; }
+
+  .mem .tag { position: absolute; top: 38px; left: 30px; display: inline-flex; align-items: center; gap: 9px; opacity: 0; }
+  .mem .tag .pill { background: #221a3a; color: #ffd23f; font-family: 'Anton', sans-serif; font-size: 15px; letter-spacing: .04em; padding: 5px 12px; border-radius: 999px; }
+  .mem .tag .note { font-family: 'Space Mono', monospace; font-size: 12px; letter-spacing: .08em; color: #221a3a; opacity: .7; }
+
+  .mem .title { position: absolute; top: 196px; left: 30px; right: 30px; font-family: 'ZCOOL KuaiLe', 'Noto Sans SC', sans-serif; line-height: 1; }
+  .mem .title .ln { display: inline-block; white-space: nowrap; color: #fff; padding: 6px 16px 10px; border-radius: 14px; opacity: 0; box-shadow: 6px 7px 0 rgba(34,26,58,.16); }
+  .mem .t1 { background: #ff5a1f; font-size: 78px; transform: rotate(-3deg); }
+  .mem .t2 { background: #12c2a0; font-size: 78px; margin-top: 14px; transform: rotate(2deg); }
+  .mem .t3 { background: #6b3df5; font-size: 70px; margin-top: 14px; transform: rotate(-1.5deg); }
+
+  .mem .burst { position: absolute; bottom: 150px; left: 36px; width: 96px; height: 96px; border-radius: 50%;
+    background: #ffd23f; color: #221a3a; font-family: 'Anton', sans-serif; font-size: 34px; letter-spacing: .02em;
+    display: flex; align-items: center; justify-content: center; box-shadow: 5px 6px 0 #ff3d7f; opacity: 0; }
+
+  .mem .handle { position: absolute; bottom: 52px; left: 30px; display: flex; align-items: center; gap: 10px; opacity: 0; }
+  .mem .handle .av { width: 34px; height: 34px; border-radius: 50%; background: #6b3df5; box-shadow: 0 0 0 3px #fff, 0 4px 10px rgba(0,0,0,.15); }
+  .mem .handle .id { font-family: 'Noto Sans SC', sans-serif; font-weight: 800; font-size: 17px; color: #221a3a; }
+
+  .mem.run .triA   { animation: spinPop .55s .05s both; }
+  .mem.run .ringA  { animation: spinPop .55s .14s both; }
+  .mem.run .diaA   { animation: spinPop .55s .22s both; }
+  .mem.run .plusA  { animation: spinPop .55s .30s both; }
+  .mem.run .halfA  { animation: spinPop .55s .38s both; }
+  .mem.run .arcA   { animation: spinPop .55s .46s both; }
+  .mem.run .squig  { animation: fadePop .5s .50s both; }
+  .mem.run .dotcol { animation: fadePop .5s .58s both; }
+  .mem.run .tag    { animation: dropIn .5s .24s both; }
+  .mem.run .t1     { animation: springLn .6s .42s both; }
+  .mem.run .t2     { animation: springLn .6s .56s both; }
+  .mem.run .t3     { animation: springLn .6s .70s both; }
+  .mem.run .burst  { animation: burstPop .55s .96s both; }
+  .mem.run .handle { animation: dropIn .5s 1.12s both; }
+  .mem.run .triA, .mem.run .ringA, .mem.run .diaA, .mem.run .halfA { will-change: transform; }
+
+  @keyframes spinPop { 0% { opacity: 0; transform: scale(.2) rotate(-50deg); } 65% { opacity: 1; transform: scale(1.18) rotate(8deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+  @keyframes fadePop { 0% { opacity: 0; transform: scale(.4); } 100% { opacity: .9; transform: scale(1); } }
+  @keyframes dropIn { 0% { opacity: 0; transform: translateY(-16px); } 100% { opacity: 1; transform: translateY(0); } }
+  @keyframes springLn {
+    0% { opacity: 0; transform: translateY(-34px) scale(1.3) rotate(var(--r,0deg)); }
+    55% { opacity: 1; transform: translateY(7px) scale(.94) rotate(var(--r,0deg)); }
+    78% { transform: translateY(-3px) scale(1.03) rotate(var(--r,0deg)); }
+    100% { opacity: 1; transform: translateY(0) scale(1) rotate(var(--r,0deg)); }
+  }
+  .mem .t1 { --r: -3deg; } .mem .t2 { --r: 2deg; } .mem .t3 { --r: -1.5deg; }
+  @keyframes burstPop { 0% { opacity: 0; transform: scale(.2) rotate(-30deg); } 60% { opacity: 1; transform: scale(1.2) rotate(8deg); } 100% { opacity: 1; transform: scale(1) rotate(-6deg); } }
+
+  /* ════════════════════════════════════════════════════
+     B · 斜切运动风  SPEED SPLIT
+     ════════════════════════════════════════════════════ */
+  .spd { background: #0d0d10; color: #fff; }
+  .spd .blkCobalt { position: absolute; inset: 0; background: #1542ff;
+    clip-path: polygon(0 0, 100% 0, 100% 30%, 0 56%); opacity: 0; }
+  .spd .blkLime { position: absolute; inset: 0; background: #d4ff00;
+    clip-path: polygon(0 60%, 100% 34%, 100% 78%, 0 100%); opacity: 0; }
+  .spd .blkOrange { position: absolute; right: 0; bottom: 0; width: 100%; height: 100%; background: #ff4d00;
+    clip-path: polygon(72% 100%, 100% 84%, 100% 100%); opacity: 0; }
+  .spd .speed { position: absolute; left: 0; right: 0; opacity: 0; }
+  .spd .speed i { display: block; height: 4px; background: rgba(255,255,255,.85); margin: 7px 0; transform-origin: left; }
+  .spd .speedTop { top: 150px; }
+  .spd .speedTop i:nth-child(1) { width: 60%; }
+  .spd .speedTop i:nth-child(2) { width: 38%; }
+  .spd .speedTop i:nth-child(3) { width: 74%; }
+
+  .spd .ghostNum { position: absolute; right: -10px; top: 60px; font-family: 'Anton', sans-serif; font-size: 300px; line-height: .8;
+    color: transparent; -webkit-text-stroke: 2px rgba(255,255,255,.16); opacity: 0; }
+
+  .spd .sysrow { position: absolute; top: 38px; left: 28px; right: 28px; display: flex; justify-content: space-between;
+    font-family: 'Space Mono', monospace; font-size: 11px; letter-spacing: .18em; color: #0d0d10; opacity: 0; }
+  .spd .sysrow .tagk { background: #d4ff00; padding: 4px 10px; font-weight: 700; }
+  .spd .sysrow .on { color: #d4ff00; }
+
+  .spd .title { position: absolute; top: 286px; left: 30px; right: 30px; font-family: 'Noto Sans SC', sans-serif; font-weight: 900; line-height: .92; }
+  .spd .title .ln { display: inline-block; white-space: nowrap; opacity: 0; }
+  .spd .s1 { font-size: 116px; color: #fff; }
+  .spd .s2 { font-size: 116px; color: #fff; margin-top: 2px; -webkit-text-stroke: 2px #0d0d10; }
+  .spd .latin { position: absolute; top: 104px; left: 30px; font-family: 'Bebas Neue', sans-serif; font-size: 24px; letter-spacing: .34em; color: rgba(255,255,255,.85); opacity: 0; }
+
+  .spd .chev { position: absolute; bottom: 150px; left: 30px; display: flex; gap: 4px; font-family: 'Anton', sans-serif; font-size: 56px; color: #ff4d00; opacity: 0; }
+  .spd .chev span { display: inline-block; }
+  .spd.run .chev span { animation: chevMarch 1s linear infinite; }
+  .spd.run .chev span:nth-child(2) { animation-delay: .16s; }
+  .spd.run .chev span:nth-child(3) { animation-delay: .32s; }
+
+  .spd .handle { position: absolute; bottom: 50px; left: 30px; display: flex; align-items: center; gap: 10px; opacity: 0; }
+  .spd .handle .av { width: 32px; height: 32px; border-radius: 50%; background: #d4ff00; box-shadow: 0 0 0 2px #0d0d10; }
+  .spd .handle .id { font-weight: 800; font-size: 16px; color: #fff; letter-spacing: .02em; }
+
+  .spd.run .blkCobalt { animation: wipeDown .55s .05s both; }
+  .spd.run .blkLime   { animation: wipeUp .55s .18s both; }
+  .spd.run .blkOrange { animation: fadeIn .4s .5s both; }
+  .spd.run .ghostNum  { animation: numPop .6s .3s both; }
+  .spd.run .sysrow    { animation: dropIn .45s .2s both; }
+  .spd.run .speedTop  { animation: speedIn .5s .55s both; }
+  .spd.run .latin     { animation: slideL .5s .5s both; }
+  .spd.run .s1        { animation: slamL .55s .6s both; }
+  .spd.run .s2        { animation: slamR .55s .74s both; }
+  .spd.run .chev      { animation: fadeIn .4s .92s both; }
+  .spd.run .handle    { animation: dropIn .45s 1.08s both; }
+
+  @keyframes wipeDown { 0% { opacity: 0; transform: translateY(-90px); } 100% { opacity: 1; transform: translateY(0); } }
+  @keyframes wipeUp   { 0% { opacity: 0; transform: translateY(90px); } 100% { opacity: 1; transform: translateY(0); } }
+  @keyframes fadeIn   { 0% { opacity: 0; } 100% { opacity: 1; } }
+  @keyframes numPop   { 0% { opacity: 0; transform: scale(1.4); } 100% { opacity: 1; transform: scale(1); } }
+  @keyframes speedIn  { 0% { opacity: 0; transform: translateX(-40px); } 100% { opacity: .95; transform: translateX(0); } }
+  @keyframes slideL   { 0% { opacity: 0; transform: translateX(-24px); } 100% { opacity: 1; transform: translateX(0); } }
+  @keyframes slamL    { 0% { opacity: 0; transform: translateX(-80px) skewX(12deg); } 60% { opacity: 1; transform: translateX(8px) skewX(-3deg); } 100% { opacity: 1; transform: translateX(0) skewX(0); } }
+  @keyframes slamR    { 0% { opacity: 0; transform: translateX(80px) skewX(-12deg); } 60% { opacity: 1; transform: translateX(-8px) skewX(3deg); } 100% { opacity: 1; transform: translateX(0) skewX(0); } }
+  @keyframes chevMarch { 0% { transform: translateX(0); opacity: .35; } 50% { opacity: 1; } 100% { transform: translateX(14px); opacity: .35; } }
+
+  /* ════════════════════════════════════════════════════
+     C · 剪纸拼贴  PAPER-CUT COLLAGE
+     ════════════════════════════════════════════════════ */
+  .cut { background: #e7d9bd; color: #38301f; }
+  .cut .board { position: absolute; inset: 0;
+    background-image:
+      radial-gradient(#0000000d 2px, transparent 2.4px),
+      repeating-linear-gradient(45deg, #00000005 0 14px, transparent 14px 28px);
+    background-size: 26px 26px, auto; }
+  /* layered torn paper background pieces */
+  .cut .paper { position: absolute; border-radius: 18px; opacity: 0; box-shadow: 0 10px 22px rgba(60,40,10,.18); }
+  .cut .pp1 { top: -50px; left: -40px; width: 240px; height: 230px; background: #d98b54; transform: rotate(-8deg); }
+  .cut .pp2 { top: 30px; right: -60px; width: 220px; height: 260px; background: #6fae8f; transform: rotate(7deg); }
+  .cut .pp3 { bottom: -70px; left: -30px; width: 300px; height: 240px; background: #e2b13c; transform: rotate(5deg); }
+  .cut .pp4 { bottom: 120px; right: -50px; width: 180px; height: 180px; background: #c7543f; border-radius: 50%; transform: rotate(0); }
+
+  .cut .kicker { position: absolute; top: 40px; left: 0; right: 0; text-align: center;
+    font-family: 'Space Mono', monospace; font-size: 12px; letter-spacing: .28em; color: #fff; opacity: 0; }
+  .cut .kicker span { background: #38301f; padding: 6px 14px; border-radius: 999px; }
+
+  /* main avatar cutout, pasted with marching-ants dashed ring */
+  .cut .cutout { position: absolute; opacity: 0; }
+  .cut .cutout .shadow { position: absolute; inset: 0; background: rgba(40,28,10,.22); border-radius: inherit; transform: translate(8px, 12px); }
+  .cut .avatar { position: absolute; top: 150px; left: 50%; width: 224px; height: 224px; margin-left: -112px; border-radius: 50%; transform: rotate(-4deg); }
+  .cut .avatar .photo { position: absolute; inset: 9px; border-radius: 50%; overflow: hidden;
+    background: repeating-linear-gradient(45deg, #b7a07a 0 11px, #c8b58e 11px 22px);
+    display: flex; align-items: center; justify-content: center; color: #6c5c3b;
+    font-family: 'Space Mono', monospace; font-size: 12px; letter-spacing: .04em; }
+  .cut .ring { position: absolute; inset: 0; }
+  .cut .ring circle { fill: none; stroke: #fff8ea; stroke-width: 7; stroke-dasharray: 17 12; stroke-linecap: round; }
+  .cut.run .ring circle { animation: ants 9s linear infinite; }
+  @keyframes ants { to { stroke-dashoffset: -290; } }
+
+  /* small square photo cutout */
+  .cut .square { position: absolute; top: 96px; left: 26px; width: 104px; height: 104px; transform: rotate(-9deg); opacity: 0; }
+  .cut .square .photo { position: absolute; inset: 8px; background: repeating-linear-gradient(-45deg, #8aa9b8 0 10px, #9cbac8 10px 20px); }
+  .cut .square .ring { position: absolute; inset: 0; }
+  .cut .square .ring rect { fill: none; stroke: #fff8ea; stroke-width: 6; stroke-dasharray: 15 11; }
+  .cut.run .square .ring rect { animation: antsR 12s linear infinite; }
+  @keyframes antsR { to { stroke-dashoffset: -260; } }
+
+  /* washi tape strips */
+  .cut .tape { position: absolute; width: 78px; height: 26px; background: rgba(255,247,225,.62);
+    box-shadow: 0 2px 6px rgba(0,0,0,.12); opacity: 0; }
+  .cut .tape::after { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 7px, rgba(56,48,31,.16) 7px 9px); }
+  .cut .tape1 { top: 138px; left: 50%; margin-left: -22px; transform: rotate(-18deg); }
+  .cut .tape2 { top: 88px; left: 60px; transform: rotate(14deg); width: 60px; }
+
+  /* star sticker */
+  .cut .star { position: absolute; top: 250px; right: 30px; width: 70px; height: 70px; background: #e2b13c; opacity: 0;
+    clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+    display: flex; align-items: center; justify-content: center; }
+  .cut .star b { font-family: 'Anton', sans-serif; color: #38301f; font-size: 17px; transform: rotate(-8deg); }
+
+  /* torn-paper title ribbon */
+  .cut .ribbon { position: absolute; bottom: 150px; left: 26px; right: 26px; opacity: 0; }
+  .cut .ribbon .band { background: #fff8ea; box-shadow: 0 10px 26px rgba(60,40,10,.22); padding: 16px 14px 20px; transform: rotate(-2deg);
+    clip-path: polygon(0 8%, 4% 0, 14% 7%, 26% 1%, 40% 8%, 55% 1%, 70% 8%, 84% 1%, 96% 7%, 100% 0, 100% 92%, 96% 100%, 84% 93%, 70% 100%, 55% 93%, 40% 100%, 26% 93%, 14% 100%, 4% 93%, 0 100%); }
+  .cut .ribbon .ttl { font-family: 'Ma Shan Zheng', 'Noto Serif SC', serif; font-size: 64px; line-height: 1; color: #38301f; text-align: center; }
+  .cut .ribbon .meta { text-align: center; font-family: 'Space Mono', monospace; font-size: 11px; letter-spacing: .26em; color: #c7543f; margin-top: 8px; }
+
+  .cut .handle { position: absolute; bottom: 52px; left: 0; right: 0; text-align: center;
+    font-family: 'Noto Serif SC', serif; font-weight: 500; font-size: 14px; letter-spacing: .18em; color: #5c4f33; opacity: 0; }
+
+  .cut.run .pp1    { animation: paste .55s .05s both; }
+  .cut.run .pp2    { animation: paste .55s .13s both; }
+  .cut.run .pp3    { animation: paste .55s .21s both; }
+  .cut.run .pp4    { animation: paste .55s .29s both; }
+  .cut.run .kicker { animation: dropIn .5s .34s both; }
+  .cut.run .square { animation: stamp .55s .5s both; }
+  .cut.run .avatar { animation: stamp .6s .62s both; }
+  .cut.run .star   { animation: stamp .55s .92s both; }
+  .cut.run .tape1  { animation: tapeOn .35s .82s both; }
+  .cut.run .tape2  { animation: tapeOn .35s .7s both; }
+  .cut.run .ribbon { animation: swing .6s 1.0s both; }
+  .cut.run .handle { animation: dropIn .5s 1.22s both; }
+
+  @keyframes paste { 0% { opacity: 0; transform: translateY(26px) scale(.92) rotate(var(--rr,0deg)); } 100% { opacity: 1; transform: translateY(0) scale(1) rotate(var(--rr,0deg)); } }
+  .cut .pp1 { --rr: -8deg; } .cut .pp2 { --rr: 7deg; } .cut .pp3 { --rr: 5deg; } .cut .pp4 { --rr: 0deg; }
+  @keyframes stamp {
+    0% { opacity: 0; transform: scale(1.6) rotate(var(--sr,0deg)); }
+    55% { opacity: 1; transform: scale(.93) rotate(var(--sr,0deg)); }
+    78% { transform: scale(1.04) rotate(var(--sr,0deg)); }
+    100% { opacity: 1; transform: scale(1) rotate(var(--sr,0deg)); }
+  }
+  .cut .avatar { --sr: -4deg; } .cut .square { --sr: -9deg; } .cut .star { --sr: 0deg; }
+  @keyframes tapeOn { 0% { opacity: 0; transform: scale(.4) rotate(var(--tr,0deg)); } 100% { opacity: 1; transform: scale(1) rotate(var(--tr,0deg)); } }
+  .cut .tape1 { --tr: -18deg; } .cut .tape2 { --tr: 14deg; }
+  @keyframes swing { 0% { opacity: 0; transform: translateY(30px) rotate(-8deg); } 60% { opacity: 1; transform: translateY(-3px) rotate(1.5deg); } 100% { opacity: 1; transform: translateY(0) rotate(-2deg); } }
+
+  @media (prefers-reduced-motion: reduce) { * { animation-duration: .001ms !important; } }
+
+  @media (max-width: 760px) {
+    .head h1 { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+<template id="__bundler_thumbnail" data-bg-color="#fff1dc">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect x="180" y="170" width="240" height="430" rx="22" fill="#ff5a1f"/>
+    <circle cx="600" cy="300" r="120" fill="none" stroke="#38301f" stroke-width="22" stroke-dasharray="44 30"/>
+    <rect x="700" y="180" width="240" height="200" rx="14" fill="#1542ff"/>
+    <rect x="720" y="420" width="200" height="120" rx="14" fill="#d4ff00"/>
+  </svg>
+</template>
+
+  <div class="head">
+    <div class="bar">
+      <span>短视频片头</span><span class="line"></span><span class="dot"></span><span>NEW 3 STYLES · 9:16</span>
+    </div>
+    <div class="titlerow">
+      <div>
+        <h1>动效预览 · <em>新增三款</em></h1>
+        <div class="sub">糖果孟菲斯 · 斜切运动风 · 剪纸拼贴 &nbsp;|&nbsp; 约 4 秒一轮 · 自动循环</div>
+      </div>
+      <button class="replayAll" id="replayAll"><span class="ic">⟳</span> 重播全部</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+
+    <!-- A · CANDY MEMPHIS -->
+    <div class="col">
+      <div class="slot"><div class="stage mem" id="mem">
+        <div class="dots"></div>
+        <div class="sh triA"></div>
+        <div class="sh ringA"></div>
+        <div class="sh diaA"></div>
+        <div class="sh plusA"></div>
+        <div class="sh halfA"></div>
+        <div class="sh arcA"></div>
+        <div class="squig">
+          <svg width="118" height="34" viewBox="0 0 118 34"><path d="M3 17 Q18 0 33 17 T63 17 T93 17 T118 17" fill="none" stroke="#ff3d7f" stroke-width="7" stroke-linecap="round"/></svg>
+        </div>
+        <div class="dotcol"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="tag"><span class="pill">EP.05</span><span class="note">// 周末企划</span></div>
+        <div class="title">
+          <div class="ln t1">周末</div>
+          <div><span class="ln t2">就要</span></div>
+          <div><span class="ln t3">玩花样</span></div>
+        </div>
+        <div class="burst">GO!</div>
+        <div class="handle"><span class="av"></span><span class="id">@你的ID</span></div>
+      </div></div>
+      <div class="caprow">
+        <span class="idx">A</span><span class="name">糖果孟菲斯</span><span class="en">Candy Memphis</span>
+        <span class="swatches"><i style="background:#ff5a1f"></i><i style="background:#12c2a0"></i><i style="background:#6b3df5"></i><i style="background:#ffd23f"></i></span>
+        <button class="replay" data-target="mem" title="重播">⟳</button>
+      </div>
+    </div>
+
+    <!-- B · SPEED SPLIT -->
+    <div class="col">
+      <div class="slot"><div class="stage spd" id="spd">
+        <div class="blkCobalt"></div>
+        <div class="blkLime"></div>
+        <div class="blkOrange"></div>
+        <div class="ghostNum">12</div>
+        <div class="speed speedTop"><i></i><i></i><i></i></div>
+        <div class="sysrow"><span class="tagk">EP.12</span><span class="on">// 运动挑战</span></div>
+        <div class="latin">FULL SPEED ▸▸</div>
+        <div class="title">
+          <div class="ln s1">全力</div>
+          <div><span class="ln s2">冲刺</span></div>
+        </div>
+        <div class="chev"><span>›</span><span>›</span><span>›</span></div>
+        <div class="handle"><span class="av"></span><span class="id">@你的ID</span></div>
+      </div></div>
+      <div class="caprow">
+        <span class="idx">B</span><span class="name">斜切运动风</span><span class="en">Speed Split</span>
+        <span class="swatches"><i style="background:#1542ff"></i><i style="background:#d4ff00"></i><i style="background:#ff4d00"></i><i style="background:#0d0d10"></i></span>
+        <button class="replay" data-target="spd" title="重播">⟳</button>
+      </div>
+    </div>
+
+    <!-- C · PAPER-CUT COLLAGE -->
+    <div class="col">
+      <div class="slot"><div class="stage cut" id="cut">
+        <div class="board"></div>
+        <div class="paper pp1"></div>
+        <div class="paper pp2"></div>
+        <div class="paper pp3"></div>
+        <div class="paper pp4"></div>
+        <div class="kicker"><span>VOL.03 · 生活碎片</span></div>
+
+        <div class="cutout square">
+          <div class="shadow"></div>
+          <div class="photo"></div>
+          <svg class="ring" viewBox="0 0 104 104" preserveAspectRatio="none"><rect x="3.5" y="3.5" width="97" height="97" /></svg>
+        </div>
+
+        <div class="cutout avatar">
+          <div class="shadow"></div>
+          <div class="photo">[ 你的头像 ]</div>
+          <svg class="ring" viewBox="0 0 224 224"><circle cx="112" cy="112" r="108" /></svg>
+        </div>
+
+        <div class="tape tape2"></div>
+        <div class="tape tape1"></div>
+
+        <div class="star"><b>NEW</b></div>
+
+        <div class="ribbon">
+          <div class="band">
+            <div class="ttl">我的一周</div>
+            <div class="meta">A WEEK IN MY LIFE</div>
+          </div>
+        </div>
+        <div class="handle">@你的ID</div>
+      </div></div>
+      <div class="caprow">
+        <span class="idx">C</span><span class="name">剪纸拼贴</span><span class="en">Paper-cut Collage</span>
+        <span class="swatches"><i style="background:#e7d9bd"></i><i style="background:#d98b54"></i><i style="background:#6fae8f"></i><i style="background:#c7543f"></i></span>
+        <button class="replay" data-target="cut" title="重播">⟳</button>
+      </div>
+    </div>
+
+  </div>
+
+<script>
+  const ids = ['mem', 'spd', 'cut'];
+  const stages = ids.map((id) => document.getElementById(id));
+
+  function run(el) {
+    el.classList.remove('run');
+    void el.offsetWidth;          // force reflow to restart animation
+    el.classList.add('run');
+  }
+  function runAll() { stages.forEach(run); }
+
+  // fit 405×720 stages into the viewport (3 / 2 / 1 columns)
+  function fit() {
+    const w = window.innerWidth;
+    const cols = w < 760 ? 1 : w < 1180 ? 2 : 3;
+    const gap = 44;
+    const avW = (w - 44 - gap * (cols - 1)) / cols;
+    const avH = window.innerHeight - (cols === 3 ? 250 : 200);
+    const s = Math.min(1, avW / 405, avH / 720);
+    document.querySelectorAll('.stage').forEach((st) => {
+      st.style.transform = 'scale(' + s + ')';
+      const slot = st.closest('.slot');
+      slot.style.width = (405 * s) + 'px';
+      slot.style.height = (720 * s) + 'px';
+    });
+  }
+  window.addEventListener('resize', fit);
+  fit();
+
+  document.querySelectorAll('.replay').forEach((b) =>
+    b.addEventListener('click', () => run(document.getElementById(b.dataset.target))));
+  document.getElementById('replayAll').addEventListener('click', runAll);
+
+  runAll();
+  setInterval(runAll, 4200);
+</script>
+</body>
+</html>
