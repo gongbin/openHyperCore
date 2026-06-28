@@ -2,24 +2,27 @@
 //!
 //! The whole `ResolvedFrame` (already plain numeric data on the TS side) is
 //! handed across the napi boundary once per frame as JSON and drawn natively,
-//! returning a single RGBA8888 (unpremultiplied) buffer. This eliminates the
-//! per-primitive JS<->native crossings and the per-frame readback copy that the
-//! canvaskit-wasm path pays.
+//! returning a single RGBA8888 (unpremultiplied) buffer.
 //!
-//! Phase 1: shapes (rect/circle/path) with transform, solid fill, stroke, dash.
-//! Phase 2: text + captions with per-character font fallback (CJK/emoji),
-//!          wrapping, alignment, styled shadow/stroke/fill — mirroring the wasm
-//!          renderer's algorithm so golden output matches.
+//! Phases: shapes (1), text+captions with per-char font fallback (2), and
+//! images/clip/gradients/blend/blur/motion-blur/group-precomp/reveal (3) — all
+//! mirroring the wasm renderer's algorithm so golden output matches.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 use serde::Deserialize;
+use skia_safe::canvas::{SaveLayerRec, SrcRectConstraint};
 use skia_safe::font::Edging;
 use skia_safe::paint::{Cap, Join};
-use skia_safe::{BlurStyle, Canvas, Color, Font, FontMgr, MaskFilter, Paint, PaintStyle, Path, PathEffect, Rect, Typeface};
+use skia_safe::{
+    gradient_shader, image_filters, BlendMode, BlurStyle, Canvas, ClipOp, Color, Data, Font,
+    FontMgr, Image, MaskFilter, Paint, PaintStyle, Path, PathEffect, PathFillType,
+    Point, RRect, Rect, Shader, TileMode, Typeface,
+};
 
 // ---------------------------------------------------------------------------
 // IR mirror (subset). Field names match the TS ResolvedFrame (camelCase).
@@ -44,26 +47,91 @@ struct Transform {
     opacity: f32,
 }
 
+// Fields shared by every layer (BaseLayer + effect props), flattened into each
+// layer struct.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Base {
+    transform: Transform,
+    #[serde(default)]
+    clip: Option<Clip>,
+    #[serde(default)]
+    blend_mode: Option<String>,
+    #[serde(default)]
+    blur: Option<f32>,
+    #[serde(default)]
+    motion_blur: Option<MotionBlur>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MotionBlur {
+    angle: f32,
+    distance: f32,
+    #[serde(default)]
+    samples: Option<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum Clip {
+    Rect {
+        width: f32,
+        height: f32,
+        #[serde(default)]
+        x: Option<f32>,
+        #[serde(default)]
+        y: Option<f32>,
+        #[serde(default)]
+        radius: Option<f32>,
+    },
+    Circle {
+        radius: f32,
+        #[serde(default)]
+        cx: Option<f32>,
+        #[serde(default)]
+        cy: Option<f32>,
+    },
+    Path {
+        path: String,
+        #[serde(default)]
+        fill_rule: Option<String>,
+    },
+}
+
+#[derive(Deserialize)]
+struct GradientStop {
+    offset: f32,
+    color: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum Gradient {
+    Linear {
+        from: [f32; 2],
+        to: [f32; 2],
+        stops: Vec<GradientStop>,
+    },
+    Radial {
+        center: [f32; 2],
+        radius: f32,
+        stops: Vec<GradientStop>,
+    },
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Fill {
     Solid(String),
-    // Gradient objects land in Phase 3; matched but ignored for now so they
-    // don't fail deserialization.
-    #[allow(dead_code)]
-    Other(serde_json::Value),
-}
-
-fn solid_or<'a>(fill: &'a Option<Fill>, fallback: &'a str) -> &'a str {
-    match fill {
-        Some(Fill::Solid(s)) => s.as_str(),
-        _ => fallback,
-    }
+    Gradient(Gradient),
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ShapeLayer {
+    #[serde(flatten)]
+    base: Base,
     shape: String,
     #[serde(default)]
     width: Option<f32>,
@@ -83,11 +151,8 @@ struct ShapeLayer {
     dash: Option<Vec<f32>>,
     #[serde(default)]
     dash_phase: Option<f32>,
-    transform: Transform,
 }
 
-// Shadow/stroke styling shared by text + captions.
-#[derive(Default)]
 struct TextStyle<'a> {
     stroke: Option<&'a str>,
     stroke_width: Option<f32>,
@@ -100,6 +165,8 @@ struct TextStyle<'a> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TextLayer {
+    #[serde(flatten)]
+    base: Base,
     text: String,
     #[serde(default)]
     font: Option<String>,
@@ -125,25 +192,13 @@ struct TextLayer {
     shadow_dx: Option<f32>,
     #[serde(default)]
     shadow_dy: Option<f32>,
-    transform: Transform,
-}
-
-impl TextLayer {
-    fn style(&self) -> TextStyle<'_> {
-        TextStyle {
-            stroke: self.stroke.as_deref(),
-            stroke_width: self.stroke_width,
-            shadow_color: self.shadow_color.as_deref(),
-            shadow_blur: self.shadow_blur,
-            shadow_dx: self.shadow_dx,
-            shadow_dy: self.shadow_dy,
-        }
-    }
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CaptionLayer {
+    #[serde(flatten)]
+    base: Base,
     text: String,
     #[serde(default)]
     font: Option<String>,
@@ -173,20 +228,42 @@ struct CaptionLayer {
     shadow_dx: Option<f32>,
     #[serde(default)]
     shadow_dy: Option<f32>,
-    transform: Transform,
 }
 
-impl CaptionLayer {
-    fn style(&self) -> TextStyle<'_> {
-        TextStyle {
-            stroke: self.stroke.as_deref(),
-            stroke_width: self.stroke_width,
-            shadow_color: self.shadow_color.as_deref(),
-            shadow_blur: self.shadow_blur,
-            shadow_dx: self.shadow_dx,
-            shadow_dy: self.shadow_dy,
-        }
-    }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageLayer {
+    #[serde(flatten)]
+    base: Base,
+    src: String,
+    #[serde(default)]
+    fit: Option<String>,
+    #[serde(default)]
+    width: Option<f32>,
+    #[serde(default)]
+    height: Option<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Reveal {
+    #[serde(rename = "type")]
+    kind: String,
+    width: f32,
+    height: f32,
+    #[serde(default)]
+    direction: Option<String>,
+    progress: f32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupLayer {
+    #[serde(flatten)]
+    base: Base,
+    layers: Vec<Layer>,
+    #[serde(default)]
+    reveal: Option<Reveal>,
 }
 
 #[derive(Deserialize)]
@@ -195,18 +272,21 @@ enum Layer {
     Shape(ShapeLayer),
     Text(TextLayer),
     Caption(CaptionLayer),
-    // Every other layer type (image/video/group/audio) is skipped until its
-    // phase lands.
+    Image(ImageLayer),
+    Group(GroupLayer),
+    // Audio and anything unknown is skipped.
     #[serde(other)]
     Unsupported,
 }
 
 impl Layer {
-    fn transform(&self) -> Option<&Transform> {
+    fn base(&self) -> Option<&Base> {
         match self {
-            Layer::Shape(s) => Some(&s.transform),
-            Layer::Text(t) => Some(&t.transform),
-            Layer::Caption(c) => Some(&c.transform),
+            Layer::Shape(s) => Some(&s.base),
+            Layer::Text(t) => Some(&t.base),
+            Layer::Caption(c) => Some(&c.base),
+            Layer::Image(i) => Some(&i.base),
+            Layer::Group(g) => Some(&g.base),
             Layer::Unsupported => None,
         }
     }
@@ -220,8 +300,78 @@ struct Frame {
 }
 
 // ---------------------------------------------------------------------------
-// Fonts — per-character fallback stack [primary, emoji, default], mirroring the
-// wasm renderer. Typefaces are cached by path across frames.
+// Paint helpers (solid + gradient fills)
+// ---------------------------------------------------------------------------
+
+fn make_gradient_shader(gradient: &Gradient, opacity: f32) -> Option<Shader> {
+    let stops = match gradient {
+        Gradient::Linear { stops, .. } | Gradient::Radial { stops, .. } => stops,
+    };
+    if stops.is_empty() {
+        return None;
+    }
+    let mut sorted: Vec<&GradientStop> = stops.iter().collect();
+    sorted.sort_by(|a, b| a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal));
+    let colors: Vec<Color> = sorted.iter().map(|s| parse_color(&s.color, opacity)).collect();
+    let positions: Vec<f32> = sorted.iter().map(|s| s.offset).collect();
+
+    match gradient {
+        Gradient::Linear { from, to, .. } => gradient_shader::linear(
+            (Point::new(from[0], from[1]), Point::new(to[0], to[1])),
+            colors.as_slice(),
+            Some(positions.as_slice()),
+            TileMode::Clamp,
+            None,
+            None,
+        ),
+        Gradient::Radial { center, radius, .. } => gradient_shader::radial(
+            Point::new(center[0], center[1]),
+            *radius,
+            colors.as_slice(),
+            Some(positions.as_slice()),
+            TileMode::Clamp,
+            None,
+            None,
+        ),
+    }
+}
+
+fn apply_fill(paint: &mut Paint, fill: &Option<Fill>, fallback: &str, opacity: f32) {
+    match fill {
+        Some(Fill::Gradient(g)) => {
+            if let Some(shader) = make_gradient_shader(g, opacity) {
+                paint.set_shader(shader);
+            } else {
+                paint.set_color(parse_color(fallback, opacity));
+            }
+        }
+        Some(Fill::Solid(c)) => {
+            paint.set_color(parse_color(c, opacity));
+        }
+        None => {
+            paint.set_color(parse_color(fallback, opacity));
+        }
+    }
+}
+
+fn fill_paint(fill: &Option<Fill>, fallback: &str, opacity: f32) -> Paint {
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_style(PaintStyle::Fill);
+    apply_fill(&mut paint, fill, fallback, opacity);
+    paint
+}
+
+fn solid_paint(color: &str, opacity: f32) -> Paint {
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_style(PaintStyle::Fill);
+    paint.set_color(parse_color(color, opacity));
+    paint
+}
+
+// ---------------------------------------------------------------------------
+// Fonts — per-character fallback stack [primary, emoji, default].
 // ---------------------------------------------------------------------------
 
 fn typeface_cache() -> &'static Mutex<HashMap<String, Option<Typeface>>> {
@@ -264,7 +414,8 @@ fn default_typeface() -> Option<Typeface> {
         Some("/System/Library/Fonts/Supplemental/Arial.ttf".into()),
         Some("/System/Library/Fonts/SFNS.ttf".into()),
     ];
-    first_existing(&candidates).or_else(|| FontMgr::new().legacy_make_typeface(None, skia_safe::FontStyle::default()))
+    first_existing(&candidates)
+        .or_else(|| FontMgr::new().legacy_make_typeface(None, skia_safe::FontStyle::default()))
 }
 
 fn emoji_typeface() -> Option<Typeface> {
@@ -278,8 +429,6 @@ fn emoji_typeface() -> Option<Typeface> {
     first_existing(&candidates)
 }
 
-// Build the [primary, emoji, default] font stack at `size`, de-duplicated by
-// typeface identity.
 fn font_stack(font: Option<&str>, size: f32) -> Vec<Font> {
     let primary = font.and_then(load_typeface_path).or_else(default_typeface);
     let typefaces = [primary, emoji_typeface(), default_typeface()];
@@ -349,7 +498,7 @@ fn draw_runs(canvas: &Canvas, runs: &[Run], stack: &[Font], x: f32, baseline: f3
 }
 
 // ---------------------------------------------------------------------------
-// Text layout — wrap + alignment matching the wasm renderer.
+// Text layout (wrap + alignment matching the wasm renderer)
 // ---------------------------------------------------------------------------
 
 fn is_cjk(c: char) -> bool {
@@ -357,8 +506,6 @@ fn is_cjk(c: char) -> bool {
     (0x2E80..=0x9FFF).contains(&u) || (0x3000..=0x303F).contains(&u) || (0xFF00..=0xFFEF).contains(&u)
 }
 
-// Atomic wrap tokens: optional leading whitespace then either one CJK char or a
-// run of non-space, non-CJK chars (a "word"). Mirrors the wasm WRAP_TOKEN regex.
 fn wrap_tokens(paragraph: &str) -> Vec<String> {
     let chars: Vec<char> = paragraph.chars().collect();
     let mut tokens = Vec::new();
@@ -369,7 +516,7 @@ fn wrap_tokens(paragraph: &str) -> Vec<String> {
             i += 1;
         }
         if i >= chars.len() {
-            break; // trailing whitespace forms no token
+            break;
         }
         if is_cjk(chars[i]) {
             i += 1;
@@ -417,21 +564,13 @@ fn line_x(align: Option<&str>, width: f32) -> f32 {
     }
 }
 
-fn fill_paint(color: &str, opacity: f32) -> Paint {
-    let mut paint = Paint::default();
-    paint.set_anti_alias(true);
-    paint.set_style(PaintStyle::Fill);
-    paint.set_color(parse_color(color, opacity));
-    paint
-}
-
-// Shadow -> outline stroke -> fill, matching the wasm drawStyledText order.
 fn draw_styled_text(
     canvas: &Canvas,
     text: &str,
     x: f32,
     baseline: f32,
-    color: &str,
+    color: &Option<Fill>,
+    fallback: &str,
     opacity: f32,
     stack: &[Font],
     style: &TextStyle,
@@ -439,7 +578,7 @@ fn draw_styled_text(
     let runs = split_runs(stack, text);
 
     if let Some(shadow) = style.shadow_color {
-        let mut paint = fill_paint(shadow, opacity);
+        let mut paint = solid_paint(shadow, opacity);
         if let Some(blur) = MaskFilter::blur(BlurStyle::Normal, style.shadow_blur.unwrap_or(6.0).max(0.1), false) {
             paint.set_mask_filter(blur);
         }
@@ -447,7 +586,7 @@ fn draw_styled_text(
     }
 
     if let Some(stroke) = style.stroke {
-        let mut paint = fill_paint(stroke, opacity);
+        let mut paint = solid_paint(stroke, opacity);
         paint.set_style(PaintStyle::Stroke);
         paint.set_stroke_width(style.stroke_width.unwrap_or(4.0));
         paint.set_stroke_join(Join::Round);
@@ -455,16 +594,106 @@ fn draw_styled_text(
         draw_runs(canvas, &runs, stack, x, baseline, &paint);
     }
 
-    let fill = fill_paint(color, opacity);
+    let fill = fill_paint(color, fallback, opacity);
     draw_runs(canvas, &runs, stack, x, baseline, &fill);
 }
 
+fn text_style<'a>(
+    stroke: Option<&'a str>,
+    stroke_width: Option<f32>,
+    shadow_color: Option<&'a str>,
+    shadow_blur: Option<f32>,
+    shadow_dx: Option<f32>,
+    shadow_dy: Option<f32>,
+) -> TextStyle<'a> {
+    TextStyle { stroke, stroke_width, shadow_color, shadow_blur, shadow_dx, shadow_dy }
+}
+
 // ---------------------------------------------------------------------------
-// Drawing (content only; the caller applies the layer transform).
+// Images (decoded per worker thread, cached by path)
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static IMAGE_CACHE: RefCell<HashMap<String, Option<Image>>> = RefCell::new(HashMap::new());
+}
+
+fn load_image(src: &str) -> Option<Image> {
+    IMAGE_CACHE.with(|cache| {
+        if let Some(found) = cache.borrow().get(src) {
+            return found.clone();
+        }
+        let image = std::fs::read(src)
+            .ok()
+            .and_then(|bytes| Image::from_encoded(Data::new_copy(&bytes)));
+        cache.borrow_mut().insert(src.to_string(), image.clone());
+        image
+    })
+}
+
+struct FitRects {
+    src: Rect,
+    dst: Rect,
+}
+
+fn fit_rects(src_w: f32, src_h: f32, dst_w: f32, dst_h: f32, fit: Option<&str>) -> FitRects {
+    let full = FitRects {
+        src: Rect::from_xywh(0.0, 0.0, src_w, src_h),
+        dst: Rect::from_xywh(0.0, 0.0, dst_w, dst_h),
+    };
+    match fit {
+        Some("cover") if src_w > 0.0 && src_h > 0.0 && dst_w > 0.0 && dst_h > 0.0 => {
+            let src_aspect = src_w / src_h;
+            let dst_aspect = dst_w / dst_h;
+            let (mut cw, mut ch) = (src_w, src_h);
+            if src_aspect > dst_aspect {
+                cw = src_h * dst_aspect;
+            } else {
+                ch = src_w / dst_aspect;
+            }
+            FitRects {
+                src: Rect::from_xywh((src_w - cw) / 2.0, (src_h - ch) / 2.0, cw, ch),
+                dst: Rect::from_xywh(0.0, 0.0, dst_w, dst_h),
+            }
+        }
+        Some("contain") if src_w > 0.0 && src_h > 0.0 && dst_w > 0.0 && dst_h > 0.0 => {
+            let src_aspect = src_w / src_h;
+            let dst_aspect = dst_w / dst_h;
+            let (mut dw, mut dh) = (dst_w, dst_h);
+            if src_aspect > dst_aspect {
+                dh = dst_w / src_aspect;
+            } else {
+                dw = dst_h * src_aspect;
+            }
+            FitRects {
+                src: Rect::from_xywh(0.0, 0.0, src_w, src_h),
+                dst: Rect::from_xywh((dst_w - dw) / 2.0, (dst_h - dh) / 2.0, dw, dh),
+            }
+        }
+        _ => full,
+    }
+}
+
+fn draw_image(canvas: &Canvas, layer: &ImageLayer) {
+    let Some(image) = load_image(&layer.src) else {
+        return;
+    };
+    let iw = image.width() as f32;
+    let ih = image.height() as f32;
+    let w = layer.width.unwrap_or(iw);
+    let h = layer.height.unwrap_or(ih);
+    let rects = fit_rects(iw, ih, w, h, layer.fit.as_deref());
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_alpha_f(layer.base.transform.opacity);
+    canvas.draw_image_rect(&image, Some((&rects.src, SrcRectConstraint::Strict)), rects.dst, &paint);
+}
+
+// ---------------------------------------------------------------------------
+// Shapes
 // ---------------------------------------------------------------------------
 
 fn draw_shape(canvas: &Canvas, s: &ShapeLayer) {
-    let opacity = s.transform.opacity;
+    let opacity = s.base.transform.opacity;
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
 
@@ -474,13 +703,23 @@ fn draw_shape(canvas: &Canvas, s: &ShapeLayer) {
         paint.set_color(parse_color(stroke, opacity));
     } else {
         paint.set_style(PaintStyle::Fill);
-        paint.set_color(parse_color(solid_or(&s.fill, "#000000"), opacity));
+        apply_fill(&mut paint, &s.fill, "#000000", opacity);
     }
 
     if let Some(dash) = &s.dash {
         if dash.len() >= 2 {
             if let Some(effect) = PathEffect::dash(dash, s.dash_phase.unwrap_or(0.0)) {
                 paint.set_path_effect(effect);
+            }
+        }
+    }
+
+    // ShapeLayer.blur is a mask-filter glow (the layer-level image blur skips
+    // shapes), matching the wasm renderer.
+    if let Some(blur) = s.base.blur {
+        if blur > 0.0 {
+            if let Some(filter) = MaskFilter::blur(BlurStyle::Normal, blur, false) {
+                paint.set_mask_filter(filter);
             }
         }
     }
@@ -516,11 +755,17 @@ fn draw_text(canvas: &Canvas, layer: &TextLayer) {
     }
     let line_height = layer.line_height.unwrap_or(size * 1.2);
     let lines = wrap_text(&stack, &layer.text, layer.max_width);
-    let color = solid_or(&layer.color, "#000000");
-    let style = layer.style();
+    let style = text_style(
+        layer.stroke.as_deref(),
+        layer.stroke_width,
+        layer.shadow_color.as_deref(),
+        layer.shadow_blur,
+        layer.shadow_dx,
+        layer.shadow_dy,
+    );
     for (i, line) in lines.iter().enumerate() {
         let x = line_x(layer.align.as_deref(), measure_stack(&stack, line));
-        draw_styled_text(canvas, line, x, i as f32 * line_height, color, layer.transform.opacity, &stack, &style);
+        draw_styled_text(canvas, line, x, i as f32 * line_height, &layer.color, "#000000", layer.base.transform.opacity, &stack, &style);
     }
 }
 
@@ -532,45 +777,249 @@ fn draw_caption(canvas: &Canvas, layer: &CaptionLayer) {
     }
     let line_height = layer.line_height.unwrap_or(size * 1.2);
     let padding = layer.padding.unwrap_or(8.0);
-    let opacity = layer.transform.opacity;
+    let opacity = layer.base.transform.opacity;
     let lines = wrap_text(&stack, &layer.text, layer.max_width);
     let block_width = layer
         .max_width
         .unwrap_or_else(|| lines.iter().map(|l| measure_stack(&stack, l)).fold(0.0, f32::max));
 
-    if let Some(background) = &layer.background_color {
-        if let Fill::Solid(bg) = background {
-            let bg_x = line_x(layer.align.as_deref(), block_width);
-            let paint = fill_paint(bg, opacity);
-            canvas.draw_rect(
-                Rect::from_xywh(
-                    bg_x - padding,
-                    -line_height - padding,
-                    block_width + padding * 2.0,
-                    line_height * lines.len() as f32 + padding * 2.0,
-                ),
-                &paint,
-            );
-        }
+    if layer.background_color.is_some() {
+        let bg_x = line_x(layer.align.as_deref(), block_width);
+        let paint = fill_paint(&layer.background_color, "#000000", opacity);
+        canvas.draw_rect(
+            Rect::from_xywh(
+                bg_x - padding,
+                -line_height - padding,
+                block_width + padding * 2.0,
+                line_height * lines.len() as f32 + padding * 2.0,
+            ),
+            &paint,
+        );
     }
 
-    let color = solid_or(&layer.color, "#ffffff");
-    let style = layer.style();
+    let style = text_style(
+        layer.stroke.as_deref(),
+        layer.stroke_width,
+        layer.shadow_color.as_deref(),
+        layer.shadow_blur,
+        layer.shadow_dx,
+        layer.shadow_dy,
+    );
     for (i, line) in lines.iter().enumerate() {
         let x = line_x(layer.align.as_deref(), measure_stack(&stack, line));
-        draw_styled_text(canvas, line, x, i as f32 * line_height, color, opacity, &stack, &style);
+        draw_styled_text(canvas, line, x, i as f32 * line_height, &layer.color, "#ffffff", opacity, &stack, &style);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Frame
+// Clip + reveal mask
 // ---------------------------------------------------------------------------
+
+fn apply_layer_clip(canvas: &Canvas, clip: &Clip) {
+    match clip {
+        Clip::Circle { radius, cx, cy } => {
+            let cx = cx.unwrap_or(*radius);
+            let cy = cy.unwrap_or(*radius);
+            let rrect = RRect::new_oval(Rect::from_xywh(cx - radius, cy - radius, radius * 2.0, radius * 2.0));
+            canvas.clip_rrect(rrect, ClipOp::Intersect, true);
+        }
+        Clip::Rect { width, height, x, y, radius } => {
+            let x = x.unwrap_or(0.0);
+            let y = y.unwrap_or(0.0);
+            let rect = Rect::from_xywh(x, y, *width, *height);
+            match radius {
+                Some(r) if *r > 0.0 => {
+                    let rrect = RRect::new_rect_xy(rect, *r, *r);
+                    canvas.clip_rrect(rrect, ClipOp::Intersect, true);
+                }
+                _ => {
+                    canvas.clip_rect(rect, ClipOp::Intersect, true);
+                }
+            }
+        }
+        Clip::Path { path, fill_rule } => {
+            if let Some(mut p) = Path::from_svg(path) {
+                if fill_rule.as_deref() == Some("evenodd") {
+                    p.set_fill_type(PathFillType::EvenOdd);
+                }
+                canvas.clip_path(&p, ClipOp::Intersect, true);
+            }
+        }
+    }
+}
+
+fn apply_reveal_clip(canvas: &Canvas, reveal: &Reveal) {
+    let progress = reveal.progress.clamp(0.0, 1.0);
+    let (w, h) = (reveal.width, reveal.height);
+
+    if reveal.kind == "clock" {
+        let cx = w / 2.0;
+        let cy = h / 2.0;
+        let radius = (w * w + h * h).sqrt() / 2.0;
+        let mut path = Path::new();
+        path.move_to((cx, cy));
+        path.line_to((cx, cy - radius));
+        path.arc_to(Rect::from_xywh(cx - radius, cy - radius, radius * 2.0, radius * 2.0), -90.0, progress * 360.0, false);
+        path.close();
+        canvas.clip_path(&path, ClipOp::Intersect, true);
+        return;
+    }
+
+    let rect = match reveal.direction.as_deref().unwrap_or("from-left") {
+        "from-right" => Rect::from_xywh(w * (1.0 - progress), 0.0, w * progress, h),
+        "from-top" => Rect::from_xywh(0.0, 0.0, w, h * progress),
+        "from-bottom" => Rect::from_xywh(0.0, h * (1.0 - progress), w, h * progress),
+        _ => Rect::from_xywh(0.0, 0.0, w * progress, h),
+    };
+    canvas.clip_rect(rect, ClipOp::Intersect, true);
+}
+
+// ---------------------------------------------------------------------------
+// Layer tree walk (mirrors wasm drawLayer / drawLayerSample / motion blur)
+// ---------------------------------------------------------------------------
+
+fn parse_blend(name: &str) -> Option<BlendMode> {
+    Some(match name {
+        "multiply" => BlendMode::Multiply,
+        "screen" => BlendMode::Screen,
+        "overlay" => BlendMode::Overlay,
+        "darken" => BlendMode::Darken,
+        "lighten" => BlendMode::Lighten,
+        "add" => BlendMode::Plus,
+        "color-dodge" => BlendMode::ColorDodge,
+        "color-burn" => BlendMode::ColorBurn,
+        "soft-light" => BlendMode::SoftLight,
+        "hard-light" => BlendMode::HardLight,
+        "difference" => BlendMode::Difference,
+        "exclusion" => BlendMode::Exclusion,
+        "hue" => BlendMode::Hue,
+        "saturation" => BlendMode::Saturation,
+        "color" => BlendMode::Color,
+        "luminosity" => BlendMode::Luminosity,
+        _ => return None,
+    })
+}
 
 fn apply_transform(canvas: &Canvas, t: &Transform) {
     canvas.translate((t.x, t.y));
     canvas.scale((t.scale * t.scale_x, t.scale * t.scale_y));
     canvas.rotate(t.rotate, None);
 }
+
+fn draw_content(canvas: &Canvas, layer: &Layer) {
+    match layer {
+        Layer::Shape(s) => draw_shape(canvas, s),
+        Layer::Text(t) => draw_text(canvas, t),
+        Layer::Caption(c) => draw_caption(canvas, c),
+        Layer::Image(i) => draw_image(canvas, i),
+        Layer::Group(g) => draw_group(canvas, g),
+        Layer::Unsupported => {}
+    }
+}
+
+fn draw_group(canvas: &Canvas, group: &GroupLayer) {
+    if let Some(reveal) = &group.reveal {
+        if reveal.progress <= 0.0 {
+            return;
+        }
+    }
+    let opacity = group.base.transform.opacity;
+    if opacity <= 0.0 {
+        return;
+    }
+    if let Some(reveal) = &group.reveal {
+        if reveal.progress < 1.0 {
+            apply_reveal_clip(canvas, reveal);
+        }
+    }
+
+    let layered = opacity < 1.0;
+    if layered {
+        let mut paint = Paint::default();
+        paint.set_alpha_f(opacity);
+        canvas.save_layer(&SaveLayerRec::default().paint(&paint));
+    }
+    for child in &group.layers {
+        draw_layer(canvas, child);
+    }
+    if layered {
+        canvas.restore();
+    }
+}
+
+fn draw_layer_sample(canvas: &Canvas, layer: &Layer) {
+    let Some(base) = layer.base() else {
+        return;
+    };
+    canvas.save();
+    apply_transform(canvas, &base.transform);
+
+    let is_shape = matches!(layer, Layer::Shape(_));
+    let blend = base.blend_mode.as_deref().and_then(parse_blend);
+    let wants_blur = base.blur.map_or(false, |b| b > 0.0) && !is_shape;
+    let mut wrapped = false;
+    if blend.is_some() || wants_blur {
+        let mut paint = Paint::default();
+        if let Some(bm) = blend {
+            paint.set_blend_mode(bm);
+        }
+        if wants_blur {
+            let sigma = base.blur.unwrap();
+            if let Some(filter) = image_filters::blur((sigma, sigma), TileMode::Decal, None, None) {
+                paint.set_image_filter(filter);
+            }
+        }
+        canvas.save_layer(&SaveLayerRec::default().paint(&paint));
+        wrapped = true;
+    }
+
+    if let Some(clip) = &base.clip {
+        apply_layer_clip(canvas, clip);
+    }
+    draw_content(canvas, layer);
+
+    if wrapped {
+        canvas.restore();
+    }
+    canvas.restore();
+}
+
+fn draw_motion_blurred(canvas: &Canvas, layer: &Layer, mb: &MotionBlur) {
+    let samples = (mb.samples.unwrap_or(8.0).round() as i32).clamp(2, 64);
+    let rad = mb.angle.to_radians();
+    let dx = rad.cos() * mb.distance;
+    let dy = rad.sin() * mb.distance;
+    let alpha = 1.0 / samples as f32;
+    for i in 0..samples {
+        let offset = i as f32 / (samples - 1) as f32 - 0.5;
+        canvas.save();
+        canvas.translate((dx * offset, dy * offset));
+        let mut paint = Paint::default();
+        paint.set_alpha_f(alpha);
+        canvas.save_layer(&SaveLayerRec::default().paint(&paint));
+        draw_layer_sample(canvas, layer);
+        canvas.restore();
+        canvas.restore();
+    }
+}
+
+fn draw_layer(canvas: &Canvas, layer: &Layer) {
+    if let Some(base) = layer.base() {
+        if let Some(mb) = &base.motion_blur {
+            if mb.distance > 0.0 && mb.samples.unwrap_or(8.0) > 1.0 {
+                draw_motion_blurred(canvas, layer, mb);
+                return;
+            }
+        }
+    } else {
+        return;
+    }
+    draw_layer_sample(canvas, layer);
+}
+
+// ---------------------------------------------------------------------------
+// Frame
+// ---------------------------------------------------------------------------
 
 fn render_frame_to_rgba(frame: &Frame) -> napi::Result<Vec<u8>> {
     let width = frame.composition.width;
@@ -585,18 +1034,7 @@ fn render_frame_to_rgba(frame: &Frame) -> napi::Result<Vec<u8>> {
     canvas.clear(Color::TRANSPARENT);
 
     for layer in &frame.layers {
-        let Some(transform) = layer.transform() else {
-            continue;
-        };
-        canvas.save();
-        apply_transform(canvas, transform);
-        match layer {
-            Layer::Shape(s) => draw_shape(canvas, s),
-            Layer::Text(t) => draw_text(canvas, t),
-            Layer::Caption(c) => draw_caption(canvas, c),
-            Layer::Unsupported => {}
-        }
-        canvas.restore();
+        draw_layer(canvas, layer);
     }
 
     read_rgba(&mut surface, width, height)
@@ -618,9 +1056,7 @@ fn read_rgba(surface: &mut skia_safe::Surface, width: i32, height: i32) -> napi:
 }
 
 // ---------------------------------------------------------------------------
-// Color parsing — mirrors the wasm renderer's parseColor: #rgb / #rrggbb use
-// `opacity` as the alpha; #rrggbbaa and rgb()/rgba() multiply their own alpha by
-// `opacity`. Named CSS colors are not handled yet.
+// Color parsing — mirrors the wasm renderer's parseColor.
 // ---------------------------------------------------------------------------
 
 fn parse_color(color: &str, opacity: f32) -> Color {
