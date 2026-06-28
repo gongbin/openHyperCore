@@ -10,6 +10,47 @@ The project is currently in alpha. The core CLI and rendering pipeline are usabl
 
 OpenHyperCore is an open-source TypeScript video rendering core for template video generation, batch editing, server-side rendering, and automated content production pipelines. The project is released under the MIT License. See [LICENSE](LICENSE).
 
+## Use As A Package
+
+```bash
+npm install openhypercore
+```
+
+The composition IR is plain JSON-serializable data, so authoring is decoupled from rendering — author anywhere (incl. the browser), render on a Node server.
+
+```ts
+// Authoring (browser-safe, no Node/ffmpeg deps): the main entry re-exports core.
+import { defineComposition, interpolate, cubicBezier } from "openhypercore";
+
+const composition = defineComposition({
+  fps: 30, width: 1280, height: 720, durationMs: 2000,
+  layers: [
+    { type: "shape", shape: "rect", width: 1280, height: 720, fill: { type: "linear", from: [0, 0], to: [0, 720], stops: [{ offset: 0, color: "#1b2a4a" }, { offset: 1, color: "#070b14" }] } },
+    { type: "text", text: "Hello", size: 96, color: "#fff", align: "center",
+      transform: { x: 640, y: 380, opacity: [{ timeMs: 0, value: 0 }, { timeMs: 600, value: 1, easing: [0.2, 0, 0, 1] }] } }
+  ]
+});
+```
+
+```ts
+// Rendering (Node): resolve a frame and rasterise it, or encode to MP4.
+import { resolveFrame } from "openhypercore";
+import { renderPngFrame } from "openhypercore/renderer-skia";
+
+const png = await renderPngFrame(resolveFrame(composition, 600));
+```
+
+CLI (handy for scripts and agents — `probe`/`still`/`render`/`bench`):
+
+```bash
+npx openhyper render my-composition.ts --out out.mp4
+npx openhyper render my-composition.ts --out out.mp4 --renderer native --workers auto
+```
+
+Subpath entries: `openhypercore` (≡ `openhypercore/core`, authoring IR + animation), `openhypercore/renderer-skia` (CanvasKit raster), `openhypercore/renderer-svg`, `openhypercore/encoder-ffmpeg`, `openhypercore/assets`, `openhypercore/jsx-runtime`, `openhypercore/cli`.
+
+The default renderer is the portable CanvasKit/wasm backend (no native binary required). The native (Rust + skia-safe) backend — ~8–14× faster — is an opt-in: build it from source with `pnpm build:native` and select with `--renderer native` (or `OPENHYPERCORE_RENDERER=native`); prebuilt per-platform binaries are planned.
+
 ## Features
 
 - Scene Graph IR: describes compositions, layers, transforms, and keyframes as plain data for caching, testing, and future service integration.

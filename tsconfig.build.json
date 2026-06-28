@@ -10,6 +10,7 @@
     "rewriteRelativeImportExtensions": true
   },
   "exclude": [
-    "packages/*/test/**/*.ts"
+    "packages/*/test/**/*.ts",
+    "examples/**/*.ts"
   ]
 }

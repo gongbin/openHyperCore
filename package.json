@@ -1,22 +1,76 @@
 {
   "name": "openhypercore",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Lightweight, GPU-free video composition + rendering engine: a JSON scene-graph IR, CanvasKit/Skia (wasm) or native (Rust + skia-safe) renderer, and an FFmpeg encoder — with a CLI for scripted/agent use.",
   "type": "module",
+  "license": "MIT",
+  "author": "gongbin <blogcool@gmail.com>",
+  "homepage": "https://github.com/gongbin/openHyperCore#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gongbin/openHyperCore.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gongbin/openHyperCore/issues"
+  },
+  "keywords": [
+    "video",
+    "rendering",
+    "compositing",
+    "motion-graphics",
+    "skia",
+    "canvaskit",
+    "ffmpeg",
+    "remotion",
+    "scene-graph",
+    "server-side-rendering"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "openhyper": "./dist/packages/cli/src/index.js"
   },
   "exports": {
-    "./assets": "./dist/packages/assets/src/index.js",
-    "./core": "./dist/packages/core/src/index.js",
-    "./encoder-ffmpeg": "./dist/packages/encoder-ffmpeg/src/index.js",
-    "./jsx-runtime": "./dist/packages/jsx-runtime/src/index.js",
-    "./renderer-skia": "./dist/packages/renderer-skia/src/index.js",
-    "./renderer-svg": "./dist/packages/renderer-svg/src/index.js",
-    "./cli": "./dist/packages/cli/src/index.js"
+    ".": {
+      "types": "./dist/packages/core/src/index.d.ts",
+      "import": "./dist/packages/core/src/index.js"
+    },
+    "./core": {
+      "types": "./dist/packages/core/src/index.d.ts",
+      "import": "./dist/packages/core/src/index.js"
+    },
+    "./renderer-skia": {
+      "types": "./dist/packages/renderer-skia/src/index.d.ts",
+      "import": "./dist/packages/renderer-skia/src/index.js"
+    },
+    "./renderer-svg": {
+      "types": "./dist/packages/renderer-svg/src/index.d.ts",
+      "import": "./dist/packages/renderer-svg/src/index.js"
+    },
+    "./encoder-ffmpeg": {
+      "types": "./dist/packages/encoder-ffmpeg/src/index.d.ts",
+      "import": "./dist/packages/encoder-ffmpeg/src/index.js"
+    },
+    "./assets": {
+      "types": "./dist/packages/assets/src/index.d.ts",
+      "import": "./dist/packages/assets/src/index.js"
+    },
+    "./jsx-runtime": {
+      "types": "./dist/packages/jsx-runtime/src/index.d.ts",
+      "import": "./dist/packages/jsx-runtime/src/index.js"
+    },
+    "./cli": {
+      "types": "./dist/packages/cli/src/index.d.ts",
+      "import": "./dist/packages/cli/src/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -25,7 +79,11 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "node --experimental-strip-types --test packages/*/test/*.test.ts",
     "cli": "node --experimental-strip-types packages/cli/src/index.ts",
-    "bench:fixtures": "node --experimental-strip-types packages/cli/src/index.ts bench-suite examples/bench/animated-workload.ts --static examples/bench/static-reuse.ts --out /tmp/openhyper-bench-suite.json --video-dir /tmp/openhyper-bench-suite"
+    "bench:fixtures": "node --experimental-strip-types packages/cli/src/index.ts bench-suite examples/bench/animated-workload.ts --static examples/bench/static-reuse.ts --out /tmp/openhyper-bench-suite.json --video-dir /tmp/openhyper-bench-suite",
+    "prepublishOnly": "pnpm build"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
