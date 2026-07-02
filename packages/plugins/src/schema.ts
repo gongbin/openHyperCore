@@ -17,8 +17,10 @@ export type StringParam = ParamBase & { type: "string"; default?: string; multil
 export type ColorParam = ParamBase & { type: "color"; default?: string };
 export type BooleanParam = ParamBase & { type: "boolean"; default?: boolean };
 export type SelectParam = ParamBase & { type: "select"; options: readonly string[]; default?: string };
-// A URL/path to an external asset (image/video/audio/font).
-export type AssetParam = ParamBase & { type: "asset"; kind?: "image" | "video" | "audio" | "font"; default?: string };
+// A URL/path to an external asset (image/video/audio/font). `placeholder` is
+// a suggested value editors may prefill for required asset params (not a
+// default — validation still demands an explicit value from JSON authors).
+export type AssetParam = ParamBase & { type: "asset"; kind?: "image" | "video" | "audio" | "font"; default?: string; placeholder?: string };
 // [latitude, longitude] in degrees — for map/globe plugins.
 export type LatLngParam = ParamBase & { type: "latlng"; default?: readonly [number, number] };
 

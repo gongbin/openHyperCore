@@ -28,7 +28,7 @@ function pluginDefaults(def: PluginDefinition): Record<string, unknown> {
     else if (spec.required) {
       // Required params get a friendly placeholder so the preview works the
       // instant the plugin is added.
-      if (spec.type === "asset") params[key] = spec.kind === "image" || spec.kind === undefined ? "https://picsum.photos/seed/openhyper/1280/720" : "";
+      if (spec.type === "asset") params[key] = spec.placeholder ?? (spec.kind === "image" || spec.kind === undefined ? "https://picsum.photos/seed/openhyper/1280/720" : "");
       else if (spec.type === "string") params[key] = "Your Title";
       else if (spec.type === "number") params[key] = 0;
       else if (spec.type === "latlng") params[key] = [43.06, 141.35];

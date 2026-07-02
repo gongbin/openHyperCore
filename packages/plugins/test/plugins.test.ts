@@ -156,6 +156,36 @@ test("map-route expands to a framed map with a trim-drawn route and synced tip m
   assert.equal(labels.length, 2);
 });
 
+test("globe layer rotation resolves to numbers and globe-intro centres the target", () => {
+  // Core: yaw/pitch/radius keyframes resolve like the transform.
+  const frame = resolveFrame(comp([{
+    type: "globe",
+    src: "earth.jpg",
+    radius: [{ timeMs: 0, value: 100 }, { timeMs: 4000, value: 200 }],
+    yaw: [{ timeMs: 0, value: 0 }, { timeMs: 4000, value: Math.PI }]
+  }]), 2000);
+  const globe = frame.layers[0] as Extract<typeof frame.layers[number], { type: "globe" }>;
+  assert.equal(globe.radius, 150);
+  assert.ok(Math.abs(globe.yaw - Math.PI / 2) < 1e-9);
+  assert.equal(globe.pitch, 0);
+
+  // Plugin: the final yaw/pitch land the target at the front centre
+  // (mesh convention: lon = yaw, lat = -pitch face the viewer).
+  const expanded = expandComposition(comp([{
+    type: "plugin",
+    plugin: "globe-intro",
+    params: { src: "earth.jpg", target: [35.68, 139.69] }
+  }]));
+  assert.equal(hasPluginLayers(expanded.layers), false);
+  const group = expanded.layers[0] as GroupLayer;
+  const zoom = group.layers.find((l) => l.id === "globe-zoom") as GroupLayer;
+  const g = zoom.layers.find((l) => l.type === "globe") as Extract<Layer, { type: "globe" }>;
+  const yawTrack = g.yaw as { timeMs: number; value: number }[];
+  const pitchTrack = g.pitch as { timeMs: number; value: number }[];
+  assert.ok(Math.abs(yawTrack[yawTrack.length - 1]!.value - (139.69 * Math.PI) / 180) < 1e-9);
+  assert.ok(Math.abs(pitchTrack[pitchTrack.length - 1]!.value - (-35.68 * Math.PI) / 180) < 1e-9);
+});
+
 test("built-in plugins are registered and expand into resolvable compositions", () => {
   const names = listPlugins().map((p) => p.name);
   assert.ok(names.includes("curtain-open"));
