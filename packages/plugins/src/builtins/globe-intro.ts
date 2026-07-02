@@ -1,5 +1,6 @@
 import type { Layer, ScalarKeyframe } from "../../../core/src/index.ts";
 import { definePlugin } from "../plugin.ts";
+import { atmosphere, starfield } from "./globe-common.ts";
 
 // Rotating-globe opener: a lit satellite globe fades in over a starfield,
 // spins toward the target place and zooms into it — the classic travel-intro
@@ -93,27 +94,6 @@ export const globeIntro = definePlugin({
   }
 });
 
-function atmosphere(globeRadius: number, color: string): Layer {
-  const r = Math.round(globeRadius * 1.24);
-  return {
-    type: "shape",
-    id: "atmosphere",
-    shape: "circle",
-    radius: r,
-    fill: {
-      type: "radial",
-      center: [r, r],
-      radius: r,
-      stops: [
-        { offset: 0, color: "rgba(0,0,0,0)" },
-        { offset: 0.72, color: "rgba(0,0,0,0)" },
-        { offset: 0.84, color: withAlpha(color, 0.4) },
-        { offset: 1, color: "rgba(0,0,0,0)" }
-      ]
-    },
-    transform: { x: -r, y: -r }
-  };
-}
 
 // One expanding, fading ring; two staggered copies read as a radar ping.
 function ping(cx: number, cy: number, color: string, atMs: number, durationMs: number, index: number): Layer[] {
@@ -147,35 +127,5 @@ function ping(cx: number, cy: number, color: string, atMs: number, durationMs: n
   }];
 }
 
-// Static seeded starfield in ONE cached group: content never changes, so the
-// renderer rasters it once and blits it for every following frame.
-function starfield(w: number, h: number): Layer {
-  const rand = seeded(7);
-  const stars: Layer[] = [];
-  for (let i = 0; i < 90; i += 1) {
-    const r = 0.6 + rand() * 1.1;
-    stars.push({
-      type: "shape",
-      shape: "circle",
-      radius: r,
-      fill: "#dfe9ff",
-      transform: { x: rand() * w, y: rand() * h, opacity: 0.25 + rand() * 0.6 }
-    });
-  }
-  return { type: "group", id: "stars", cache: true, layers: stars };
-}
 
-function withAlpha(hex: string, alpha: number): string {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
-  if (!m || !m[1]) return hex;
-  const n = parseInt(m[1], 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
-}
 
-function seeded(seed: number): () => number {
-  let state = Math.max(1, Math.floor(seed)) >>> 0;
-  return () => {
-    state = (state * 1664525 + 1013904223) >>> 0;
-    return state / 0x1_0000_0000;
-  };
-}

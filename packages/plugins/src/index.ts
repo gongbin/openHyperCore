@@ -1,8 +1,11 @@
 import { registerPlugin } from "./registry.ts";
+import { countdown } from "./builtins/countdown.ts";
 import { curtainOpen } from "./builtins/curtain-open.ts";
+import { lightSweepTitle } from "./builtins/light-sweep-title.ts";
 import { kenBurns } from "./builtins/ken-burns.ts";
 import { glitchTitle } from "./builtins/glitch-title.ts";
 import { globeIntro } from "./builtins/globe-intro.ts";
+import { globeRoute } from "./builtins/globe-route.ts";
 import { mapRoute } from "./builtins/map-route.ts";
 
 export { definePlugin } from "./plugin.ts";
@@ -31,6 +34,9 @@ registerPlugin(kenBurns);
 registerPlugin(glitchTitle);
 registerPlugin(mapRoute);
 registerPlugin(globeIntro);
+registerPlugin(globeRoute);
+registerPlugin(countdown);
+registerPlugin(lightSweepTitle);
 
-export { curtainOpen, glitchTitle, globeIntro, kenBurns, mapRoute };
+export { countdown, curtainOpen, glitchTitle, globeIntro, globeRoute, kenBurns, lightSweepTitle, mapRoute };
 export { WORLD_LAND_PATH, WORLD_MAP_HEIGHT, WORLD_MAP_WIDTH } from "./builtins/world-land-110m.ts";

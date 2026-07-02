@@ -116,9 +116,9 @@ function bar(index: number, estWidth: number, size: number, cx: number, cy: numb
   };
 }
 
-// Rough centering width: CJK glyphs ≈ 1em, everything else ≈ 0.55em. Only the
-// glitch bars use this (text itself centres via align).
-function estimateTextWidth(text: string, size: number): number {
+// Rough centering width: CJK glyphs ≈ 1em, everything else ≈ 0.55em. Used by
+// title plugins to size bars/sweeps (text itself centres via align).
+export function estimateTextWidth(text: string, size: number): number {
   let width = 0;
   for (const ch of text) {
     width += ch.codePointAt(0)! >= 0x2e80 ? size : size * 0.55;

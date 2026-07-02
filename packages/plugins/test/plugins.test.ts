@@ -186,16 +186,35 @@ test("globe layer rotation resolves to numbers and globe-intro centres the targe
   assert.ok(Math.abs(pitchTrack[pitchTrack.length - 1]!.value - (-35.68 * Math.PI) / 180) < 1e-9);
 });
 
+test("globe-route expands with an on-sphere route facing the great-circle midpoint", () => {
+  const expanded = expandComposition(comp([{
+    type: "plugin",
+    plugin: "globe-route",
+    params: { src: "earth.jpg", from: [39.9, 116.4], to: [48.85, 2.35], fromLabel: "北京", toLabel: "Paris" }
+  }]));
+  const zoom = (expanded.layers[0] as GroupLayer).layers.find((l) => l.id === "globe-zoom") as GroupLayer;
+  const globe = zoom.layers.find((l) => l.type === "globe") as Extract<Layer, { type: "globe" }>;
+  assert.equal(globe.routes?.length, 1);
+  assert.ok(Array.isArray(globe.routes![0]!.progress));
+  // Route fully drawn at the end; labels present inside the zoom group.
+  const frame = resolveFrame(expanded, 3999);
+  assert.ok(frame.layers.length > 0);
+  const texts = zoom.layers.filter((l) => l.type === "text");
+  assert.equal(texts.length, 2);
+});
+
 test("built-in plugins are registered and expand into resolvable compositions", () => {
   const names = listPlugins().map((p) => p.name);
-  assert.ok(names.includes("curtain-open"));
-  assert.ok(names.includes("ken-burns"));
-  assert.ok(names.includes("glitch-title"));
+  for (const name of ["curtain-open", "ken-burns", "glitch-title", "map-route", "globe-intro", "globe-route", "countdown", "light-sweep-title"]) {
+    assert.ok(names.includes(name), `missing plugin ${name}`);
+  }
 
   const expanded = expandComposition(comp([
     { type: "plugin", plugin: "curtain-open", endMs: 3000 },
     { type: "plugin", plugin: "ken-burns", params: { src: "https://example.com/p.jpg" }, startMs: 500 },
-    { type: "plugin", plugin: "glitch-title", params: { text: "北海道之旅" }, startMs: 1000, endMs: 3400 }
+    { type: "plugin", plugin: "glitch-title", params: { text: "北海道之旅" }, startMs: 1000, endMs: 3400 },
+    { type: "plugin", plugin: "countdown", params: { from: 3 }, endMs: 3000 },
+    { type: "plugin", plugin: "light-sweep-title", params: { text: "Title" }, startMs: 500 }
   ]));
   assert.equal(hasPluginLayers(expanded.layers), false);
 
