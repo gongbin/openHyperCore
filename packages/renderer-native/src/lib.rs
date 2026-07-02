@@ -271,6 +271,25 @@ struct GlobeLayer {
     ambient: Option<f32>,
     #[serde(default)]
     diffuse: Option<f32>,
+    #[serde(default)]
+    routes: Option<Vec<GlobeRoute>>,
+}
+
+// Great-circle surface route; progress arrives pre-resolved (0..1).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GlobeRoute {
+    from: [f32; 2],
+    to: [f32; 2],
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    width: Option<f32>,
+    progress: f32,
+    #[serde(default)]
+    altitude: Option<f32>,
+    #[serde(default)]
+    dots: Option<bool>,
 }
 
 // Video layers carry no source/timing here: the TS side already resolved the
@@ -918,6 +937,100 @@ fn draw_globe(canvas: &Canvas, layer: &GlobeLayer) {
     ));
     paint.set_alpha_f(layer.base.transform.opacity);
     canvas.draw_vertices(&vertices, BlendMode::Modulate, &paint);
+
+    if let Some(routes) = &layer.routes {
+        for route in routes {
+            draw_globe_route(canvas, layer, route);
+        }
+    }
+}
+
+const GLOBE_ROUTE_SAMPLES: i32 = 128;
+
+// Mirrors globeRoutePoints/drawGlobeRoute in the wasm renderer: slerp the
+// great circle, rotate model→view (transpose of the mesh rotation), project
+// orthographically, cull behind the horizon, stroke the drawn portion.
+fn draw_globe_route(canvas: &Canvas, layer: &GlobeLayer, route: &GlobeRoute) {
+    let progress = route.progress.clamp(0.0, 1.0);
+    if progress <= 0.0 {
+        return;
+    }
+    let (cos_s, sin_s) = (layer.yaw.cos(), layer.yaw.sin());
+    let (cos_t, sin_t) = (layer.pitch.cos(), layer.pitch.sin());
+    let altitude = route.altitude.unwrap_or(0.12);
+    let r = layer.radius;
+    let to_vec = |p: [f32; 2]| -> [f32; 3] {
+        let la = p[0] * std::f32::consts::PI / 180.0;
+        let lo = p[1] * std::f32::consts::PI / 180.0;
+        [la.cos() * lo.sin(), la.sin(), la.cos() * lo.cos()]
+    };
+    let a = to_vec(route.from);
+    let b = to_vec(route.to);
+    let dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).clamp(-1.0, 1.0);
+    let omega = dot.acos();
+
+    // (sx, sy, visible)
+    let point = |i: i32| -> (f32, f32, bool) {
+        let t = i as f32 / GLOBE_ROUTE_SAMPLES as f32;
+        let (mx, my, mz) = if omega < 1e-6 {
+            (a[0], a[1], a[2])
+        } else {
+            let w0 = ((1.0 - t) * omega).sin() / omega.sin();
+            let w1 = (t * omega).sin() / omega.sin();
+            (a[0] * w0 + b[0] * w1, a[1] * w0 + b[1] * w1, a[2] * w0 + b[2] * w1)
+        };
+        let nx = cos_s * mx - sin_s * mz;
+        let ny = sin_t * sin_s * mx + cos_t * my + sin_t * cos_s * mz;
+        let nz = cos_t * sin_s * mx - sin_t * my + cos_t * cos_s * mz;
+        let lift = 1.0 + altitude * (std::f32::consts::PI * t).sin();
+        (nx * r * lift, -ny * r * lift, nz > 0.0)
+    };
+
+    let drawn_count = (progress * GLOBE_ROUTE_SAMPLES as f32).round() as i32;
+    let color = route.color.as_deref().unwrap_or("#ffd166");
+    let width = route.width.unwrap_or((r * 0.02).max(2.0));
+    let opacity = layer.base.transform.opacity;
+
+    let mut path = Path::new();
+    let mut pen = false;
+    for i in 0..=drawn_count {
+        let (sx, sy, visible) = point(i);
+        if !visible {
+            pen = false;
+            continue;
+        }
+        if pen {
+            path.line_to((sx, sy));
+        } else {
+            path.move_to((sx, sy));
+            pen = true;
+        }
+    }
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_style(PaintStyle::Stroke);
+    paint.set_stroke_width(width);
+    paint.set_stroke_cap(Cap::Round);
+    paint.set_stroke_join(Join::Round);
+    paint.set_color(parse_color(color, opacity));
+    canvas.draw_path(&path, &paint);
+
+    if route.dots.unwrap_or(true) {
+        paint.set_style(PaintStyle::Fill);
+        let mut dot = |i: i32, radius: f32, dot_color: &str| {
+            let (sx, sy, visible) = point(i);
+            if visible {
+                paint.set_color(parse_color(dot_color, opacity));
+                canvas.draw_circle((sx, sy), radius, &paint);
+            }
+        };
+        dot(0, width * 1.5, color);
+        if progress >= 0.999 {
+            dot(GLOBE_ROUTE_SAMPLES, width * 1.5, color);
+        } else {
+            dot(drawn_count, width * 1.3, "#ffffff");
+        }
+    }
 }
 
 fn draw_text(canvas: &Canvas, layer: &TextLayer) {

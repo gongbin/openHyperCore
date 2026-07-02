@@ -832,6 +832,113 @@ async function drawGlobe(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Re
     shader.delete();
     paint.delete();
   }
+  for (const route of layer.routes ?? []) {
+    drawGlobeRoute(CanvasKit, canvas, layer, route);
+  }
+}
+
+// A great-circle route on the sphere: slerp between the endpoints' unit
+// vectors, rotate model→view (the TRANSPOSE of the mesh's view→model
+// rotation), orthographically project, and hide samples behind the horizon.
+// `progress` cuts by slerp parameter, which IS arc length on a great circle.
+type GlobeRoutePoint = { sx: number; sy: number; visible: boolean };
+
+export function globeRoutePoints(layer: { radius: number; yaw: number; pitch: number }, route: { from: [number, number]; to: [number, number]; altitude?: number }, samples: number): GlobeRoutePoint[] {
+  const cosS = Math.cos(layer.yaw);
+  const sinS = Math.sin(layer.yaw);
+  const cosT = Math.cos(layer.pitch);
+  const sinT = Math.sin(layer.pitch);
+  const altitude = route.altitude ?? 0.12;
+  const toVec = ([lat, lng]: [number, number]): [number, number, number] => {
+    const la = (lat * Math.PI) / 180;
+    const lo = (lng * Math.PI) / 180;
+    return [Math.cos(la) * Math.sin(lo), Math.sin(la), Math.cos(la) * Math.cos(lo)];
+  };
+  const a = toVec(route.from);
+  const b = toVec(route.to);
+  const dot = Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+  const omega = Math.acos(dot);
+  const points: GlobeRoutePoint[] = [];
+  for (let i = 0; i <= samples; i += 1) {
+    const t = i / samples;
+    let mx: number;
+    let my: number;
+    let mz: number;
+    if (omega < 1e-6) {
+      [mx, my, mz] = a;
+    } else {
+      const w0 = Math.sin((1 - t) * omega) / Math.sin(omega);
+      const w1 = Math.sin(t * omega) / Math.sin(omega);
+      mx = a[0] * w0 + b[0] * w1;
+      my = a[1] * w0 + b[1] * w1;
+      mz = a[2] * w0 + b[2] * w1;
+    }
+    // Model → view (transpose of the mesh rotation in buildGlobeMesh).
+    const nx = cosS * mx - sinS * mz;
+    const ny = sinT * sinS * mx + cosT * my + sinT * cosS * mz;
+    const nz = cosT * sinS * mx - sinT * my + cosT * cosS * mz;
+    const lift = 1 + altitude * Math.sin(Math.PI * t);
+    points.push({ sx: nx * layer.radius * lift, sy: -ny * layer.radius * lift, visible: nz > 0 });
+  }
+  return points;
+}
+
+const ROUTE_SAMPLES = 128;
+
+function drawGlobeRoute(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "globe" }>, route: NonNullable<Extract<ResolvedLayer, { type: "globe" }>["routes"]>[number]): void {
+  const progress = Math.max(0, Math.min(1, route.progress));
+  if (progress <= 0) {
+    return;
+  }
+  const points = globeRoutePoints(layer, route, ROUTE_SAMPLES);
+  const drawnCount = Math.round(progress * ROUTE_SAMPLES);
+  const color = route.color ?? "#ffd166";
+  const width = route.width ?? Math.max(2, layer.radius * 0.02);
+  const opacity = layer.transform.opacity;
+
+  const builder = new CanvasKit.PathBuilder();
+  let pen = false;
+  for (let i = 0; i <= drawnCount; i += 1) {
+    const p = points[i]!;
+    if (!p.visible) {
+      pen = false;
+      continue;
+    }
+    if (pen) {
+      builder.lineTo(p.sx, p.sy);
+    } else {
+      builder.moveTo(p.sx, p.sy);
+      pen = true;
+    }
+  }
+  const path = builder.detachAndDelete();
+  const paint = new CanvasKit.Paint();
+  paint.setAntiAlias(true);
+  paint.setStyle(CanvasKit.PaintStyle.Stroke);
+  paint.setStrokeWidth(width);
+  paint.setStrokeCap(CanvasKit.StrokeCap.Round);
+  paint.setStrokeJoin(CanvasKit.StrokeJoin.Round);
+  paint.setColor(parseColor(CanvasKit, color, opacity));
+  try {
+    canvas.drawPath(path, paint);
+    if (route.dots !== false) {
+      paint.setStyle(CanvasKit.PaintStyle.Fill);
+      const dot = (p: GlobeRoutePoint, r: number, dotColor: string): void => {
+        if (!p.visible) return;
+        paint.setColor(parseColor(CanvasKit, dotColor, opacity));
+        canvas.drawCircle(p.sx, p.sy, r, paint);
+      };
+      dot(points[0]!, width * 1.5, color);
+      if (progress >= 0.999) {
+        dot(points[ROUTE_SAMPLES]!, width * 1.5, color);
+      } else {
+        dot(points[drawnCount]!, width * 1.3, "#ffffff"); // tip riding the draw
+      }
+    }
+  } finally {
+    path.delete();
+    paint.delete();
+  }
 }
 
 async function drawImage(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<ResolvedLayer, { type: "image" }>, provider: AssetProvider): Promise<void> {
