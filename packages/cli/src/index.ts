@@ -9,6 +9,7 @@ import { encodeRawVideoFrames } from "../../encoder-ffmpeg/src/index.ts";
 import type { AudioInput, EncodePngFramesOptions } from "../../encoder-ffmpeg/src/index.ts";
 import { defineComposition, frameCount, resolveFrame, timeForFrame } from "../../core/src/index.ts";
 import type { Composition, Layer, ResolvedFrame, ResolvedLayer } from "../../core/src/index.ts";
+import { expandComposition } from "../../plugins/src/index.ts";
 import { createVideoFrameCache, prefetchVideoFrameBatch, renderPngFrame } from "../../renderer-skia/src/index.ts";
 import type { LayerRasterCacheStats } from "../../renderer-skia/src/index.ts";
 import { renderSvgFrame } from "../../renderer-svg/src/index.ts";
@@ -185,7 +186,9 @@ async function loadComposition(file: string): Promise<Composition> {
     throw new Error(`Composition module must export a default Composition: ${file}`);
   }
 
-  return composition as Composition;
+  // Expand plugin nodes ({ type: "plugin" }) into plain layers so every
+  // downstream path (probe/still/render/bench) sees only core layer types.
+  return expandComposition(composition as Composition);
 }
 
 function parseStillOptions(args: string[]): StillOptions {

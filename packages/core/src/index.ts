@@ -48,6 +48,7 @@ export type {
   LayerClip,
   LayerTransform,
   MotionBlur,
+  PluginLayer,
   ResolvedFrame,
   ResolvedGroupLayer,
   ResolvedGroupReveal,

@@ -217,7 +217,20 @@ export type GroupLayer = BaseLayer & {
   cache?: boolean;
 };
 
-export type Layer = TextLayer | CaptionLayer | ShapeLayer | ImageLayer | VideoLayer | AudioLayer | GroupLayer;
+// A plugin node: an authored placeholder that a registered plugin expands into
+// plain layers (a group) BEFORE rendering — see `expandComposition` in the
+// plugins package. Keeps the IR non-destructive (params stay editable) while
+// renderers never see anything but core layer types. Base props (startMs/endMs,
+// transform, clip, ...) carry over to the expanded group; the plugin's content
+// lives on the group's LOCAL timeline, so the whole effect relocates by
+// changing startMs alone.
+export type PluginLayer = BaseLayer & {
+  type: "plugin";
+  plugin: string;
+  params?: Record<string, unknown>;
+};
+
+export type Layer = TextLayer | CaptionLayer | ShapeLayer | ImageLayer | VideoLayer | AudioLayer | GroupLayer | PluginLayer;
 
 export type Composition = {
   type: "composition";
@@ -243,7 +256,9 @@ export type ResolvedGroupLayer = Omit<GroupLayer, "transform" | "layers" | "reve
   reveal?: ResolvedGroupReveal;
 };
 
-export type ResolvedLayer<T extends Layer = Layer> = T extends GroupLayer ? ResolvedGroupLayer : T extends Layer ? Omit<T, "transform"> & {
+// Plugin nodes never survive to resolve time (expandComposition replaces them),
+// so they are excluded here and renderers only ever meet core layer types.
+export type ResolvedLayer<T extends Layer = Layer> = T extends GroupLayer ? ResolvedGroupLayer : T extends PluginLayer ? never : T extends Layer ? Omit<T, "transform"> & {
   transform: ResolvedTransform;
 } : never;
 

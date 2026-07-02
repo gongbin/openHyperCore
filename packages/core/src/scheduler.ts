@@ -37,6 +37,9 @@ function isActive(layer: Layer, timeMs: number, durationMs: number): boolean {
 }
 
 function resolveLayer(layer: Layer, timeMs: number, durationMs: number, defaultFont?: string): ResolvedLayer {
+  if (layer.type === "plugin") {
+    throw new Error(`unexpanded plugin layer "${layer.plugin}" — run expandComposition() (openhypercore/plugins) before resolving or rendering`);
+  }
   const { transform, ...rest } = layer;
   // A group's own transform keyframes are ALSO local to its startMs, so the
   // whole block — including its entrance/exit animation — relocates by just
