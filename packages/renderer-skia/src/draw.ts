@@ -439,7 +439,20 @@ function drawShape(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Resolved
       const path = CanvasKit.Path.MakeFromSVGString(layer.path);
       if (path) {
         try {
-          canvas.drawPath(path, paint);
+          // Animatable trim window: draw only the [trimStart, trimEnd]
+          // fraction of the path's total length.
+          const hasTrim = layer.trimStart !== undefined || layer.trimEnd !== undefined;
+          const start = Math.min(1, Math.max(0, layer.trimStart ?? 0));
+          const end = Math.min(1, Math.max(0, layer.trimEnd ?? 1));
+          if (hasTrim && end <= start) {
+            return; // nothing visible
+          }
+          const trimmed = hasTrim && (start > 0 || end < 1) ? path.makeTrimmed(start, end, false) : null;
+          try {
+            canvas.drawPath(trimmed ?? path, paint);
+          } finally {
+            trimmed?.delete();
+          }
         } finally {
           path.delete();
         }

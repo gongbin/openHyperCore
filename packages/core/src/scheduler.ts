@@ -72,6 +72,15 @@ function resolveLayer(layer: Layer, timeMs: number, durationMs: number, defaultF
       };
     }
   }
+  // Path trim tracks resolve to plain numbers, like the transform.
+  if (layer.type === "shape" && resolved.type === "shape") {
+    if (layer.trimStart !== undefined) {
+      resolved.trimStart = resolveScalar(layer.trimStart, transformTimeMs, 0);
+    }
+    if (layer.trimEnd !== undefined) {
+      resolved.trimEnd = resolveScalar(layer.trimEnd, transformTimeMs, 1);
+    }
+  }
   return resolved;
 }
 

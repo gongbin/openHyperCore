@@ -152,6 +152,11 @@ struct ShapeLayer {
     dash: Option<Vec<f32>>,
     #[serde(default)]
     dash_phase: Option<f32>,
+    // Resolved trim window (fractions of total path length, 0..1).
+    #[serde(default)]
+    trim_start: Option<f32>,
+    #[serde(default)]
+    trim_end: Option<f32>,
 }
 
 struct TextStyle<'a> {
@@ -771,6 +776,27 @@ fn draw_shape(canvas: &Canvas, s: &ShapeLayer) {
         "path" => {
             if let Some(d) = &s.path {
                 if let Some(path) = Path::from_svg(d) {
+                    // Trim window: same semantics as the wasm renderer's
+                    // Path.makeTrimmed (fraction of TOTAL length). Applied as a
+                    // path effect, composed under any dash so the dash pattern
+                    // runs along the trimmed geometry.
+                    let has_trim = s.trim_start.is_some() || s.trim_end.is_some();
+                    if has_trim {
+                        let start = s.trim_start.unwrap_or(0.0).clamp(0.0, 1.0);
+                        let stop = s.trim_end.unwrap_or(1.0).clamp(0.0, 1.0);
+                        if stop <= start {
+                            return; // nothing visible
+                        }
+                        if start > 0.0 || stop < 1.0 {
+                            if let Some(trim) = PathEffect::trim(start, stop, None) {
+                                let effect = match paint.path_effect() {
+                                    Some(dash) => PathEffect::compose(dash, trim),
+                                    None => trim,
+                                };
+                                paint.set_path_effect(effect);
+                            }
+                        }
+                    }
                     canvas.draw_path(&path, &paint);
                 }
             }

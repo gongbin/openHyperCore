@@ -53,6 +53,7 @@ export type {
   ResolvedGroupLayer,
   ResolvedGroupReveal,
   ResolvedLayer,
+  ResolvedShapeLayer,
   ResolvedTransform,
   ScalarKeyframe,
   ShapeLayer,

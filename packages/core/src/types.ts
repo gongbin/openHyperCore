@@ -147,6 +147,11 @@ export type ShapeLayer = BaseLayer & {
   dashPhase?: number;
   // Soft blur (mask filter sigma) — enables neon glow / soft light shapes.
   blur?: number;
+  // Animatable draw window over the path's TOTAL length, both 0..1: only the
+  // [trimStart, trimEnd] fraction is drawn. Keyframing trimEnd 0→1 "draws"
+  // the path over time (route lines, signatures). shape:"path" only.
+  trimStart?: AnimatedScalar;
+  trimEnd?: AnimatedScalar;
 };
 
 export type ImageLayer = BaseLayer & {
@@ -256,9 +261,16 @@ export type ResolvedGroupLayer = Omit<GroupLayer, "transform" | "layers" | "reve
   reveal?: ResolvedGroupReveal;
 };
 
+// A resolved shape carries trim values evaluated to plain numbers.
+export type ResolvedShapeLayer = Omit<ShapeLayer, "transform" | "trimStart" | "trimEnd"> & {
+  transform: ResolvedTransform;
+  trimStart?: number;
+  trimEnd?: number;
+};
+
 // Plugin nodes never survive to resolve time (expandComposition replaces them),
 // so they are excluded here and renderers only ever meet core layer types.
-export type ResolvedLayer<T extends Layer = Layer> = T extends GroupLayer ? ResolvedGroupLayer : T extends PluginLayer ? never : T extends Layer ? Omit<T, "transform"> & {
+export type ResolvedLayer<T extends Layer = Layer> = T extends GroupLayer ? ResolvedGroupLayer : T extends ShapeLayer ? ResolvedShapeLayer : T extends PluginLayer ? never : T extends Layer ? Omit<T, "transform"> & {
   transform: ResolvedTransform;
 } : never;
 

@@ -68,6 +68,19 @@ function renderShape(layer: Extract<ResolvedLayer, { type: "shape" }>): string {
   }
 
   if (layer.shape === "path") {
+    // Trim window preview: normalize the path length to 1 and use a dash
+    // window so only [trimStart, trimEnd] of a STROKED path shows. (Filled
+    // trims need real geometry trimming — out of scope for the SVG preview.)
+    const hasTrim = layer.trimStart !== undefined || layer.trimEnd !== undefined;
+    if (hasTrim && layer.stroke) {
+      const start = Math.min(1, Math.max(0, layer.trimStart ?? 0));
+      const end = Math.min(1, Math.max(0, layer.trimEnd ?? 1));
+      if (end <= start) {
+        return "";
+      }
+      const trim = ` pathLength="1" stroke-dasharray="${formatNumber(end - start)} 1" stroke-dashoffset="${formatNumber(-start)}"`;
+      return `<path d="${escapeAttribute(layer.path ?? "")}"${common}${trim} />`;
+    }
     return `<path d="${escapeAttribute(layer.path ?? "")}"${common} />`;
   }
 
