@@ -638,3 +638,57 @@ test("mergeTransforms rejects duplicate animated properties", () => {
     /Duplicate transform property: opacity/
   );
 });
+
+test("color keyframes resolve on shape fill/stroke and text color", async () => {
+  const { interpolateColors, mixColors, random, resolveFrame: rf, stagger } = await import("../src/index.ts");
+  const composition = defineComposition({
+    fps: 30,
+    width: 100,
+    height: 100,
+    durationMs: 1000,
+    layers: [
+      {
+        type: "shape",
+        shape: "rect",
+        width: 10,
+        height: 10,
+        fill: [{ timeMs: 0, color: "#000000" }, { timeMs: 1000, color: "#ffffff" }],
+        stroke: [{ timeMs: 0, color: "rgba(255,0,0,1)" }, { timeMs: 1000, color: "rgba(255,0,0,0)" }],
+        strokeWidth: [{ timeMs: 0, value: 2 }, { timeMs: 1000, value: 10 }]
+      },
+      { type: "text", text: "hi", color: [{ timeMs: 0, color: "#ff0000" }, { timeMs: 1000, color: "#00ff00" }] }
+    ]
+  });
+  const frame = rf(composition, 500);
+  const shape = frame.layers[0] as Extract<typeof frame.layers[number], { type: "shape" }>;
+  assert.equal(shape.fill, "rgba(128,128,128,1)");
+  assert.equal(shape.stroke, "rgba(255,0,0,0.5)");
+  assert.equal(shape.strokeWidth, 6);
+  const text = frame.layers[1] as Extract<typeof frame.layers[number], { type: "text" }>;
+  assert.equal(text.color, "rgba(128,128,0,1)");
+
+  // interpolateColors is Remotion-compatible (clamped, multi-stop).
+  assert.equal(interpolateColors(-1, [0, 1], ["#000", "#fff"]), "#000");
+  assert.equal(interpolateColors(0.5, [0, 1], ["#000000", "#ffffff"]), "rgba(128,128,128,1)");
+  assert.equal(interpolateColors(1.5, [0, 0.5, 1], ["#000", "#888", "#fff"]), "#fff");
+  assert.equal(mixColors("#000000", "#ffffff", 0.5), "rgba(128,128,128,1)");
+
+  // random(seed) is deterministic and uniform-ish in [0, 1).
+  assert.equal(random("a"), random("a"));
+  assert.notEqual(random("a"), random("b"));
+  assert.ok(random(42) >= 0 && random(42) < 1);
+
+  // stagger wraps layers in groups offset by stepMs (local timelines).
+  const staggered = stagger([
+    { type: "text", text: "1", transform: { opacity: [{ timeMs: 0, value: 0 }, { timeMs: 200, value: 1 }] } },
+    { type: "text", text: "2", transform: { opacity: [{ timeMs: 0, value: 0 }, { timeMs: 200, value: 1 }] } }
+  ], 300, 100);
+  assert.equal(staggered.length, 2);
+  assert.equal(staggered[0]!.startMs, 100);
+  assert.equal(staggered[1]!.startMs, 400);
+  const at500 = rf(defineComposition({ fps: 30, width: 10, height: 10, durationMs: 1000, layers: staggered }), 500);
+  const g1 = at500.layers[0] as Extract<typeof at500.layers[number], { type: "group" }>;
+  const g2 = at500.layers[1] as Extract<typeof at500.layers[number], { type: "group" }>;
+  assert.equal(g1.layers[0]!.transform.opacity, 1);   // 400ms local — done
+  assert.equal(g2.layers[0]!.transform.opacity, 0.5); // 100ms local — mid-fade
+});

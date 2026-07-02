@@ -22,8 +22,9 @@ use skia_safe::{
     gradient_shader, image_filters, images, AlphaType, BlendMode, BlurStyle, Canvas, ClipOp, Color,
     ColorType, Data, FilterMode, Font, FontMgr, Image, ImageInfo, MaskFilter, MipmapMode, Paint,
     PaintStyle, Path, PathEffect, PathFillType, Point, RRect, Rect, SamplingOptions, Shader,
-    TileMode, Typeface,
+    TileMode, Typeface, Vertices,
 };
+use skia_safe::vertices::VertexMode;
 
 // ---------------------------------------------------------------------------
 // IR mirror (subset). Field names match the TS ResolvedFrame (camelCase).
@@ -152,6 +153,11 @@ struct ShapeLayer {
     dash: Option<Vec<f32>>,
     #[serde(default)]
     dash_phase: Option<f32>,
+    // Resolved trim window (fractions of total path length, 0..1).
+    #[serde(default)]
+    trim_start: Option<f32>,
+    #[serde(default)]
+    trim_end: Option<f32>,
 }
 
 struct TextStyle<'a> {
@@ -245,6 +251,47 @@ struct ImageLayer {
     height: Option<f32>,
 }
 
+// Sphere-mapped equirectangular image; rotation/radius arrive pre-resolved.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GlobeLayer {
+    #[serde(flatten)]
+    base: Base,
+    src: String,
+    radius: f32,
+    #[serde(default)]
+    yaw: f32,
+    #[serde(default)]
+    pitch: f32,
+    #[serde(default)]
+    segments: Option<f32>,
+    #[serde(default)]
+    light: Option<[f32; 3]>,
+    #[serde(default)]
+    ambient: Option<f32>,
+    #[serde(default)]
+    diffuse: Option<f32>,
+    #[serde(default)]
+    routes: Option<Vec<GlobeRoute>>,
+}
+
+// Great-circle surface route; progress arrives pre-resolved (0..1).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GlobeRoute {
+    from: [f32; 2],
+    to: [f32; 2],
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    width: Option<f32>,
+    progress: f32,
+    #[serde(default)]
+    altitude: Option<f32>,
+    #[serde(default)]
+    dots: Option<bool>,
+}
+
 // Video layers carry no source/timing here: the TS side already resolved the
 // source time, decoded the frame (ffmpeg), and injected the raw RGBA via the
 // video-frame buffer list + frameIndex/frameWidth/frameHeight.
@@ -296,6 +343,7 @@ enum Layer {
     Text(TextLayer),
     Caption(CaptionLayer),
     Image(ImageLayer),
+    Globe(GlobeLayer),
     Video(VideoLayer),
     Group(GroupLayer),
     // Audio and anything unknown is skipped.
@@ -310,6 +358,7 @@ impl Layer {
             Layer::Text(t) => Some(&t.base),
             Layer::Caption(c) => Some(&c.base),
             Layer::Image(i) => Some(&i.base),
+            Layer::Globe(g) => Some(&g.base),
             Layer::Video(v) => Some(&v.base),
             Layer::Group(g) => Some(&g.base),
             Layer::Unsupported => None,
@@ -771,6 +820,27 @@ fn draw_shape(canvas: &Canvas, s: &ShapeLayer) {
         "path" => {
             if let Some(d) = &s.path {
                 if let Some(path) = Path::from_svg(d) {
+                    // Trim window: same semantics as the wasm renderer's
+                    // Path.makeTrimmed (fraction of TOTAL length). Applied as a
+                    // path effect, composed under any dash so the dash pattern
+                    // runs along the trimmed geometry.
+                    let has_trim = s.trim_start.is_some() || s.trim_end.is_some();
+                    if has_trim {
+                        let start = s.trim_start.unwrap_or(0.0).clamp(0.0, 1.0);
+                        let stop = s.trim_end.unwrap_or(1.0).clamp(0.0, 1.0);
+                        if stop <= start {
+                            return; // nothing visible
+                        }
+                        if start > 0.0 || stop < 1.0 {
+                            if let Some(trim) = PathEffect::trim(start, stop, None) {
+                                let effect = match paint.path_effect() {
+                                    Some(dash) => PathEffect::compose(dash, trim),
+                                    None => trim,
+                                };
+                                paint.set_path_effect(effect);
+                            }
+                        }
+                    }
                     canvas.draw_path(&path, &paint);
                 }
             }
@@ -780,6 +850,185 @@ fn draw_shape(canvas: &Canvas, s: &ShapeLayer) {
                 Rect::from_xywh(0.0, 0.0, s.width.unwrap_or(0.0), s.height.unwrap_or(0.0)),
                 &paint,
             );
+        }
+    }
+}
+
+// Sphere-mapped image (rotating globe): generates the SAME vertex data as the
+// wasm renderer's buildGlobeMesh (renderer-skia/src/draw.ts) — screen-space
+// disc grid, inverse view rotation to equirectangular UVs, per-vertex
+// Lambert + limb shade modulated against the texture shader.
+fn draw_globe(canvas: &Canvas, layer: &GlobeLayer) {
+    let Some(image) = load_image(&layer.src) else {
+        return;
+    };
+    let (iw, ih) = (image.width() as f32, image.height() as f32);
+    let r = layer.radius;
+    if !(r > 0.0) {
+        return;
+    }
+    let seg = layer.segments.unwrap_or(64.0).max(8.0).floor() as i32;
+    let (cos_s, sin_s) = (layer.yaw.cos(), layer.yaw.sin());
+    let (cos_t, sin_t) = (layer.pitch.cos(), layer.pitch.sin());
+    let l = layer.light.unwrap_or([-0.42, 0.55, 0.72]);
+    let llen = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt().max(1e-6);
+    let (lx, ly, lz) = (l[0] / llen, l[1] / llen, l[2] / llen);
+    let ambient = layer.ambient.unwrap_or(0.32);
+    let diffuse = layer.diffuse.unwrap_or(0.78);
+
+    // (screen point, u, v, shade)
+    let vert = |k: i32, j: i32| -> (Point, f32, f32, f32) {
+        let rr = (k as f32 / seg as f32) * r;
+        let a = (j as f32 / seg as f32) * 2.0 * std::f32::consts::PI;
+        let (sx, sy) = (a.cos() * rr, a.sin() * rr);
+        let (nx, ny) = (sx / r, -sy / r);
+        let nz = (1.0 - nx * nx - ny * ny).max(0.0).sqrt();
+        let az = ny * sin_t + nz * cos_t;
+        let mx = nx * cos_s + az * sin_s;
+        let my = ny * cos_t - nz * sin_t;
+        let mz = -nx * sin_s + az * cos_s;
+        let lon = mx.atan2(mz);
+        let lat = my.clamp(-1.0, 1.0).asin();
+        let u = 0.5 + lon / (2.0 * std::f32::consts::PI);
+        let v = 0.5 - lat / std::f32::consts::PI;
+        let lambert = (nx * lx + ny * ly + nz * lz).max(0.0);
+        let limb = (nz * 4.5).min(1.0);
+        let shade = ((ambient + diffuse * lambert) * (0.45 + 0.55 * limb)).min(1.0);
+        (Point::new(sx, sy), u, v, shade)
+    };
+
+    let mut positions: Vec<Point> = Vec::new();
+    let mut texs: Vec<Point> = Vec::new();
+    let mut colors: Vec<Color> = Vec::new();
+    let mut push_tri = |vs: [(Point, f32, f32, f32); 3]| {
+        // Antimeridian seam: lift low-u corners through the Repeat wrap.
+        let (mut min_u, mut max_u) = (f32::MAX, f32::MIN);
+        for v in &vs {
+            min_u = min_u.min(v.1);
+            max_u = max_u.max(v.1);
+        }
+        let wrap = max_u - min_u > 0.5;
+        for (p, u, v, shade) in vs {
+            let u = if wrap && u < 0.5 { u + 1.0 } else { u };
+            positions.push(p);
+            texs.push(Point::new(u * iw, v * ih));
+            let c = (shade.clamp(0.0, 1.0) * 255.0).round() as u8;
+            colors.push(Color::from_argb(255, c, c, c));
+        }
+    };
+    for k in 1..=seg {
+        for j in 0..seg {
+            let a = vert(k - 1, j);
+            let b = vert(k - 1, j + 1);
+            let c = vert(k, j);
+            let d = vert(k, j + 1);
+            push_tri([a, c, d]);
+            push_tri([a, d, b]);
+        }
+    }
+
+    let vertices = Vertices::new_copy(VertexMode::Triangles, &positions, &texs, &colors, None);
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_shader(image.to_shader(
+        Some((TileMode::Repeat, TileMode::Clamp)),
+        SamplingOptions::new(FilterMode::Linear, MipmapMode::None),
+        None,
+    ));
+    paint.set_alpha_f(layer.base.transform.opacity);
+    canvas.draw_vertices(&vertices, BlendMode::Modulate, &paint);
+
+    if let Some(routes) = &layer.routes {
+        for route in routes {
+            draw_globe_route(canvas, layer, route);
+        }
+    }
+}
+
+const GLOBE_ROUTE_SAMPLES: i32 = 128;
+
+// Mirrors globeRoutePoints/drawGlobeRoute in the wasm renderer: slerp the
+// great circle, rotate model→view (transpose of the mesh rotation), project
+// orthographically, cull behind the horizon, stroke the drawn portion.
+fn draw_globe_route(canvas: &Canvas, layer: &GlobeLayer, route: &GlobeRoute) {
+    let progress = route.progress.clamp(0.0, 1.0);
+    if progress <= 0.0 {
+        return;
+    }
+    let (cos_s, sin_s) = (layer.yaw.cos(), layer.yaw.sin());
+    let (cos_t, sin_t) = (layer.pitch.cos(), layer.pitch.sin());
+    let altitude = route.altitude.unwrap_or(0.12);
+    let r = layer.radius;
+    let to_vec = |p: [f32; 2]| -> [f32; 3] {
+        let la = p[0] * std::f32::consts::PI / 180.0;
+        let lo = p[1] * std::f32::consts::PI / 180.0;
+        [la.cos() * lo.sin(), la.sin(), la.cos() * lo.cos()]
+    };
+    let a = to_vec(route.from);
+    let b = to_vec(route.to);
+    let dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).clamp(-1.0, 1.0);
+    let omega = dot.acos();
+
+    // (sx, sy, visible)
+    let point = |i: i32| -> (f32, f32, bool) {
+        let t = i as f32 / GLOBE_ROUTE_SAMPLES as f32;
+        let (mx, my, mz) = if omega < 1e-6 {
+            (a[0], a[1], a[2])
+        } else {
+            let w0 = ((1.0 - t) * omega).sin() / omega.sin();
+            let w1 = (t * omega).sin() / omega.sin();
+            (a[0] * w0 + b[0] * w1, a[1] * w0 + b[1] * w1, a[2] * w0 + b[2] * w1)
+        };
+        let nx = cos_s * mx - sin_s * mz;
+        let ny = sin_t * sin_s * mx + cos_t * my + sin_t * cos_s * mz;
+        let nz = cos_t * sin_s * mx - sin_t * my + cos_t * cos_s * mz;
+        let lift = 1.0 + altitude * (std::f32::consts::PI * t).sin();
+        (nx * r * lift, -ny * r * lift, nz > 0.0)
+    };
+
+    let drawn_count = (progress * GLOBE_ROUTE_SAMPLES as f32).round() as i32;
+    let color = route.color.as_deref().unwrap_or("#ffd166");
+    let width = route.width.unwrap_or((r * 0.02).max(2.0));
+    let opacity = layer.base.transform.opacity;
+
+    let mut path = Path::new();
+    let mut pen = false;
+    for i in 0..=drawn_count {
+        let (sx, sy, visible) = point(i);
+        if !visible {
+            pen = false;
+            continue;
+        }
+        if pen {
+            path.line_to((sx, sy));
+        } else {
+            path.move_to((sx, sy));
+            pen = true;
+        }
+    }
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_style(PaintStyle::Stroke);
+    paint.set_stroke_width(width);
+    paint.set_stroke_cap(Cap::Round);
+    paint.set_stroke_join(Join::Round);
+    paint.set_color(parse_color(color, opacity));
+    canvas.draw_path(&path, &paint);
+
+    if route.dots.unwrap_or(true) {
+        paint.set_style(PaintStyle::Fill);
+        let mut dot = |i: i32, radius: f32, dot_color: &str| {
+            let (sx, sy, visible) = point(i);
+            if visible {
+                paint.set_color(parse_color(dot_color, opacity));
+                canvas.draw_circle((sx, sy), radius, &paint);
+            }
+        };
+        dot(0, width * 1.5, color);
+        if progress >= 0.999 {
+            dot(GLOBE_ROUTE_SAMPLES, width * 1.5, color);
+        } else {
+            dot(drawn_count, width * 1.3, "#ffffff");
         }
     }
 }
@@ -986,6 +1235,7 @@ fn draw_content(canvas: &Canvas, layer: &Layer, ctx: &RenderCtx) {
         Layer::Text(t) => draw_text(canvas, t),
         Layer::Caption(c) => draw_caption(canvas, c),
         Layer::Image(i) => draw_image(canvas, i),
+        Layer::Globe(g) => draw_globe(canvas, g),
         Layer::Video(v) => draw_video(canvas, v, ctx),
         Layer::Group(g) => draw_group(canvas, g, ctx),
         Layer::Unsupported => {}

@@ -45,9 +45,59 @@ npx openhyper render my-composition.ts --out out.mp4
 npx openhyper render my-composition.ts --out out.mp4 --renderer native --workers auto
 ```
 
-子路径入口：`openhypercore`（≡ `openhypercore/core`，编排 IR + 动画）、`openhypercore/renderer-skia`（CanvasKit 栅格）、`openhypercore/renderer-svg`、`openhypercore/encoder-ffmpeg`、`openhypercore/assets`、`openhypercore/jsx-runtime`、`openhypercore/cli`。
+子路径入口：`openhypercore`（≡ `openhypercore/core`，编排 IR + 动画）、`openhypercore/plugins`（动效插件）、`openhypercore/renderer-skia`（CanvasKit 栅格）、`openhypercore/renderer-skia/draw`（浏览器安全 draw 树，用于实时预览）、`openhypercore/renderer-svg`、`openhypercore/encoder-ffmpeg`、`openhypercore/assets`、`openhypercore/jsx-runtime`、`openhypercore/server`（HTTP 渲染服务）、`openhypercore/cli`。
 
 默认使用可搬的 CanvasKit/wasm 后端（无需原生二进制）。原生（Rust + skia-safe）后端——快 ~8–14×——为可选项：用 `pnpm build:native` 从源码构建并以 `--renderer native`（或 `OPENHYPERCORE_RENDERER=native`）选用；跨平台 prebuilt 二进制在规划中。
+
+## 动效插件
+
+只填几个参数就能得到丰富的成品动画——在 layers 里放一个 `{ type: "plugin" }` 节点，渲染前它会展开成普通 IR 图层。CLI、渲染服务、编辑器都会自动展开；插件节点原样保留在 JSON 里，参数随时可改（非破坏性）。
+
+```ts
+// 三个插件节点拼出完整冷开场（见 examples/plugin-cold-open.ts）：
+const composition = defineComposition({
+  fps: 30, width: 1280, height: 720, durationMs: 13000,
+  layers: [
+    { type: "plugin", plugin: "countdown", params: { from: 3 }, endMs: 3000 },
+    { type: "plugin", plugin: "globe-route",
+      params: { src: "assets/earth.jpg", from: [39.9, 116.4], to: [48.85, 2.35], fromLabel: "北京", toLabel: "Paris" },
+      startMs: 3000, endMs: 10000 },
+    { type: "plugin", plugin: "light-sweep-title", params: { text: "巴黎 72 小時", y: 0.82 }, startMs: 9200 }
+  ]
+});
+```
+
+内置插件（`openhypercore/plugins`）：
+
+| 插件 | 效果 | 关键参数 |
+| --- | --- | --- |
+| `globe-intro` | 卫星地球仪自转到目标点并俯冲放大（星空、大气辉光、雷达 ping） | `src`（2:1 等距圆柱贴图）、`target` [lat,lng]、`spin`、`zoom`、`background` |
+| `globe-route` | 大圆航线在旋转的地球表面上自己画出来（转到背面会藏进地平线） | `src`、`from`/`to` [lat,lng]、`fromLabel`/`toLabel`、`routeColor`、`zoom` |
+| `map-route` | 2D 路线在内置 Natural Earth 世界地图上划出弧线，线头带光点、起终点弹出 | `from`/`to` [lat,lng]、标签、`landColor`/`routeColor`、`lineStyle`、`zoom` |
+| `countdown` | 经典胶片倒计时：时钟楔形扫掠、圆环、十字线、大数字 | `from`（3..1）、配色 |
+| `curtain-open` | 舞台幕布先合拢再向两侧拉开，露出下方场景 | `color`、`holdMs`、`openMs`、`foldCount` |
+| `ken-burns` | 满屏照片居中缓慢缩放+漂移，淡入淡出 | `src`、`zoomFrom/To`、`driftX/Y` |
+| `glitch-title` | 居中 RGB 分离故障标题，带闪烁与故障条 | `text`、`size`、两个强调色 |
+| `light-sweep-title` | 标题上浮入场、下划线从中心生长、光条扫过 | `text`、`size`、`sweepColor` |
+
+插件内容运行在本地时间轴上：节点的 `startMs/endMs` 决定整段效果的位置，基础属性（`transform`、`clip`、`blendMode`…）作用于展开后的 group——插件效果和普通图层一样可以搬移、淡入淡出、加遮罩。手动展开（例如调试）只需一行：
+
+```ts
+import { expandComposition, definePlugin, registerPlugin, listPlugins } from "openhypercore/plugins";
+
+const expanded = expandComposition(composition); // 插件节点 -> 普通图层
+
+// 自定义插件：params 是可序列化 schema（编辑器据此自动生成表单），
+// expand() 是纯函数，返回本地时间轴上的图层。
+registerPlugin(definePlugin({
+  name: "badge",
+  params: { text: { type: "string", required: true }, color: { type: "color", default: "#ffb703" } },
+  expand: (p, ctx) => [
+    { type: "text", text: p.text, color: p.color, align: "center",
+      transform: { x: ctx.width / 2, y: ctx.height / 2 } }
+  ]
+}));
+```
 
 ## 功能特点
 
@@ -61,11 +111,15 @@ npx openhyper render my-composition.ts --out out.mp4 --renderer native --workers
 - 转场 helper：提供 fade、slide、scale preset，并输出可复用 Scene Graph transform keyframes；支持 easing preset（`easeIn/easeOut/easeInOut/sine/quart/expo/back/elastic/bounce/...`、自定义缓动函数或贝塞尔元组），通过采样烘焙为关键帧。
 - 时间线 DSL：`composeTimeline` 可将同一属性的多段动画按时间串联（如同一图层的入场淡入 + 出场淡出），`delayTransition` 可整体平移 transform 时间用于错峰编排。
 - GroupLayer 预合成：`group` 图层在共享 transform 与组透明度下嵌套子图层（经 saveLayer 作为整体合成，无重叠双重混合）。子图层与 group 自身的关键帧都使用 group 本地时间轴，只改 `startMs` 即可整体搬移一段带动画的内容（对标 Remotion `<Sequence>` 语义），见 `examples/group-spring.ts`。
-- Remotion 风格动画 API：`interpolate(t, inputRange, outputRange, { easing, extrapolateLeft/Right })` 支持多段映射；闭式解阻尼弹簧 `spring()` 与 `springKeyframes()` 可把物理弹簧运动烘焙为关键帧轨道。
+- Remotion 风格动画 API：`interpolate(t, inputRange, outputRange, { easing, extrapolateLeft/Right })` 支持多段映射；闭式解阻尼弹簧 `spring()` 与 `springKeyframes()` 可把物理弹簧运动烘焙为关键帧轨道；`interpolateColors()`（多档 RGB 颜色映射）、确定性 `random(seed)`、`stagger()` 级联错峰入场。
+- 颜色关键帧：shape 的 `fill`/`stroke`、text 的 `color` 均可用颜色关键帧轨道（RGB 空间插值、逐段缓动），shape `strokeWidth` 也可动画——在解析阶段化为普通值，所有渲染后端零改动即获得支持。
+- 路径描画动画：shape path 携带可动画的 `trimStart`/`trimEnd`（占总长度的分数）——`trimEnd` 0→1 关键帧即可随时间"画出"路线或签名，可与虚线描边叠加。
+- 地球仪图层：2:1 等距圆柱贴图渲染为正交投影地球（UV 三角网格 + 逐顶点 Lambert/晨昏光照），`radius`/`yaw`/`pitch` 可关键帧；`routes` 大圆航线贴地绘制、progress 可动画、转到背面自动藏进地平线。wasm 与原生后端生成同一份顶点数据（parity 测试保证）。
 - 场景级转场：`createTransitionSeries(...).scene(...).transition({ type, durationMs, direction, easing })` 串联整屏场景并产生真正重叠的转场——`wipe`、`clockWipe`（遮罩揭示）、`slide`（整屏推移）、`flip`（绕中心轴翻面）；相邻场景按转场时长重叠（对标 Remotion TransitionSeries 语义），见 `examples/scene-transitions.ts`。
 - IR 新增逐轴缩放与揭示遮罩：`transform.scaleX/scaleY`（与统一 `scale` 相乘）；`GroupLayer.reveal`（`wipe`/`clock`，动画化 0→1 `progress`）把 group 裁剪到扫掠矩形或时钟楔形区域。
 - 静态图层栅格缓存：内容跨帧不变（只有 transform/透明度/reveal 在动）的 group 只栅格化一次、之后直接贴图。缓存由成本模型驱动且自调优——实测每次直绘耗时，只缓存“直绘比预估贴图更慢”的子树，平价场景零回归，辉光/密集文字卡片自动加速。可用 `cache: false`（单个 group）或 `--no-layer-cache`（全局）关闭；图片图层另有跨帧解码缓存。
 - 电影感特效 helper：`cinematicBars`、`flashTransitionLayer`、`speedLineBurst`、`glitchTitle` 可生成片头/转场常用 layer stack，减少手写大量图层。
+- 动效插件：`{ type: "plugin" }` IR 节点经 `openhypercore/plugins` 展开为普通图层（`expandComposition`，CLI/服务/编辑器自动执行），参数带可序列化 schema（编辑器自动生成表单）——从舞台幕布到旋转卫星地球仪共 8 个内置插件（见上文章节），并可用 `definePlugin`/`registerPlugin` 自定义。
 - 场景时间线 builder：`createTimeline(...).scene(...).transition(...).build()` 可顺序编排命名场景和转场，并返回 Composition 与 timing markers。
 - 图层 fit 模式：`ImageLayer.fit` 与 `VideoLayer.fit` 支持 `fill`（拉伸）、`cover`（居中裁切）、`contain`（letterbox 留边）；圆形裁切默认 `cover`。
 - 视觉效果：渐变填充（`fill`/`color`/`backgroundColor` 接受 `{ type: "linear"|"radial", stops }`）、逐图层 `blendMode`（multiply/screen/overlay/add/...）、整层 `blur`（高斯模糊）与方向性 `motionBlur`（{ angle, distance, samples }），见 `examples/effects-showcase.ts`。
@@ -89,7 +143,7 @@ npx openhyper render my-composition.ts --out out.mp4 --renderer native --workers
 - 文本排版已支持多行换行、对齐、字体注册和 emoji fallback，但尚未支持行内富文本（单行内混合样式）或双向/复杂文种 shaping。
 - 彩色 emoji fallback 依赖宿主机存在 emoji 字体（自动探测，或通过 `registerEmojiFont` 指定）；若没有，则 emoji 回退到默认字体。
 - 转场 helper 已支持 easing preset、组合属性时间线 DSL（`composeTimeline`/`delayTransition`）与轻量场景时间线 builder；更完整的 track-based 编辑时间线仍是后续工作。
-- 尚未实现 HTTP 服务、可视化编辑器和发布打包流程。
+- HTTP 渲染服务（`openhyper serve`）、解耦的 Web 编辑器（`apps/editor`）和 npm 发布均已就绪；跨平台原生 prebuilt 二进制仍在规划中（当前可从源码构建）。
 
 ## 环境要求
 

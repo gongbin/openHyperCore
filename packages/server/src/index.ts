@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineComposition } from "../../core/src/index.ts";
+import { expandComposition } from "../../plugins/src/index.ts";
 import type { Composition } from "../../core/src/index.ts";
 import { extractAudioInputs, renderVideo } from "../../cli/src/index.ts";
 import type { RenderOptions } from "../../cli/src/index.ts";
@@ -95,12 +96,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, maxBody: number
 
   let composition: Composition;
   try {
-    composition = defineComposition({
+    composition = expandComposition(defineComposition({
       ...input,
       fps: body.fps ?? input.fps,
       width: body.size?.width ?? input.width,
       height: body.size?.height ?? input.height
-    });
+    }));
   } catch (error) {
     sendJson(res, 400, { error: `invalid composition: ${error instanceof Error ? error.message : String(error)}` }, allowOrigin);
     return;

@@ -27,18 +27,24 @@ export type {
   TransitionSeriesMarker,
   TransitionSeriesTransitionMarker
 } from "./scene-transitions.ts";
-export { interpolate, spring, springDurationMs, springKeyframes } from "./interpolate.ts";
+export { interpolate, random, spring, springDurationMs, springKeyframes, stagger } from "./interpolate.ts";
 export type { ExtrapolateType, InterpolateOptions, SpringConfig, SpringKeyframesOptions, SpringOptions } from "./interpolate.ts";
+export { interpolateColors, mixColors, parseCssColor, resolveColor } from "./color.ts";
+export type { Rgba } from "./color.ts";
 export { parseSubtitles, subtitlesToCaptions } from "./subtitles.ts";
 export type { SubtitleCaptionOptions, SubtitleCue } from "./subtitles.ts";
 export type {
+  AnimatedColor,
   AnimatedScalar,
   AudioLayer,
+  ColorKeyframe,
   BaseLayer,
   BlendMode,
   CaptionLayer,
   Composition,
   Fill,
+  GlobeLayer,
+  GlobeRoute,
   Gradient,
   GradientStop,
   GroupLayer,
@@ -48,10 +54,15 @@ export type {
   LayerClip,
   LayerTransform,
   MotionBlur,
+  PluginLayer,
   ResolvedFrame,
+  ResolvedGlobeLayer,
+  ResolvedGlobeRoute,
   ResolvedGroupLayer,
   ResolvedGroupReveal,
   ResolvedLayer,
+  ResolvedShapeLayer,
+  ResolvedTextLayer,
   ResolvedTransform,
   ScalarKeyframe,
   ShapeLayer,

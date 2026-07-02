@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { defineComposition, resolveFrame } from "openhypercore";
 import type { Composition, Layer, ResolvedFrame } from "openhypercore";
+import { expandComposition, listPlugins } from "openhypercore/plugins";
+import type { ParamSpec, PluginDefinition } from "openhypercore/plugins";
 import { PreviewRenderer } from "./preview.ts";
 import { sampleComposition } from "./sample.ts";
 
@@ -15,6 +17,26 @@ const FACTORIES: Record<string, () => Layer> = {
   Text: () => ({ type: "text", text: "Hello", size: 96, color: "#ffffff", align: "left", transform: { x: 160, y: 380 } }),
   Group: () => ({ type: "group", transform: { x: 220, y: 200 }, layers: [{ type: "shape", shape: "rect", width: 260, height: 150, fill: "#d76d77" }] })
 };
+// Motion-effect plugins (openhypercore/plugins built-ins + anything registered
+// before this module loads). One click inserts a { type: "plugin" } node whose
+// params stay editable in the auto-generated form below.
+const PLUGINS = listPlugins();
+function pluginDefaults(def: PluginDefinition): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  for (const [key, spec] of Object.entries(def.params)) {
+    if (spec.default !== undefined) params[key] = spec.default;
+    else if (spec.required) {
+      // Required params get a friendly placeholder so the preview works the
+      // instant the plugin is added.
+      if (spec.type === "asset") params[key] = spec.placeholder ?? (spec.kind === "image" || spec.kind === undefined ? "https://picsum.photos/seed/openhyper/1280/720" : "");
+      else if (spec.type === "string") params[key] = "Your Title";
+      else if (spec.type === "number") params[key] = 0;
+      else if (spec.type === "latlng") params[key] = [43.06, 141.35];
+    }
+  }
+  return params;
+}
+
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "add", "color-dodge", "color-burn", "soft-light", "hard-light", "difference", "exclusion"];
 const TRANSFORM_KEYS = ["x", "y", "scale", "rotate", "opacity"] as const;
 type TKey = (typeof TRANSFORM_KEYS)[number];
@@ -67,9 +89,17 @@ export function App() {
   // another keyframe (which re-sorts the array) never hands off to the wrong one.
   const dragRef = useRef<{ i: number; key: TKey; items: { id: number; timeMs: number; value: number; easing?: unknown }[]; dragId: number } | null>(null);
 
+  // Plugin nodes are expanded (non-destructively) before every resolve/draw,
+  // exactly like the CLI/server do — so preview == final MP4 stays true.
+  const expansion = useMemo<{ comp: Composition | null; error: string | null }>(() => {
+    try { return { comp: expandComposition(composition), error: null }; }
+    catch (e) { return { comp: null, error: e instanceof Error ? e.message : String(e) }; }
+  }, [composition]);
+
   const resolved = useMemo<ResolvedFrame | null>(() => {
-    try { return resolveFrame(composition, timeMs); } catch { return null; }
-  }, [composition, timeMs]);
+    if (!expansion.comp) return null;
+    try { return resolveFrame(expansion.comp, timeMs); } catch { return null; }
+  }, [expansion, timeMs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -81,10 +111,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (ready && rendererRef.current) {
-      rendererRef.current.renderFrame(composition, timeMs).catch((e: unknown) => setStatus(`preview error: ${String(e)}`));
+    if (ready && rendererRef.current && expansion.comp) {
+      rendererRef.current.renderFrame(expansion.comp, timeMs).catch((e: unknown) => setStatus(`preview error: ${String(e)}`));
     }
-  }, [ready, composition, timeMs]);
+  }, [ready, expansion, timeMs]);
 
   function apply(next: Composition): void {
     const v = defineComposition(next);
@@ -111,6 +141,10 @@ export function App() {
     const layers = [...composition.layers, make()];
     apply({ ...composition, layers });
     setSelected(layers.length - 1);
+  }
+  function addPlugin(def: PluginDefinition): void {
+    const endMs = Math.min(def.defaultDurationMs ?? composition.durationMs, composition.durationMs);
+    addLayer(() => ({ type: "plugin", plugin: def.name, params: pluginDefaults(def), endMs }));
   }
   function removeLayer(i: number): void {
     apply({ ...composition, layers: composition.layers.filter((_, idx) => idx !== i) });
@@ -251,6 +285,9 @@ export function App() {
         <span style={{ opacity: 0.4 }}>|</span>
         <span style={{ opacity: 0.6, fontSize: 11 }}>Add</span>
         {Object.keys(FACTORIES).map((n) => <button key={n} onClick={() => addLayer(FACTORIES[n]!)} style={btnSm}>+ {n}</button>)}
+        <span style={{ opacity: 0.4 }}>|</span>
+        <span style={{ opacity: 0.6, fontSize: 11 }}>FX</span>
+        {PLUGINS.map((p) => <button key={p.name} onClick={() => addPlugin(p)} title={p.description} style={btnSm}>✦ {p.displayName ?? p.name}</button>)}
         <div style={{ flex: 1 }} />
         <button onClick={() => setShowJson((s) => !s)} style={btnSm}>{showJson ? "Hide JSON" : "JSON"}</button>
         <input value={serviceUrl} onChange={(e) => setServiceUrl(e.target.value)} style={{ ...input, width: 190 }} />
@@ -272,8 +309,9 @@ export function App() {
           ))}
         </aside>
 
-        <div style={{ flex: 1, display: "grid", placeItems: "center", minWidth: 0, padding: 14, background: "#010409" }}>
+        <div style={{ position: "relative", flex: 1, display: "grid", placeItems: "center", minWidth: 0, padding: 14, background: "#010409" }}>
           <canvas ref={canvasRef} width={composition.width} height={composition.height} style={{ width: "100%", maxHeight: "100%", aspectRatio: `${composition.width} / ${composition.height}`, height: "auto", boxShadow: "0 8px 40px #0008", borderRadius: 4 }} />
+          {expansion.error ? <div style={{ position: "absolute", top: 10, left: 14, right: 14, background: "#3d1418", border: "1px solid #f85149", color: "#ffb3ad", borderRadius: 6, padding: "6px 10px", fontSize: 12 }}>plugin: {expansion.error}</div> : null}
         </div>
 
         <aside style={{ width: 308, borderLeft: "1px solid #21262d", display: "flex", flexDirection: "column", padding: 12, gap: 9, overflow: "auto" }}>
@@ -318,6 +356,7 @@ export function App() {
 
               {layer.type === "shape" ? <ShapeProps layer={layer} set={(p) => patchLayer(selected, p)} /> : null}
               {layer.type === "text" ? <TextProps layer={layer} set={(p) => patchLayer(selected, p)} /> : null}
+              {layer.type === "plugin" ? <PluginProps layer={layer} set={(p) => patchLayer(selected, p)} /> : null}
             </>
           ) : <div style={{ opacity: 0.6 }}>No layer selected.</div>}
 
@@ -429,6 +468,50 @@ function TextProps({ layer, set }: { layer: AnyLayer; set: (p: Record<string, un
   );
 }
 
+// Auto-generated form for a plugin node, driven by the plugin's param schema —
+// beginners tweak a handful of typed fields instead of authoring keyframes.
+function PluginProps({ layer, set }: { layer: AnyLayer; set: (p: Record<string, unknown>) => void }) {
+  const def = PLUGINS.find((p) => p.name === layer.plugin);
+  if (!def) return <div style={{ color: "#f85149", fontSize: 11 }}>unknown plugin: {String(layer.plugin)}</div>;
+  const params = (layer.params as Record<string, unknown>) ?? {};
+  const put = (key: string, v: unknown) => set({ params: { ...params, [key]: v } });
+  return (
+    <>
+      <div style={lbl}>Plugin — {def.displayName ?? def.name}</div>
+      {def.description ? <div style={{ opacity: 0.55, fontSize: 11, lineHeight: 1.4 }}>{def.description}</div> : null}
+      {Object.entries(def.params).map(([key, spec]) => (
+        <ParamField key={key} name={key} spec={spec} value={params[key]} onChange={(v) => put(key, v)} />
+      ))}
+    </>
+  );
+}
+
+function ParamField({ name, spec, value, onChange }: { name: string; spec: ParamSpec; value: unknown; onChange: (v: unknown) => void }) {
+  const label = spec.label ?? name;
+  switch (spec.type) {
+    case "number":
+      return <Num label={label} step={spec.step ?? 1} value={typeof value === "number" ? value : spec.default ?? 0} onChange={onChange} />;
+    case "color":
+      return <Col label={label}><input type="color" value={typeof value === "string" ? value : spec.default ?? "#ffffff"} onChange={(e) => onChange(e.target.value)} style={swatch} /></Col>;
+    case "boolean":
+      return <Col label={label}><input type="checkbox" checked={value === undefined ? spec.default ?? false : Boolean(value)} onChange={(e) => onChange(e.target.checked)} style={{ alignSelf: "flex-start", width: 18, height: 18 }} /></Col>;
+    case "select":
+      return <Sel label={label} value={typeof value === "string" ? value : spec.default ?? spec.options[0] ?? ""} options={[...spec.options]} onChange={onChange} />;
+    case "latlng": {
+      const [lat, lng] = Array.isArray(value) && value.length === 2 ? (value as [number, number]) : spec.default ?? [0, 0];
+      return <Row>
+        <Num label={`${label} · lat`} step={0.01} value={lat} onChange={(v) => onChange([v, lng])} />
+        <Num label="lng" step={0.01} value={lng} onChange={(v) => onChange([lat, v])} />
+      </Row>;
+    }
+    case "string":
+      if (spec.multiline) return <Col label={label}><textarea value={typeof value === "string" ? value : ""} rows={2} onChange={(e) => onChange(e.target.value)} style={{ ...input, resize: "vertical" }} /></Col>;
+      return <Col label={label}><input value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value)} style={input} /></Col>;
+    default: // asset
+      return <Col label={`${label} (URL)`}><input value={typeof value === "string" ? value : ""} placeholder="https://…" onChange={(e) => onChange(e.target.value)} style={input} /></Col>;
+  }
+}
+
 // --- field components --------------------------------------------------------
 function KfNum({ label, value, step, animated, hasKey, onChange, onToggle }: { label: string; value: number; step?: number; animated: boolean; hasKey: boolean; onChange: (v: number) => void; onToggle: () => void }) {
   return <Col label={label}><div style={{ display: "flex", gap: 4 }}>
@@ -486,11 +569,11 @@ function BezierEditor({ value, onChange }: { value: Bezier; onChange: (v: Bezier
 
 function layerLabel(l: AnyLayer, i: number): string {
   const id = typeof l.id === "string" ? l.id : "";
-  const kind = l.type === "shape" ? (l.shape as string) : l.type;
+  const kind = l.type === "shape" ? (l.shape as string) : l.type === "plugin" ? `✦ ${String(l.plugin)}` : l.type;
   return `${i + 1}. ${kind}${id ? ` · ${id}` : l.type === "text" ? ` · ${String(l.text).slice(0, 10)}` : ""}`;
 }
 function dot(l: AnyLayer): React.CSSProperties {
-  const c = l.type === "text" ? "#58a6ff" : l.type === "group" ? "#d2a8ff" : l.type === "video" || l.type === "image" ? "#7ee787" : "#e7c36a";
+  const c = l.type === "text" ? "#58a6ff" : l.type === "group" ? "#d2a8ff" : l.type === "video" || l.type === "image" ? "#7ee787" : l.type === "plugin" ? "#ffa657" : "#e7c36a";
   return { width: 8, height: 8, borderRadius: 2, background: c, flexShrink: 0 };
 }
 function kfBtn(animated: boolean, hasKey: boolean): React.CSSProperties {

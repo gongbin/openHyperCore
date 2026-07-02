@@ -1,6 +1,6 @@
 {
   "name": "openhypercore",
-  "version": "0.1.2",
+  "version": "0.3.0",
   "description": "Lightweight, GPU-free video composition + rendering engine: a JSON scene-graph IR, CanvasKit/Skia (wasm) or native (Rust + skia-safe) renderer, and an FFmpeg encoder — with a CLI for scripted/agent use.",
   "type": "module",
   "packageManager": "pnpm@10.30.1",
@@ -48,6 +48,10 @@
     "./renderer-skia/draw": {
       "types": "./dist/packages/renderer-skia/src/draw.d.ts",
       "import": "./dist/packages/renderer-skia/src/draw.js"
+    },
+    "./plugins": {
+      "types": "./dist/packages/plugins/src/index.d.ts",
+      "import": "./dist/packages/plugins/src/index.js"
     },
     "./renderer-svg": {
       "types": "./dist/packages/renderer-svg/src/index.d.ts",

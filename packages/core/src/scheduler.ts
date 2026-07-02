@@ -1,4 +1,5 @@
 import { resolveScalar } from "./animation.ts";
+import { resolveColor } from "./color.ts";
 import type { Composition, Layer, ResolvedFrame, ResolvedLayer, ResolvedTransform } from "./types.ts";
 
 export function frameCount(composition: Composition): number {
@@ -37,6 +38,9 @@ function isActive(layer: Layer, timeMs: number, durationMs: number): boolean {
 }
 
 function resolveLayer(layer: Layer, timeMs: number, durationMs: number, defaultFont?: string): ResolvedLayer {
+  if (layer.type === "plugin") {
+    throw new Error(`unexpanded plugin layer "${layer.plugin}" — run expandComposition() (openhypercore/plugins) before resolving or rendering`);
+  }
   const { transform, ...rest } = layer;
   // A group's own transform keyframes are ALSO local to its startMs, so the
   // whole block — including its entrance/exit animation — relocates by just
@@ -68,6 +72,40 @@ function resolveLayer(layer: Layer, timeMs: number, durationMs: number, defaultF
         progress: resolveScalar(layer.reveal.progress, localTimeMs, 1)
       };
     }
+  }
+  // Globe rotation/radius tracks resolve to plain numbers, like the transform.
+  if (layer.type === "globe" && resolved.type === "globe") {
+    resolved.radius = resolveScalar(layer.radius, transformTimeMs, 200);
+    resolved.yaw = resolveScalar(layer.yaw, transformTimeMs, 0);
+    resolved.pitch = resolveScalar(layer.pitch, transformTimeMs, 0);
+    if (layer.routes) {
+      resolved.routes = layer.routes.map((route) => ({
+        ...route,
+        progress: resolveScalar(route.progress, transformTimeMs, 1)
+      }));
+    }
+  }
+  // Path trim, color and stroke tracks resolve to plain values, like the
+  // transform (arrays only — plain values pass through the spread above).
+  if (layer.type === "shape" && resolved.type === "shape") {
+    if (layer.trimStart !== undefined) {
+      resolved.trimStart = resolveScalar(layer.trimStart, transformTimeMs, 0);
+    }
+    if (layer.trimEnd !== undefined) {
+      resolved.trimEnd = resolveScalar(layer.trimEnd, transformTimeMs, 1);
+    }
+    if (Array.isArray(layer.fill)) {
+      resolved.fill = resolveColor(layer.fill, transformTimeMs, "#000000");
+    }
+    if (Array.isArray(layer.stroke)) {
+      resolved.stroke = resolveColor(layer.stroke, transformTimeMs, "#000000");
+    }
+    if (Array.isArray(layer.strokeWidth)) {
+      resolved.strokeWidth = resolveScalar(layer.strokeWidth, transformTimeMs, 1);
+    }
+  }
+  if (layer.type === "text" && resolved.type === "text" && Array.isArray(layer.color)) {
+    resolved.color = resolveColor(layer.color, transformTimeMs, "#ffffff");
   }
   return resolved;
 }

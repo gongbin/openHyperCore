@@ -41,6 +41,13 @@ function renderLayerContent(layer: ResolvedLayer): string {
       return renderShape(layer);
     case "image":
       return `<image href="${escapeAttribute(layer.src)}" width="${layer.width ?? "100%"}" height="${layer.height ?? "100%"}" preserveAspectRatio="${preserveAspectRatio(layer.fit)}" />`;
+    case "globe": {
+      // Flat still-preview fallback: the texture cover-cropped into a circle
+      // of the globe's radius (SVG can't sphere-warp; skia renderers do).
+      const r = layer.radius;
+      const d = formatNumber(r * 2);
+      return `<g clip-path="circle(${formatNumber(r)}px at 0 0)"><image href="${escapeAttribute(layer.src)}" x="${formatNumber(-r)}" y="${formatNumber(-r)}" width="${d}" height="${d}" preserveAspectRatio="xMidYMid slice" /></g>`;
+    }
     default:
       return "";
   }
@@ -68,6 +75,19 @@ function renderShape(layer: Extract<ResolvedLayer, { type: "shape" }>): string {
   }
 
   if (layer.shape === "path") {
+    // Trim window preview: normalize the path length to 1 and use a dash
+    // window so only [trimStart, trimEnd] of a STROKED path shows. (Filled
+    // trims need real geometry trimming — out of scope for the SVG preview.)
+    const hasTrim = layer.trimStart !== undefined || layer.trimEnd !== undefined;
+    if (hasTrim && layer.stroke) {
+      const start = Math.min(1, Math.max(0, layer.trimStart ?? 0));
+      const end = Math.min(1, Math.max(0, layer.trimEnd ?? 1));
+      if (end <= start) {
+        return "";
+      }
+      const trim = ` pathLength="1" stroke-dasharray="${formatNumber(end - start)} 1" stroke-dashoffset="${formatNumber(-start)}"`;
+      return `<path d="${escapeAttribute(layer.path ?? "")}"${common}${trim} />`;
+    }
     return `<path d="${escapeAttribute(layer.path ?? "")}"${common} />`;
   }
 

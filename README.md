@@ -61,9 +61,59 @@ curl -X POST -H "content-type: application/json" \
 
 `GET /healthz` for liveness; the response carries `X-OpenHyper-Frames/Render-Ms/Total-Ms/Renderer` headers and CORS is enabled. Programmatic: `import { createRenderServer } from "openhypercore/server"`.
 
-Subpath entries: `openhypercore` (≡ `openhypercore/core`, authoring IR + animation), `openhypercore/renderer-skia` (CanvasKit raster), `openhypercore/renderer-svg`, `openhypercore/encoder-ffmpeg`, `openhypercore/assets`, `openhypercore/jsx-runtime`, `openhypercore/server` (HTTP render service), `openhypercore/cli`.
+Subpath entries: `openhypercore` (≡ `openhypercore/core`, authoring IR + animation), `openhypercore/plugins` (motion-effect plugins), `openhypercore/renderer-skia` (CanvasKit raster), `openhypercore/renderer-skia/draw` (browser-safe draw tree for live previews), `openhypercore/renderer-svg`, `openhypercore/encoder-ffmpeg`, `openhypercore/assets`, `openhypercore/jsx-runtime`, `openhypercore/server` (HTTP render service), `openhypercore/cli`.
 
 The default renderer is the portable CanvasKit/wasm backend (no native binary required). The native (Rust + skia-safe) backend — ~8–14× faster — is an opt-in: build it from source with `pnpm build:native` and select with `--renderer native` (or `OPENHYPERCORE_RENDERER=native`); prebuilt per-platform binaries are planned.
+
+## Motion-Effect Plugins
+
+Rich, ready-made animations from a handful of parameters — drop a `{ type: "plugin" }` node into the layer list and it expands into plain IR layers before rendering. The CLI, the render service and the editor all expand automatically; the plugin node stays in your JSON, so its params remain editable (non-destructive).
+
+```ts
+// A full cold open from three plugin nodes (see examples/plugin-cold-open.ts):
+const composition = defineComposition({
+  fps: 30, width: 1280, height: 720, durationMs: 13000,
+  layers: [
+    { type: "plugin", plugin: "countdown", params: { from: 3 }, endMs: 3000 },
+    { type: "plugin", plugin: "globe-route",
+      params: { src: "assets/earth.jpg", from: [39.9, 116.4], to: [48.85, 2.35], fromLabel: "北京", toLabel: "Paris" },
+      startMs: 3000, endMs: 10000 },
+    { type: "plugin", plugin: "light-sweep-title", params: { text: "巴黎 72 小時", y: 0.82 }, startMs: 9200 }
+  ]
+});
+```
+
+Built-in plugins (`openhypercore/plugins`):
+
+| Plugin | What it does | Key params |
+| --- | --- | --- |
+| `globe-intro` | A lit satellite globe spins to a target and zooms in (starfield, atmosphere, radar pings) | `src` (2:1 equirect texture), `target` [lat,lng], `spin`, `zoom`, `background` |
+| `globe-route` | A great-circle route draws itself between two places on the rotating globe (hides behind the horizon) | `src`, `from`/`to` [lat,lng], `fromLabel`/`toLabel`, `routeColor`, `zoom` |
+| `map-route` | A 2D route arcs across a bundled Natural Earth world map with a moving tip and popping endpoints | `from`/`to` [lat,lng], labels, `landColor`/`routeColor`, `lineStyle`, `zoom` |
+| `countdown` | Film-leader countdown: sweeping clock wedge, rings, crosshair, big numbers | `from` (3..1), colors |
+| `curtain-open` | Stage curtains hold, then sweep apart to reveal the scene beneath | `color`, `holdMs`, `openMs`, `foldCount` |
+| `ken-burns` | Full-frame photo with a slow centred zoom + drift, fading in/out | `src`, `zoomFrom/To`, `driftX/Y` |
+| `glitch-title` | Centered RGB-split glitch title with flicker and slice bars | `text`, `size`, accent colors |
+| `light-sweep-title` | Title rises in, an underline grows, a light bar sweeps across | `text`, `size`, `sweepColor` |
+
+Plugin content lives on a LOCAL timeline: the node's `startMs/endMs` place the whole effect, and its base props (`transform`, `clip`, `blendMode`, ...) apply to the expanded group — so effects relocate, fade and mask like any other layer. Expanding manually (e.g. for inspection) is one call:
+
+```ts
+import { expandComposition, definePlugin, registerPlugin, listPlugins } from "openhypercore/plugins";
+
+const expanded = expandComposition(composition); // plugin nodes -> plain layers
+
+// Custom plugins: params carry a serializable schema (editors auto-generate
+// forms from it), expand() is a pure function returning local-time layers.
+registerPlugin(definePlugin({
+  name: "badge",
+  params: { text: { type: "string", required: true }, color: { type: "color", default: "#ffb703" } },
+  expand: (p, ctx) => [
+    { type: "text", text: p.text, color: p.color, align: "center",
+      transform: { x: ctx.width / 2, y: ctx.height / 2 } }
+  ]
+}));
+```
 
 ## Features
 
@@ -77,11 +127,15 @@ The default renderer is the portable CanvasKit/wasm backend (no native binary re
 - Transition helpers: fade, slide, and scale presets that return reusable transform keyframes, with named easing presets (`easeIn/easeOut/easeInOut/sine/quart/expo/back/elastic/bounce/...`, custom functions, or cubic-bezier tuples) baked into sampled keyframes.
 - Timeline DSL: `composeTimeline` chains multiple animations of the same property over time (e.g. entrance fade-in + exit fade-out on one layer), and `delayTransition` shifts a transform in time for staggering.
 - GroupLayer pre-composition: a `group` layer nests children under a shared transform and group opacity (composited as one unit via saveLayer, no double blending). Children and the group's own keyframes live on the group's local timeline, so a whole animated block relocates by changing `startMs` alone (Remotion `<Sequence>` semantics). See `examples/group-spring.ts`.
-- Remotion-style animation APIs: `interpolate(t, inputRange, outputRange, { easing, extrapolateLeft/Right })` for multi-segment mappings, and a closed-form damped `spring()` plus `springKeyframes()` that bakes physical spring motion into keyframe tracks.
+- Remotion-style animation APIs: `interpolate(t, inputRange, outputRange, { easing, extrapolateLeft/Right })` for multi-segment mappings, a closed-form damped `spring()` plus `springKeyframes()` that bakes physical spring motion into keyframe tracks, `interpolateColors()` (multi-stop RGB color mapping), deterministic `random(seed)`, and `stagger()` for cascade entrances.
+- Color keyframes: shape `fill`/`stroke` and text `color` accept keyframed color tracks (RGB-space interpolation with per-segment easing), and shape `strokeWidth` animates — resolved to plain values before drawing, so every renderer gets them for free.
+- Path trim animation: shape paths carry animatable `trimStart`/`trimEnd` (fractions of total length) — keyframing `trimEnd` 0→1 draws a route or signature over time, composing with dashed strokes.
+- Globe layer: a 2:1 equirectangular texture rendered as an orthographic globe (UV triangle mesh with per-vertex Lambert + limb lighting) with keyframeable `radius`/`yaw`/`pitch`, plus great-circle `routes` that draw on the surface with animatable progress and hide behind the horizon. Identical vertex data in the wasm and native backends (parity-tested).
 - Scene transitions: `createTransitionSeries(...).scene(...).transition({ type, durationMs, direction, easing })` chains full-frame scenes with real overlapping transitions — `wipe`, `clockWipe` (mask reveals), `slide` (push), and `flip` (centre-pivot fold) — where adjacent scenes overlap for the transition duration (Remotion TransitionSeries semantics). See `examples/scene-transitions.ts`.
 - Per-axis scale and reveal masks in the IR: `transform.scaleX/scaleY` (multiplied with uniform `scale`), and `GroupLayer.reveal` (`wipe`/`clock` with an animated 0→1 `progress`) clip a group to a swept rect or clock wedge.
 - Static-layer raster cache: groups whose resolved content repeats across frames (only their transform/opacity/reveal animating) are rastered once and blitted afterwards. Cost-driven and self-tuning — it times every direct draw and caches only subtrees that draw slower than the predicted blit, so cheap flat scenes never regress while glow/text-heavy cards speed up. Opt out per group with `cache: false` or globally with `--no-layer-cache`; image layers are also decode-cached across frames.
 - Cinematic effect helpers: `cinematicBars`, `flashTransitionLayer`, `speedLineBurst`, and `glitchTitle` generate reusable intro/transition layer stacks for high-energy reels without hand-writing dozens of layers.
+- Motion-effect plugins: `{ type: "plugin" }` IR nodes expand into plain layers via `openhypercore/plugins` (`expandComposition`, auto-run by the CLI/service/editor), with a serializable param schema editors turn into forms — 8 built-ins from stage curtains to a rotating satellite globe (see the section above), plus `definePlugin`/`registerPlugin` for your own.
 - Scene timeline builder: `createTimeline(...).scene(...).transition(...).build()` lays out named scenes and transitions sequentially, returning both a ready Composition and timing markers.
 - Layer fit modes: `ImageLayer.fit` and `VideoLayer.fit` support `fill` (stretch), `cover` (centre-crop), and `contain` (letterbox); circular clips default to `cover`.
 - Visual effects: gradient fills (`fill`/`color`/`backgroundColor` accept `{ type: "linear"|"radial", stops }`), per-layer `blendMode` (multiply/screen/overlay/add/...), full-layer `blur` (Gaussian), and directional `motionBlur` ({ angle, distance, samples }). See `examples/effects-showcase.ts`.
@@ -105,7 +159,7 @@ The default renderer is the portable CanvasKit/wasm backend (no native binary re
 - Text layout supports multi-line wrapping, alignment, font registration, and emoji fallback, but not yet full rich-text runs (mixed styles within a line) or bidirectional/complex-script shaping.
 - Colour-emoji fallback depends on an emoji font being available on the host (auto-detected, or set via `registerEmojiFont`); without one, emoji fall back to the default typeface.
 - Transition helpers support easing presets, a composed property timeline DSL (`composeTimeline`/`delayTransition`), and a lightweight scene timeline builder. A richer track-based editor timeline is still future work.
-- HTTP service APIs, visual editor, and release packaging are not implemented yet.
+- The HTTP render service (`openhyper serve`), the decoupled web editor (`apps/editor`) and npm packaging exist; native per-platform prebuilt binaries are still planned (build from source meanwhile).
 
 ## Requirements
 
