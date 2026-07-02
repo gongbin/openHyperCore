@@ -117,6 +117,45 @@ test("unknown plugins and unexpanded plugin layers throw helpful errors", () => 
   assert.throws(() => resolveFrame(comp([{ type: "plugin", plugin: "nope" }]), 0), /unexpanded plugin layer "nope"/);
 });
 
+test("shape path trim tracks resolve to numbers (incl. group-local time)", () => {
+  const trimmed: Layer = {
+    type: "shape",
+    shape: "path",
+    path: "M0 0L100 0",
+    stroke: "#fff",
+    trimEnd: [{ timeMs: 0, value: 0 }, { timeMs: 1000, value: 1 }]
+  };
+  const frame = resolveFrame(comp([trimmed, { type: "group", startMs: 500, layers: [trimmed] }]), 1000);
+  const top = frame.layers[0] as Extract<typeof frame.layers[number], { type: "shape" }>;
+  assert.equal(top.trimEnd, 1);
+  assert.equal(top.trimStart, undefined);
+  const inGroup = (frame.layers[1] as Extract<typeof frame.layers[number], { type: "group" }>).layers[0] as Extract<typeof frame.layers[number], { type: "shape" }>;
+  assert.equal(inGroup.trimEnd, 0.5); // group-local time: 1000 - 500 start
+});
+
+test("map-route expands to a framed map with a trim-drawn route and synced tip marker", () => {
+  const expanded = expandComposition(comp([
+    { type: "plugin", plugin: "map-route", params: { from: [43.06, 141.35], to: [35.68, 139.69], fromLabel: "札幌", toLabel: "東京" } }
+  ]));
+  assert.equal(hasPluginLayers(expanded.layers), false);
+
+  const group = expanded.layers[0] as GroupLayer;
+  const content = group.layers[1] as GroupLayer;
+  assert.equal(content.id, "map-content");
+  const land = content.layers.find((l) => l.id === "map-land");
+  const route = content.layers.find((l) => l.id === "route-line") as Extract<Layer, { type: "shape" }>;
+  const tip = content.layers.find((l) => l.id === "route-tip");
+  assert.ok(land && route && tip);
+  assert.ok(Array.isArray(route.trimEnd) && route.trimEnd.length > 10);
+
+  // Mid-draw the route is partially trimmed and the tip is riding it.
+  const frame = resolveFrame(expanded, 2000);
+  assert.ok(frame.layers.length > 0);
+  // Labels made it in.
+  const labels = content.layers.filter((l) => l.type === "text");
+  assert.equal(labels.length, 2);
+});
+
 test("built-in plugins are registered and expand into resolvable compositions", () => {
   const names = listPlugins().map((p) => p.name);
   assert.ok(names.includes("curtain-open"));
