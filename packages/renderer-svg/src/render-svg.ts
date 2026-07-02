@@ -41,6 +41,13 @@ function renderLayerContent(layer: ResolvedLayer): string {
       return renderShape(layer);
     case "image":
       return `<image href="${escapeAttribute(layer.src)}" width="${layer.width ?? "100%"}" height="${layer.height ?? "100%"}" preserveAspectRatio="${preserveAspectRatio(layer.fit)}" />`;
+    case "globe": {
+      // Flat still-preview fallback: the texture cover-cropped into a circle
+      // of the globe's radius (SVG can't sphere-warp; skia renderers do).
+      const r = layer.radius;
+      const d = formatNumber(r * 2);
+      return `<g clip-path="circle(${formatNumber(r)}px at 0 0)"><image href="${escapeAttribute(layer.src)}" x="${formatNumber(-r)}" y="${formatNumber(-r)}" width="${d}" height="${d}" preserveAspectRatio="xMidYMid slice" /></g>`;
+    }
     default:
       return "";
   }

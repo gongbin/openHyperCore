@@ -162,6 +162,30 @@ export type ImageLayer = BaseLayer & {
   height?: number;
 };
 
+// A sphere-mapped image: an equirectangular texture (satellite earth, moon,
+// any planet) rendered as an orthographic globe via a UV triangle mesh, with
+// per-vertex Lambert + limb lighting. Rotation is keyframeable; zoom via
+// transform.scale (the sphere is centred on the layer origin, so scaling
+// stays centred). The renderers build the mesh; the IR stays tiny.
+export type GlobeLayer = BaseLayer & {
+  type: "globe";
+  // Equirectangular texture (2:1), e.g. a blue-marble satellite image.
+  src: string;
+  // Sphere radius in local px (before the layer transform).
+  radius: AnimatedScalar;
+  // Rotation about the vertical axis (yaw) / horizontal axis (pitch), in
+  // RADIANS. The point at lon=yaw, lat=-pitch faces the viewer, centred.
+  yaw?: AnimatedScalar;
+  pitch?: AnimatedScalar;
+  // Mesh resolution (static; default 64 keeps the silhouette smooth).
+  segments?: number;
+  // Lambert light direction in view space (x right, y up, z toward viewer).
+  light?: [number, number, number];
+  // Ambient fill (default 0.32) and diffuse gain (default 0.78), both 0..1.
+  ambient?: number;
+  diffuse?: number;
+};
+
 export type VideoLayer = BaseLayer & {
   type: "video";
   src: string;
@@ -235,7 +259,7 @@ export type PluginLayer = BaseLayer & {
   params?: Record<string, unknown>;
 };
 
-export type Layer = TextLayer | CaptionLayer | ShapeLayer | ImageLayer | VideoLayer | AudioLayer | GroupLayer | PluginLayer;
+export type Layer = TextLayer | CaptionLayer | ShapeLayer | ImageLayer | GlobeLayer | VideoLayer | AudioLayer | GroupLayer | PluginLayer;
 
 export type Composition = {
   type: "composition";
@@ -261,6 +285,14 @@ export type ResolvedGroupLayer = Omit<GroupLayer, "transform" | "layers" | "reve
   reveal?: ResolvedGroupReveal;
 };
 
+// A resolved globe carries rotation/radius evaluated to plain numbers.
+export type ResolvedGlobeLayer = Omit<GlobeLayer, "transform" | "radius" | "yaw" | "pitch"> & {
+  transform: ResolvedTransform;
+  radius: number;
+  yaw: number;
+  pitch: number;
+};
+
 // A resolved shape carries trim values evaluated to plain numbers.
 export type ResolvedShapeLayer = Omit<ShapeLayer, "transform" | "trimStart" | "trimEnd"> & {
   transform: ResolvedTransform;
@@ -270,7 +302,7 @@ export type ResolvedShapeLayer = Omit<ShapeLayer, "transform" | "trimStart" | "t
 
 // Plugin nodes never survive to resolve time (expandComposition replaces them),
 // so they are excluded here and renderers only ever meet core layer types.
-export type ResolvedLayer<T extends Layer = Layer> = T extends GroupLayer ? ResolvedGroupLayer : T extends ShapeLayer ? ResolvedShapeLayer : T extends PluginLayer ? never : T extends Layer ? Omit<T, "transform"> & {
+export type ResolvedLayer<T extends Layer = Layer> = T extends GroupLayer ? ResolvedGroupLayer : T extends ShapeLayer ? ResolvedShapeLayer : T extends GlobeLayer ? ResolvedGlobeLayer : T extends PluginLayer ? never : T extends Layer ? Omit<T, "transform"> & {
   transform: ResolvedTransform;
 } : never;
 

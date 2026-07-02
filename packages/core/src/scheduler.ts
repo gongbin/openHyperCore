@@ -72,6 +72,12 @@ function resolveLayer(layer: Layer, timeMs: number, durationMs: number, defaultF
       };
     }
   }
+  // Globe rotation/radius tracks resolve to plain numbers, like the transform.
+  if (layer.type === "globe" && resolved.type === "globe") {
+    resolved.radius = resolveScalar(layer.radius, transformTimeMs, 200);
+    resolved.yaw = resolveScalar(layer.yaw, transformTimeMs, 0);
+    resolved.pitch = resolveScalar(layer.pitch, transformTimeMs, 0);
+  }
   // Path trim tracks resolve to plain numbers, like the transform.
   if (layer.type === "shape" && resolved.type === "shape") {
     if (layer.trimStart !== undefined) {

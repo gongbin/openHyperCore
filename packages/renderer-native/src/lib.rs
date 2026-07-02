@@ -22,8 +22,9 @@ use skia_safe::{
     gradient_shader, image_filters, images, AlphaType, BlendMode, BlurStyle, Canvas, ClipOp, Color,
     ColorType, Data, FilterMode, Font, FontMgr, Image, ImageInfo, MaskFilter, MipmapMode, Paint,
     PaintStyle, Path, PathEffect, PathFillType, Point, RRect, Rect, SamplingOptions, Shader,
-    TileMode, Typeface,
+    TileMode, Typeface, Vertices,
 };
+use skia_safe::vertices::VertexMode;
 
 // ---------------------------------------------------------------------------
 // IR mirror (subset). Field names match the TS ResolvedFrame (camelCase).
@@ -250,6 +251,28 @@ struct ImageLayer {
     height: Option<f32>,
 }
 
+// Sphere-mapped equirectangular image; rotation/radius arrive pre-resolved.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GlobeLayer {
+    #[serde(flatten)]
+    base: Base,
+    src: String,
+    radius: f32,
+    #[serde(default)]
+    yaw: f32,
+    #[serde(default)]
+    pitch: f32,
+    #[serde(default)]
+    segments: Option<f32>,
+    #[serde(default)]
+    light: Option<[f32; 3]>,
+    #[serde(default)]
+    ambient: Option<f32>,
+    #[serde(default)]
+    diffuse: Option<f32>,
+}
+
 // Video layers carry no source/timing here: the TS side already resolved the
 // source time, decoded the frame (ffmpeg), and injected the raw RGBA via the
 // video-frame buffer list + frameIndex/frameWidth/frameHeight.
@@ -301,6 +324,7 @@ enum Layer {
     Text(TextLayer),
     Caption(CaptionLayer),
     Image(ImageLayer),
+    Globe(GlobeLayer),
     Video(VideoLayer),
     Group(GroupLayer),
     // Audio and anything unknown is skipped.
@@ -315,6 +339,7 @@ impl Layer {
             Layer::Text(t) => Some(&t.base),
             Layer::Caption(c) => Some(&c.base),
             Layer::Image(i) => Some(&i.base),
+            Layer::Globe(g) => Some(&g.base),
             Layer::Video(v) => Some(&v.base),
             Layer::Group(g) => Some(&g.base),
             Layer::Unsupported => None,
@@ -810,6 +835,91 @@ fn draw_shape(canvas: &Canvas, s: &ShapeLayer) {
     }
 }
 
+// Sphere-mapped image (rotating globe): generates the SAME vertex data as the
+// wasm renderer's buildGlobeMesh (renderer-skia/src/draw.ts) — screen-space
+// disc grid, inverse view rotation to equirectangular UVs, per-vertex
+// Lambert + limb shade modulated against the texture shader.
+fn draw_globe(canvas: &Canvas, layer: &GlobeLayer) {
+    let Some(image) = load_image(&layer.src) else {
+        return;
+    };
+    let (iw, ih) = (image.width() as f32, image.height() as f32);
+    let r = layer.radius;
+    if !(r > 0.0) {
+        return;
+    }
+    let seg = layer.segments.unwrap_or(64.0).max(8.0).floor() as i32;
+    let (cos_s, sin_s) = (layer.yaw.cos(), layer.yaw.sin());
+    let (cos_t, sin_t) = (layer.pitch.cos(), layer.pitch.sin());
+    let l = layer.light.unwrap_or([-0.42, 0.55, 0.72]);
+    let llen = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt().max(1e-6);
+    let (lx, ly, lz) = (l[0] / llen, l[1] / llen, l[2] / llen);
+    let ambient = layer.ambient.unwrap_or(0.32);
+    let diffuse = layer.diffuse.unwrap_or(0.78);
+
+    // (screen point, u, v, shade)
+    let vert = |k: i32, j: i32| -> (Point, f32, f32, f32) {
+        let rr = (k as f32 / seg as f32) * r;
+        let a = (j as f32 / seg as f32) * 2.0 * std::f32::consts::PI;
+        let (sx, sy) = (a.cos() * rr, a.sin() * rr);
+        let (nx, ny) = (sx / r, -sy / r);
+        let nz = (1.0 - nx * nx - ny * ny).max(0.0).sqrt();
+        let az = ny * sin_t + nz * cos_t;
+        let mx = nx * cos_s + az * sin_s;
+        let my = ny * cos_t - nz * sin_t;
+        let mz = -nx * sin_s + az * cos_s;
+        let lon = mx.atan2(mz);
+        let lat = my.clamp(-1.0, 1.0).asin();
+        let u = 0.5 + lon / (2.0 * std::f32::consts::PI);
+        let v = 0.5 - lat / std::f32::consts::PI;
+        let lambert = (nx * lx + ny * ly + nz * lz).max(0.0);
+        let limb = (nz * 4.5).min(1.0);
+        let shade = ((ambient + diffuse * lambert) * (0.45 + 0.55 * limb)).min(1.0);
+        (Point::new(sx, sy), u, v, shade)
+    };
+
+    let mut positions: Vec<Point> = Vec::new();
+    let mut texs: Vec<Point> = Vec::new();
+    let mut colors: Vec<Color> = Vec::new();
+    let mut push_tri = |vs: [(Point, f32, f32, f32); 3]| {
+        // Antimeridian seam: lift low-u corners through the Repeat wrap.
+        let (mut min_u, mut max_u) = (f32::MAX, f32::MIN);
+        for v in &vs {
+            min_u = min_u.min(v.1);
+            max_u = max_u.max(v.1);
+        }
+        let wrap = max_u - min_u > 0.5;
+        for (p, u, v, shade) in vs {
+            let u = if wrap && u < 0.5 { u + 1.0 } else { u };
+            positions.push(p);
+            texs.push(Point::new(u * iw, v * ih));
+            let c = (shade.clamp(0.0, 1.0) * 255.0).round() as u8;
+            colors.push(Color::from_argb(255, c, c, c));
+        }
+    };
+    for k in 1..=seg {
+        for j in 0..seg {
+            let a = vert(k - 1, j);
+            let b = vert(k - 1, j + 1);
+            let c = vert(k, j);
+            let d = vert(k, j + 1);
+            push_tri([a, c, d]);
+            push_tri([a, d, b]);
+        }
+    }
+
+    let vertices = Vertices::new_copy(VertexMode::Triangles, &positions, &texs, &colors, None);
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    paint.set_shader(image.to_shader(
+        Some((TileMode::Repeat, TileMode::Clamp)),
+        SamplingOptions::new(FilterMode::Linear, MipmapMode::None),
+        None,
+    ));
+    paint.set_alpha_f(layer.base.transform.opacity);
+    canvas.draw_vertices(&vertices, BlendMode::Modulate, &paint);
+}
+
 fn draw_text(canvas: &Canvas, layer: &TextLayer) {
     let size = layer.size.unwrap_or(16.0);
     let stack = font_stack(layer.font.as_deref(), size);
@@ -1012,6 +1122,7 @@ fn draw_content(canvas: &Canvas, layer: &Layer, ctx: &RenderCtx) {
         Layer::Text(t) => draw_text(canvas, t),
         Layer::Caption(c) => draw_caption(canvas, c),
         Layer::Image(i) => draw_image(canvas, i),
+        Layer::Globe(g) => draw_globe(canvas, g),
         Layer::Video(v) => draw_video(canvas, v, ctx),
         Layer::Group(g) => draw_group(canvas, g, ctx),
         Layer::Unsupported => {}
