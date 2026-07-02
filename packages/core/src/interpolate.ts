@@ -1,4 +1,4 @@
-import type { ScalarKeyframe } from "./types.ts";
+import type { GroupLayer, Layer, ScalarKeyframe } from "./types.ts";
 import type { EasingFn } from "./easing.ts";
 
 export type ExtrapolateType = "extend" | "clamp" | "identity";
@@ -207,4 +207,34 @@ export function springKeyframes(options: SpringKeyframesOptions = {}): ScalarKey
 export function springDurationMs(options: SpringOptions = {}, fps = 30): number {
   const frames = springKeyframes({ ...options, fps });
   return frames[frames.length - 1]!.timeMs;
+}
+
+// Remotion-compatible deterministic random: the same seed always yields the
+// same number in [0, 1) — safe for renders that must be reproducible across
+// frames, workers and machines (never use Math.random in a composition).
+export function random(seed: string | number | null): number {
+  const s = String(seed);
+  let h = 2166136261 >>> 0; // FNV-1a
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  h ^= h >>> 13;
+  h = Math.imul(h, 0x5bd1e995);
+  h ^= h >>> 15;
+  return (h >>> 0) / 0x1_0000_0000;
+}
+
+// Stagger a cascade: each layer is wrapped in a group starting stepMs after
+// the previous one, so the layer's own startMs/keyframes become LOCAL and the
+// whole entrance replays per item (Remotion <Series>/stagger semantics).
+export function stagger(layers: Layer[], stepMs: number, startMs = 0): GroupLayer[] {
+  if (!Number.isFinite(stepMs) || stepMs < 0) {
+    throw new Error("stagger stepMs must be a non-negative number");
+  }
+  return layers.map((layer, index) => ({
+    type: "group",
+    startMs: startMs + index * stepMs,
+    layers: [layer]
+  }));
 }

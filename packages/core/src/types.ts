@@ -11,6 +11,16 @@ export type ScalarKeyframe = {
 
 export type AnimatedScalar = number | ScalarKeyframe[];
 
+// A color track: CSS color keyframes interpolated in RGB space (segment
+// easing on the END keyframe, like ScalarKeyframe).
+export type ColorKeyframe = {
+  timeMs: number;
+  color: string;
+  easing?: EasingLike;
+};
+
+export type AnimatedColor = string | ColorKeyframe[];
+
 export type LayerTransform = {
   x?: AnimatedScalar;
   y?: AnimatedScalar;
@@ -111,7 +121,8 @@ export type TextLayer = BaseLayer & TextStyle & {
   text: string;
   font?: string;
   size?: number;
-  color?: Fill;
+  // Solid color, gradient, or a keyframed color track (resolved per frame).
+  color?: Fill | ColorKeyframe[];
   align?: "left" | "center" | "right";
   lineHeight?: number;
   // When set, long text auto-wraps to fit within this pixel width (CJK breaks
@@ -139,9 +150,10 @@ export type ShapeLayer = BaseLayer & {
   height?: number;
   radius?: number;
   path?: string;
-  fill?: Fill;
-  stroke?: string;
-  strokeWidth?: number;
+  // Solid fills/strokes can be keyframed color tracks; gradients stay static.
+  fill?: Fill | ColorKeyframe[];
+  stroke?: string | ColorKeyframe[];
+  strokeWidth?: AnimatedScalar;
   // Dashed stroke intervals [on, off, ...] (+ optional phase offset).
   dash?: number[];
   dashPhase?: number;
@@ -160,6 +172,23 @@ export type ImageLayer = BaseLayer & {
   fit?: "cover" | "contain" | "fill";
   width?: number;
   height?: number;
+};
+
+// A great-circle route drawn ON a globe's surface: it rotates with the
+// sphere, hides behind the horizon, and can draw itself via `progress`.
+export type GlobeRoute = {
+  from: [number, number]; // [lat, lng] in degrees
+  to: [number, number];
+  color?: string;
+  // Stroke width in the globe's local px (scales with transform.scale).
+  width?: number;
+  // Drawn fraction 0..1 from `from` toward `to` (animatable; default 1).
+  progress?: AnimatedScalar;
+  // Arc lift at the midpoint, as a fraction of the radius (default 0.12);
+  // 0 hugs the surface.
+  altitude?: number;
+  // Endpoint + tip markers (default true).
+  dots?: boolean;
 };
 
 // A sphere-mapped image: an equirectangular texture (satellite earth, moon,
@@ -184,6 +213,8 @@ export type GlobeLayer = BaseLayer & {
   // Ambient fill (default 0.32) and diffuse gain (default 0.78), both 0..1.
   ambient?: number;
   diffuse?: number;
+  // Great-circle routes drawn on (and above) the surface.
+  routes?: GlobeRoute[];
 };
 
 export type VideoLayer = BaseLayer & {
@@ -285,24 +316,38 @@ export type ResolvedGroupLayer = Omit<GroupLayer, "transform" | "layers" | "reve
   reveal?: ResolvedGroupReveal;
 };
 
-// A resolved globe carries rotation/radius evaluated to plain numbers.
-export type ResolvedGlobeLayer = Omit<GlobeLayer, "transform" | "radius" | "yaw" | "pitch"> & {
+export type ResolvedGlobeRoute = Omit<GlobeRoute, "progress"> & {
+  progress: number;
+};
+
+// A resolved globe carries rotation/radius/route-progress as plain numbers.
+export type ResolvedGlobeLayer = Omit<GlobeLayer, "transform" | "radius" | "yaw" | "pitch" | "routes"> & {
   transform: ResolvedTransform;
   radius: number;
   yaw: number;
   pitch: number;
+  routes?: ResolvedGlobeRoute[];
 };
 
-// A resolved shape carries trim values evaluated to plain numbers.
-export type ResolvedShapeLayer = Omit<ShapeLayer, "transform" | "trimStart" | "trimEnd"> & {
+// A resolved shape carries trim/color/stroke tracks evaluated to plain values.
+export type ResolvedShapeLayer = Omit<ShapeLayer, "transform" | "trimStart" | "trimEnd" | "fill" | "stroke" | "strokeWidth"> & {
   transform: ResolvedTransform;
   trimStart?: number;
   trimEnd?: number;
+  fill?: Fill;
+  stroke?: string;
+  strokeWidth?: number;
+};
+
+// A resolved text layer carries its color track evaluated to a plain fill.
+export type ResolvedTextLayer = Omit<TextLayer, "transform" | "color"> & {
+  transform: ResolvedTransform;
+  color?: Fill;
 };
 
 // Plugin nodes never survive to resolve time (expandComposition replaces them),
 // so they are excluded here and renderers only ever meet core layer types.
-export type ResolvedLayer<T extends Layer = Layer> = T extends GroupLayer ? ResolvedGroupLayer : T extends ShapeLayer ? ResolvedShapeLayer : T extends GlobeLayer ? ResolvedGlobeLayer : T extends PluginLayer ? never : T extends Layer ? Omit<T, "transform"> & {
+export type ResolvedLayer<T extends Layer = Layer> = T extends GroupLayer ? ResolvedGroupLayer : T extends ShapeLayer ? ResolvedShapeLayer : T extends TextLayer ? ResolvedTextLayer : T extends GlobeLayer ? ResolvedGlobeLayer : T extends PluginLayer ? never : T extends Layer ? Omit<T, "transform"> & {
   transform: ResolvedTransform;
 } : never;
 
