@@ -9,7 +9,7 @@ const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "light
 
 export type KfSel = { path: SelPath; key: TKey; kfIdx: number } | null;
 
-export function Inspector({ composition, layer, selection, onSelect, timeMs, resolved, plugins, assets, selKf, showJson, jsonText, jsonError, patchLayer, editTransform, toggleKey, setKfEasing, applyAnim, patchComposition, onJsonEdit }: {
+export function Inspector({ composition, layer, selection, onSelect, timeMs, resolved, plugins, assets, selKf, recording, onToggleRecord, showJson, jsonText, jsonError, patchLayer, editTransform, toggleKey, setKfEasing, applyAnim, patchComposition, onJsonEdit }: {
   composition: Composition;
   layer: AnyLayer | undefined;
   selection: SelPath;
@@ -19,6 +19,8 @@ export function Inspector({ composition, layer, selection, onSelect, timeMs, res
   plugins: PluginDefinition[];
   assets: EditorAsset[];
   selKf: KfSel;
+  recording: boolean;
+  onToggleRecord: () => void;
   showJson: boolean;
   jsonText: string;
   jsonError: string | null;
@@ -79,11 +81,16 @@ export function Inspector({ composition, layer, selection, onSelect, timeMs, res
 
             <Section title="入场 / 出场动画">
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {["淡入", "淡出", "左滑入", "右滑入", "上滑入", "下滑入", "弹出", "缩放入"].map((a) => (
+                {["淡入", "淡出", "左滑入", "右滑入", "上滑入", "下滑入", "弹出", "缩放入", "左弧入", "右弧入"].map((a) => (
                   <button key={a} className="chip" onClick={() => applyAnim(a)}>{a}</button>
                 ))}
                 <button className="chip" style={{ color: "var(--danger)" }} onClick={() => applyAnim("清除")}>清除</button>
               </div>
+              <button className="chip" style={recording ? { borderColor: "var(--danger)", color: "var(--danger)", alignSelf: "flex-start" } : { alignSelf: "flex-start" }}
+                title="在画布上按住拖动该图层画出运动轨迹，松开自动生成关键帧（从当前播放头开始，按真实拖动节奏）"
+                onClick={onToggleRecord}>
+                {recording ? "● 录制中 — 去画布拖动图层，点此取消" : "◉ 录制移动路径"}
+              </button>
               {(() => {
                 const KEY_NAMES: Record<string, string> = { x: "x 位移", y: "y 位移", scale: "缩放", rotate: "旋转", opacity: "不透明度" };
                 const tracks = TRANSFORM_KEYS.filter((k) => Array.isArray(trRaw[k]) && (trRaw[k] as Kf[]).length > 0);

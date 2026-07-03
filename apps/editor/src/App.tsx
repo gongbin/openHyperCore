@@ -7,10 +7,10 @@ import { PreviewRenderer } from "./preview.ts";
 import { sampleComposition } from "./sample.ts";
 import { useHistory } from "./history.ts";
 import {
-  BACK, EMPH, KEY_EPS, TRANSFORM_KEYS, clamp, dfltVal, layerAtPath, pluginDefaults,
-  resolveLayerAt, updateLayerAtPath
+  BACK, EMPH, KEY_EPS, TRANSFORM_KEYS, bakeMotionPath, clamp, dfltVal, layerAtPath,
+  pluginDefaults, resolveLayerAt, simplifyPath, updateLayerAtPath
 } from "./helpers.ts";
-import type { AnyLayer, Bezier, Kf, SelPath, TKey } from "./helpers.ts";
+import type { AnyLayer, Bezier, Kf, PathSample, SelPath, TKey } from "./helpers.ts";
 import { TopBar } from "./components/TopBar.tsx";
 import { LibraryPanel, importFile } from "./components/LibraryPanel.tsx";
 import type { EditorAsset } from "./components/LibraryPanel.tsx";
@@ -19,6 +19,7 @@ import { Inspector } from "./components/Inspector.tsx";
 import type { KfSel } from "./components/Inspector.tsx";
 import { TimelinePanel } from "./components/TimelinePanel.tsx";
 import { RenderDialog } from "./components/RenderDialog.tsx";
+import { AssistantPanel } from "./components/AssistantPanel.tsx";
 
 const PLUGINS = listPlugins();
 const AUTOSAVE_KEY = "ohe.project.v1";
@@ -54,6 +55,8 @@ export function App() {
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [renderOpen, setRenderOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState("");
   const [theme, setTheme] = useState<"dark" | "light">(() => (localStorage.getItem("ohe.theme") === "light" ? "light" : "dark"));
   const fileRef = useRef<HTMLInputElement>(null);
@@ -272,6 +275,16 @@ export function App() {
     const bx = base("x", 0), by = base("y", 0), bs = base("scale", 1);
     let patch: Record<string, unknown> | undefined;
     switch (name) {
+      case "左弧入": case "右弧入": {
+        // Arc Motion: curve in from off-screen through a raised midpoint
+        // (baked motion-path keyframes, HyperFrames-style).
+        const dir = name === "左弧入" ? -1 : 1;
+        const from: [number, number] = [bx + dir * Math.round(composition.width * 0.36), by];
+        const mid: [number, number] = [(from[0] + bx) / 2, by - Math.round(composition.height * 0.28)];
+        const arc = bakeMotionPath([from, mid, [bx, by]], Math.min(900, Math.round(span * 0.5)), clipStart, 1.2, 14);
+        patch = { x: arc.x, y: arc.y };
+        break;
+      }
       case "淡入": patch = { opacity: [{ timeMs: clipStart, value: 0 }, { timeMs: clipStart + enter, value: 1, easing: EMPH }] }; break;
       case "淡出": patch = { opacity: [{ timeMs: leaveAt, value: 1 }, { timeMs: clipEnd, value: 0, easing: EMPH }] }; break;
       case "左滑入": patch = { x: [{ timeMs: clipStart, value: bx + 320 }, { timeMs: clipStart + enter, value: bx, easing: EMPH }] }; break;
@@ -580,6 +593,41 @@ export function App() {
   const canGroup = multiSel.length >= 2;
   const canUngroup = selection.length === 1 && selLayer?.type === "group";
 
+  // ---- gesture recording (drag a path → baked keyframes) ----------------------
+  function onRecorded(index: number, samples: PathSample[]): void {
+    setRecording(false);
+    if (samples.length < 3) { setStatus("录制太短，未生成关键帧"); return; }
+    let simplified = simplifyPath(samples, composition.width * 0.008);
+    if (simplified.length > 16) {
+      const step = (simplified.length - 1) / 15;
+      simplified = Array.from({ length: 16 }, (_, i) => simplified[Math.round(i * step)]!);
+    }
+    const startAt = Math.round(timeMs);
+    const dur = Math.round(Math.max(240, simplified[simplified.length - 1]!.t));
+    const end = startAt + dur;
+    const x: Kf[] = simplified.map((s) => ({ timeMs: Math.round(startAt + s.t), value: Math.round(s.x * 100) / 100 }));
+    const y: Kf[] = simplified.map((s) => ({ timeMs: Math.round(startAt + s.t), value: Math.round(s.y * 100) / 100 }));
+    applyLive(updateLayerAtPath(composition, [index], (l) => ({
+      ...l,
+      transform: { ...(((l as AnyLayer).transform as Record<string, unknown>) ?? {}), x, y }
+    } as Layer)));
+    setStatus(`已录制运动路径：${simplified.length} 个关键帧（${startAt}→${end}ms）`);
+  }
+
+  // ---- AI assistant applies a full composition (undoable) ----------------------
+  function applyAiComposition(raw: unknown): string | null {
+    try {
+      const v = defineComposition(raw as Composition);
+      expandComposition(v); // surface plugin/param errors before committing
+      history.set(v);
+      if (showJson) syncJson(v);
+      setSelection([]); setMultiSel([]); setSelKf(null);
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }
+
   return (
     <div className="app">
       <input ref={fileRef} type="file" multiple style={{ display: "none" }}
@@ -602,6 +650,7 @@ export function App() {
         onToggleJson={() => { if (!showJson) syncJson(composition); setShowJson((s) => !s); }}
         canGroup={canGroup} canUngroup={canUngroup}
         onGroup={groupSelected} onUngroup={ungroupSelected}
+        aiOpen={aiOpen} onToggleAi={() => setAiOpen((s) => !s)}
         theme={theme} onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
         onExport={() => setRenderOpen(true)}
         status={status}
@@ -623,6 +672,7 @@ export function App() {
           canvasRef={canvasRef}
           composition={composition} expanded={expansion.comp} timeMs={timeMs}
           selection={selection} multiSel={multiSel} error={expansion.error}
+          recording={recording} onRecorded={onRecorded}
           mediaSize={(src) => rendererRef.current?.mediaSize(src)}
           onSelect={select}
           onGestureStart={history.begin}
@@ -651,6 +701,8 @@ export function App() {
           assets={assets}
           selKf={selKf}
           showJson={showJson} jsonText={jsonText} jsonError={jsonError}
+          recording={recording}
+          onToggleRecord={() => setRecording((r) => !r)}
           patchLayer={(patch, tag) => patchLayer(selection, patch, tag)}
           editTransform={editTransform}
           toggleKey={toggleKey}
@@ -677,6 +729,7 @@ export function App() {
       />
 
       {renderOpen ? <RenderDialog composition={composition} projectName={projectName} onClose={() => setRenderOpen(false)} /> : null}
+      <AssistantPanel open={aiOpen} onClose={() => setAiOpen(false)} composition={composition} plugins={PLUGINS} onApply={applyAiComposition} />
     </div>
   );
 }

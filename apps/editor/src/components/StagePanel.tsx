@@ -4,7 +4,7 @@ import {
   boxCorners, layerAtPath, localBox, localToParent, parentToLocal,
   pointInBox, resolveLayerAt, xfOf
 } from "../helpers.ts";
-import type { AnyLayer, Kf, SelPath } from "../helpers.ts";
+import type { AnyLayer, Kf, PathSample, SelPath } from "../helpers.ts";
 
 type Gesture =
   | { kind: "move"; startX: number; startY: number; targets: { index: number; origX: unknown; origY: unknown }[] }
@@ -16,7 +16,7 @@ const shiftTrack = (v: unknown, d: number, dflt: number): unknown =>
 const scaleTrack = (v: unknown, f: number, dflt: number): unknown =>
   Array.isArray(v) ? (v as Kf[]).map((k) => ({ ...k, value: k.value * f })) : (typeof v === "number" ? v : dflt) * f;
 
-export function StagePanel({ canvasRef, composition, expanded, timeMs, selection, multiSel, error, mediaSize, onSelect, onGestureStart, onLivePatchTransform, onDropAsset, onDropFiles }: {
+export function StagePanel({ canvasRef, composition, expanded, timeMs, selection, multiSel, error, recording, onRecorded, mediaSize, onSelect, onGestureStart, onLivePatchTransform, onDropAsset, onDropFiles }: {
   canvasRef: React.RefObject<HTMLCanvasElement>;
   composition: Composition;
   expanded: Composition | null;
@@ -24,6 +24,8 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
   selection: SelPath;
   multiSel: number[];
   error: string | null;
+  recording: boolean;
+  onRecorded: (index: number, samples: PathSample[]) => void;
   mediaSize: (src: string) => { w: number; h: number } | undefined;
   onSelect: (path: SelPath, toggle?: boolean) => void;
   onGestureStart: () => void;
@@ -34,6 +36,7 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const gestureRef = useRef<Gesture | null>(null);
+  const recordRef = useRef<{ index: number; startCx: number; startCy: number; baseX: number; baseY: number; startedAt: number; samples: PathSample[] } | null>(null);
   const [displayW, setDisplayW] = useState(1);
 
   const { width: W, height: H } = composition;
@@ -110,6 +113,17 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
     }
 
     const hit = hitTest(cx, cy);
+    if (recording && hit !== null && expanded) {
+      // Gesture recording: follow the drag live, sample positions + timing.
+      const rl = resolveLayerAt(expanded, [hit], timeMs);
+      const t = rl?.transform as unknown as Record<string, number> | undefined;
+      const baseX = t?.x ?? 0;
+      const baseY = t?.y ?? 0;
+      onSelect([hit]);
+      onGestureStart();
+      recordRef.current = { index: hit, startCx: cx, startCy: cy, baseX, baseY, startedAt: performance.now(), samples: [{ t: 0, x: baseX, y: baseY }] };
+      return;
+    }
     if (e.shiftKey || e.metaKey) {
       if (hit !== null) onSelect([hit], true);
       return;
@@ -121,6 +135,15 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
   }
 
   function onPointerMove(e: React.PointerEvent): void {
+    const rec = recordRef.current;
+    if (rec && e.buttons) {
+      const [cx, cy] = toComp(e);
+      const nx = rec.baseX + (cx - rec.startCx);
+      const ny = rec.baseY + (cy - rec.startCy);
+      rec.samples.push({ t: performance.now() - rec.startedAt, x: nx, y: ny });
+      onLivePatchTransform([{ index: rec.index, patch: { x: nx, y: ny } }]);
+      return;
+    }
     const g = gestureRef.current;
     if (!g || !e.buttons) return;
     const [cx, cy] = toComp(e);
@@ -141,7 +164,14 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
     }
   }
 
-  function onPointerUp(): void { gestureRef.current = null; }
+  function onPointerUp(): void {
+    const rec = recordRef.current;
+    if (rec) {
+      recordRef.current = null;
+      onRecorded(rec.index, rec.samples);
+    }
+    gestureRef.current = null;
+  }
 
   // Double-click drills into a group's child (e.g. to edit a card's gradient
   // rect directly) — hit test the resolved children in group-local space.
@@ -231,10 +261,11 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
             ) : null}
           </svg>
         </div>
-        <div className="stage-hint">
-          {selIsAudio ? "音频图层没有画面 — 在时间轴/检查器中编辑"
-            : selTop !== undefined ? "拖动移动 · 角点缩放 · 顶部圆点旋转 · 空白处取消选择"
-              : "点击图层选中 · 拖入文件添加素材 · 空格播放"}
+        <div className="stage-hint" style={recording ? { color: "var(--danger)" } : undefined}>
+          {recording ? "● 录制中：按住图层拖出运动轨迹，松开生成关键帧"
+            : selIsAudio ? "音频图层没有画面 — 在时间轴/检查器中编辑"
+              : selTop !== undefined ? "拖动移动 · 角点缩放 · 顶部圆点旋转 · ⇧点选多选 · 双击进组"
+                : "点击图层选中 · 拖入文件添加素材 · 空格播放"}
         </div>
       </div>
     </div>

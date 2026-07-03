@@ -1,6 +1,6 @@
 import { Icon } from "../icons.tsx";
 
-export function TopBar({ projectName, onProjectName, canUndo, canRedo, onUndo, onRedo, onNew, onOpen, onSave, showJson, onToggleJson, canGroup, canUngroup, onGroup, onUngroup, theme, onToggleTheme, onExport, status }: {
+export function TopBar({ projectName, onProjectName, canUndo, canRedo, onUndo, onRedo, onNew, onOpen, onSave, showJson, onToggleJson, canGroup, canUngroup, onGroup, onUngroup, aiOpen, onToggleAi, theme, onToggleTheme, onExport, status }: {
   projectName: string;
   onProjectName: (v: string) => void;
   canUndo: boolean; canRedo: boolean;
@@ -9,6 +9,7 @@ export function TopBar({ projectName, onProjectName, canUndo, canRedo, onUndo, o
   showJson: boolean; onToggleJson: () => void;
   canGroup: boolean; canUngroup: boolean;
   onGroup: () => void; onUngroup: () => void;
+  aiOpen: boolean; onToggleAi: () => void;
   theme: "dark" | "light"; onToggleTheme: () => void;
   onExport: () => void;
   status: string;
@@ -36,6 +37,8 @@ export function TopBar({ projectName, onProjectName, canUndo, canRedo, onUndo, o
 
       <div className="spacer" />
       <span style={{ color: "var(--muted)", fontSize: 12, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{status}</span>
+      <button className={`btn${aiOpen ? "" : " btn-ghost"}`} style={aiOpen ? { borderColor: "var(--accent)", color: "var(--accent)" } : undefined}
+        title="AI 动画助手：多轮对话创建/编辑动画" onClick={onToggleAi}><Icon name="sparkle" size={14} />AI 助手</button>
       <button className="icon-btn" title={theme === "dark" ? "切换浅色主题" : "切换深色主题"} onClick={onToggleTheme}><Icon name={theme === "dark" ? "sun" : "moon"} size={16} /></button>
       <button className={`icon-btn${showJson ? " active" : ""}`} title="IR JSON" onClick={onToggleJson}><Icon name="json" size={17} /></button>
       <button className="btn btn-primary" onClick={onExport}><Icon name="export" size={15} />导出视频</button>

@@ -17,6 +17,7 @@ import {
   parseSubtitles,
   resolveEasing,
   resolveFrame,
+  motionPathKeyframes,
   spring,
   springKeyframes,
   scaleTransition,
@@ -708,4 +709,35 @@ test("layer blur is keyframable and resolves on the transform clock", () => {
   const frame = resolveFrame(composition, 500);
   assert.equal((frame.layers[0] as { blur?: number }).blur, 4);
   assert.equal((frame.layers[1] as { blur?: number }).blur, 3);
+});
+
+test("motionPathKeyframes bakes a curved x/y path with autoRotate", () => {
+  const tracks = motionPathKeyframes({
+    points: [[0, 0], [100, -80], [200, 0]],
+    durationMs: 1000,
+    curviness: 1,
+    autoRotate: true,
+    keyframes: 10
+  });
+
+  assert.equal(tracks.x.length, 11);
+  assert.equal(tracks.x[0]!.value, 0);
+  assert.equal(tracks.x[10]!.value, 200);
+  assert.equal(tracks.y[0]!.value, 0);
+  assert.equal(tracks.y[10]!.value, 0);
+  // The midpoint bows through the waypoint instead of a straight line (y=0).
+  const midY = tracks.y[5]!.value;
+  assert.ok(midY < -60, `expected an arc through the waypoint, got midY=${midY}`);
+  // Tangent starts pointing up-right and ends pointing down-right.
+  assert.ok(tracks.rotate, "autoRotate should bake a rotate track");
+  assert.ok(tracks.rotate![0]!.value < 0, "start tangent should angle upward");
+  assert.ok(tracks.rotate![tracks.rotate!.length - 1]!.value > 0, "end tangent should angle downward");
+  // Times span startMs..durationMs uniformly.
+  assert.equal(tracks.x[0]!.timeMs, 0);
+  assert.equal(tracks.x[10]!.timeMs, 1000);
+
+  // curviness 0 degenerates to the straight polyline.
+  const straight = motionPathKeyframes({ points: [[0, 0], [100, 0]], durationMs: 500, curviness: 0, keyframes: 4 });
+  assert.equal(straight.y.every((k) => k.value === 0), true);
+  assert.equal(straight.rotate, undefined);
 });

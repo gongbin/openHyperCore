@@ -316,6 +316,89 @@ export function composeCssColor(hex: string, alpha: number): string {
   return `rgba(${c.r},${c.g},${c.b},${Math.round(alpha * 100) / 100})`;
 }
 
+// ---------------------------------------------------------------------------
+// Arc motion baking — local copy of the engine's motionPathKeyframes (core
+// exports it from 0.5.0; the editor still consumes 0.4.0 from the registry).
+export function bakeMotionPath(points: [number, number][], durationMs: number, startMs = 0, curviness = 1, keyframes = 18): { x: Kf[]; y: Kf[] } {
+  const samples: [number, number][] = [];
+  const N = 160;
+  for (let i = 0; i <= N; i += 1) samples.push(splinePoint(points, curviness, i / N));
+  const lengths = [0];
+  for (let i = 1; i < samples.length; i += 1) {
+    lengths.push(lengths[i - 1]! + Math.hypot(samples[i]![0] - samples[i - 1]![0], samples[i]![1] - samples[i - 1]![1]));
+  }
+  const total = lengths[lengths.length - 1]! || 1;
+  const x: Kf[] = [];
+  const y: Kf[] = [];
+  for (let k = 0; k <= keyframes; k += 1) {
+    const target = (k / keyframes) * total;
+    let i = lengths.findIndex((l) => l >= target);
+    if (i < 1) i = k === 0 ? 1 : lengths.length - 1;
+    const span = lengths[i]! - lengths[i - 1]! || 1;
+    const f = (target - lengths[i - 1]!) / span;
+    const a = samples[i - 1]!;
+    const b = samples[i]!;
+    const timeMs = Math.round(startMs + (k / keyframes) * durationMs);
+    x.push({ timeMs, value: r2(a[0] + (b[0] - a[0]) * f) });
+    y.push({ timeMs, value: r2(a[1] + (b[1] - a[1]) * f) });
+  }
+  return { x, y };
+}
+
+function splinePoint(points: [number, number][], curviness: number, t: number): [number, number] {
+  const segments = points.length - 1;
+  const clamped = Math.min(1, Math.max(0, t));
+  const seg = Math.min(segments - 1, Math.floor(clamped * segments));
+  const u = clamped * segments - seg;
+  const p0 = points[Math.max(0, seg - 1)]!;
+  const p1 = points[seg]!;
+  const p2 = points[seg + 1]!;
+  const p3 = points[Math.min(points.length - 1, seg + 2)]!;
+  const m = curviness * 0.5;
+  const h00 = 2 * u ** 3 - 3 * u ** 2 + 1;
+  const h10 = u ** 3 - 2 * u ** 2 + u;
+  const h01 = -2 * u ** 3 + 3 * u ** 2;
+  const h11 = u ** 3 - u ** 2;
+  return [
+    h00 * p1[0] + h10 * m * (p2[0] - p0[0]) + h01 * p2[0] + h11 * m * (p3[0] - p1[0]),
+    h00 * p1[1] + h10 * m * (p2[1] - p0[1]) + h01 * p2[1] + h11 * m * (p3[1] - p1[1])
+  ];
+}
+
+// Ramer-Douglas-Peucker over a recorded drag, keeping timestamps — turns
+// ~hundreds of pointer samples into a handful of clean keyframes.
+export type PathSample = { t: number; x: number; y: number };
+export function simplifyPath(samples: PathSample[], epsilon: number): PathSample[] {
+  if (samples.length <= 2) return samples;
+  const keep = new Set<number>([0, samples.length - 1]);
+  const stack: [number, number][] = [[0, samples.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    const pa = samples[a]!;
+    const pb = samples[b]!;
+    let maxD = 0;
+    let maxI = -1;
+    for (let i = a + 1; i < b; i += 1) {
+      const p = samples[i]!;
+      const d = pointToSegment(p.x, p.y, pa.x, pa.y, pb.x, pb.y);
+      if (d > maxD) { maxD = d; maxI = i; }
+    }
+    if (maxI > 0 && maxD > epsilon) {
+      keep.add(maxI);
+      stack.push([a, maxI], [maxI, b]);
+    }
+  }
+  return [...keep].sort((a, b) => a - b).map((i) => samples[i]!);
+}
+
+function pointToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 ? clamp(0, 1, ((px - ax) * dx + (py - ay) * dy) / len2) : 0;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
 export function fmtTime(ms: number): string {
   const s = Math.max(0, ms) / 1000;
   const m = Math.floor(s / 60);
