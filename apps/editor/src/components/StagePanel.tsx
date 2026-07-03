@@ -7,7 +7,7 @@ import {
 import type { AnyLayer, Kf, SelPath } from "../helpers.ts";
 
 type Gesture =
-  | { kind: "move"; index: number; startX: number; startY: number; origX: unknown; origY: unknown }
+  | { kind: "move"; startX: number; startY: number; targets: { index: number; origX: unknown; origY: unknown }[] }
   | { kind: "scale"; index: number; originX: number; originY: number; startDist: number; origScale: unknown }
   | { kind: "rotate"; index: number; originX: number; originY: number; startAngle: number; origRotate: unknown };
 
@@ -16,17 +16,18 @@ const shiftTrack = (v: unknown, d: number, dflt: number): unknown =>
 const scaleTrack = (v: unknown, f: number, dflt: number): unknown =>
   Array.isArray(v) ? (v as Kf[]).map((k) => ({ ...k, value: k.value * f })) : (typeof v === "number" ? v : dflt) * f;
 
-export function StagePanel({ canvasRef, composition, expanded, timeMs, selection, error, mediaSize, onSelect, onGestureStart, onLivePatchTransform, onDropAsset, onDropFiles }: {
+export function StagePanel({ canvasRef, composition, expanded, timeMs, selection, multiSel, error, mediaSize, onSelect, onGestureStart, onLivePatchTransform, onDropAsset, onDropFiles }: {
   canvasRef: React.RefObject<HTMLCanvasElement>;
   composition: Composition;
   expanded: Composition | null;
   timeMs: number;
   selection: SelPath;
+  multiSel: number[];
   error: string | null;
   mediaSize: (src: string) => { w: number; h: number } | undefined;
-  onSelect: (path: SelPath) => void;
+  onSelect: (path: SelPath, toggle?: boolean) => void;
   onGestureStart: () => void;
-  onLivePatchTransform: (index: number, patch: Record<string, unknown>) => void;
+  onLivePatchTransform: (patches: { index: number; patch: Record<string, unknown> }[]) => void;
   onDropAsset: (assetId: string, x: number, y: number) => void;
   onDropFiles: (files: File[], x: number, y: number) => void;
 }) {
@@ -75,11 +76,13 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
     return null;
   }
 
-  function beginMove(index: number, cx: number, cy: number): void {
-    const raw = layerAtPath(composition, [index]);
-    const tr = (raw?.transform as Record<string, unknown>) ?? {};
+  function beginMove(indices: number[], cx: number, cy: number): void {
+    const targets = indices.map((index) => {
+      const tr = (layerAtPath(composition, [index])?.transform as Record<string, unknown>) ?? {};
+      return { index, origX: tr.x, origY: tr.y };
+    });
     onGestureStart();
-    gestureRef.current = { kind: "move", index, startX: cx, startY: cy, origX: tr.x, origY: tr.y };
+    gestureRef.current = { kind: "move", startX: cx, startY: cy, targets };
   }
 
   function onPointerDown(e: React.PointerEvent): void {
@@ -107,9 +110,14 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
     }
 
     const hit = hitTest(cx, cy);
+    if (e.shiftKey || e.metaKey) {
+      if (hit !== null) onSelect([hit], true);
+      return;
+    }
     if (hit === null) { onSelect([]); return; }
-    if (selTop !== hit) onSelect([hit]);
-    beginMove(hit, cx, cy);
+    if (selTop !== hit && !multiSel.includes(hit)) onSelect([hit]);
+    // Dragging any member of a multi-selection moves the whole set together.
+    beginMove(multiSel.includes(hit) && multiSel.length > 1 ? multiSel : [hit], cx, cy);
   }
 
   function onPointerMove(e: React.PointerEvent): void {
@@ -117,16 +125,19 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
     if (!g || !e.buttons) return;
     const [cx, cy] = toComp(e);
     if (g.kind === "move") {
-      onLivePatchTransform(g.index, {
-        x: shiftTrack(g.origX, cx - g.startX, 0),
-        y: shiftTrack(g.origY, cy - g.startY, 0)
-      });
+      onLivePatchTransform(g.targets.map((t) => ({
+        index: t.index,
+        patch: {
+          x: shiftTrack(t.origX, cx - g.startX, 0),
+          y: shiftTrack(t.origY, cy - g.startY, 0)
+        }
+      })));
     } else if (g.kind === "scale") {
       const f = Math.max(0.02, Math.hypot(cx - g.originX, cy - g.originY) / g.startDist);
-      onLivePatchTransform(g.index, { scale: scaleTrack(g.origScale, f, 1) });
+      onLivePatchTransform([{ index: g.index, patch: { scale: scaleTrack(g.origScale, f, 1) } }]);
     } else {
       const delta = ((Math.atan2(cy - g.originY, cx - g.originX) - g.startAngle) * 180) / Math.PI;
-      onLivePatchTransform(g.index, { rotate: shiftTrack(g.origRotate, delta, 0) });
+      onLivePatchTransform([{ index: g.index, patch: { rotate: shiftTrack(g.origRotate, delta, 0) } }]);
     }
   }
 
@@ -152,6 +163,18 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
       if (pointInBox(box, px, py)) { onSelect([hit, i]); return; }
     }
   }
+
+  // secondary outlines for the other members of a multi-selection
+  const extraOutlines = multiSel
+    .filter((i) => i !== selTop)
+    .map((i) => {
+      const rl = expanded ? resolveLayerAt(expanded, [i], timeMs) : null;
+      const box = rl ? localBox(rl, mediaSize) : null;
+      if (!rl || !box) return null;
+      const xf = xfOf(rl);
+      return { i, pts: boxCorners(box).map(([px, py]) => localToParent(xf, px, py)) };
+    })
+    .filter((o): o is { i: number; pts: [number, number][] } => o !== null);
 
   // selection outline geometry (comp coords)
   let outline: [number, number][] | null = null;
@@ -184,6 +207,10 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
           <canvas ref={canvasRef} width={W} height={H} />
           <svg ref={svgRef} className="stage-overlay" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
             onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onDoubleClick={onDoubleClick}>
+            {extraOutlines.map((o) => (
+              <polygon key={o.i} points={o.pts.map((p) => p.join(",")).join(" ")}
+                fill="none" stroke="var(--accent)" strokeWidth={1.2 * k} strokeDasharray={`${5 * k} ${4 * k}`} />
+            ))}
             {outline ? (
               <g>
                 <polygon points={outline.map((p) => p.join(",")).join(" ")}

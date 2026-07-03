@@ -19,15 +19,16 @@ type KfDrag = { path: SelPath; key: TKey; items: { id: number; timeMs: number; v
 
 const SNAP_PX = 7;
 
-export function TimelinePanel({ composition, timeMs, playing, loop, selection, selKf, onSeek, onSelect, onTogglePlay, onToggleLoop, onStepFrame, onGestureStart, onLiveLayerPatch, onSelectKf, onKfRetime, onKfDelete }: {
+export function TimelinePanel({ composition, timeMs, playing, loop, selection, multiSel, selKf, onSeek, onSelect, onTogglePlay, onToggleLoop, onStepFrame, onGestureStart, onLiveLayerPatch, onSelectKf, onKfRetime, onKfDelete }: {
   composition: Composition;
   timeMs: number;
   playing: boolean;
   loop: boolean;
   selection: SelPath;
+  multiSel: number[];
   selKf: KfSel;
   onSeek: (t: number) => void;
-  onSelect: (path: SelPath) => void;
+  onSelect: (path: SelPath, toggle?: boolean) => void;
   onTogglePlay: () => void;
   onToggleLoop: () => void;
   onStepFrame: (dir: -1 | 1) => void;
@@ -89,6 +90,7 @@ export function TimelinePanel({ composition, timeMs, playing, loop, selection, s
   // ---- clip drag -------------------------------------------------------
   function onClipPointerDown(e: React.PointerEvent, index: number, mode: ClipDrag["mode"]): void {
     e.stopPropagation();
+    if (e.shiftKey || e.metaKey) { onSelect([index], true); return; }
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     const al = composition.layers[index] as AnyLayer | undefined;
     if (!al) return;
@@ -200,12 +202,12 @@ export function TimelinePanel({ composition, timeMs, playing, loop, selection, s
             const al = l as AnyLayer;
             const start = (al.startMs as number) ?? 0;
             const end = (al.endMs as number) ?? dur;
-            const isSel = selection[0] === i && selection.length === 1;
+            const isSel = (selection[0] === i && selection.length === 1) || (multiSel.length > 1 && multiSel.includes(i));
             const tr = (al.transform as Record<string, unknown>) ?? {};
             const color = typeColor(al.type);
             return (
               <div key={i} className={`tl-row${isSel ? " selected" : ""}`}>
-                <div className="tl-label" onClick={() => onSelect([i])}>
+                <div className="tl-label" onClick={(e) => onSelect([i], e.shiftKey || e.metaKey)}>
                   <span className="type-dot" style={{ background: color }} />
                   {layerLabel(al)}
                 </div>

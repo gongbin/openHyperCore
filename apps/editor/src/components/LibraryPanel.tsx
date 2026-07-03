@@ -46,16 +46,17 @@ export async function importFile(f: File): Promise<EditorAsset | null> {
   return { id, name: f.name, kind, url: URL.createObjectURL(f), previewOnly: true };
 }
 
-export function LibraryPanel({ composition, selection, assets, plugins, onImportFiles, onAddAssetLayer, onAddFactory, onAddPlugin, onSelect, onMove, onDuplicate, onRemove }: {
+export function LibraryPanel({ composition, selection, multiSel, assets, plugins, onImportFiles, onAddAssetLayer, onAddFactory, onAddPlugin, onSelect, onMove, onDuplicate, onRemove }: {
   composition: Composition;
   selection: SelPath;
+  multiSel: number[];
   assets: EditorAsset[];
   plugins: PluginDefinition[];
   onImportFiles: (files: File[]) => void;
   onAddAssetLayer: (asset: EditorAsset) => void;
   onAddFactory: (kind: string) => void;
   onAddPlugin: (def: PluginDefinition) => void;
-  onSelect: (path: SelPath) => void;
+  onSelect: (path: SelPath, toggle?: boolean) => void;
   onMove: (index: number, dir: -1 | 1) => void;
   onDuplicate: (index: number) => void;
   onRemove: (path: SelPath) => void;
@@ -147,40 +148,45 @@ export function LibraryPanel({ composition, selection, assets, plugins, onImport
         {tab === "layers" ? (
           composition.layers.length === 0
             ? <div className="empty-hint">还没有图层，从素材/组件/特效添加。</div>
-            : <LayerTree layers={composition.layers} selection={selection} onSelect={onSelect} onMove={onMove} onDuplicate={onDuplicate} onRemove={onRemove} />
+            : <>
+                <div style={{ color: "var(--faint)", fontSize: 10.5, marginBottom: 6 }}>⇧/⌘ 点选多个 → 顶栏「成组」(⌘G)</div>
+                <LayerTree layers={composition.layers} selection={selection} multiSel={multiSel} onSelect={onSelect} onMove={onMove} onDuplicate={onDuplicate} onRemove={onRemove} />
+              </>
         ) : null}
       </div>
     </aside>
   );
 }
 
-function LayerTree({ layers, selection, onSelect, onMove, onDuplicate, onRemove }: {
-  layers: Layer[]; selection: SelPath;
-  onSelect: (p: SelPath) => void; onMove: (i: number, dir: -1 | 1) => void;
+function LayerTree({ layers, selection, multiSel, onSelect, onMove, onDuplicate, onRemove }: {
+  layers: Layer[]; selection: SelPath; multiSel: number[];
+  onSelect: (p: SelPath, toggle?: boolean) => void; onMove: (i: number, dir: -1 | 1) => void;
   onDuplicate: (i: number) => void; onRemove: (p: SelPath) => void;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
       {layers.map((l, i) => (
-        <LayerNode key={i} layer={l as AnyLayer} path={[i]} selection={selection}
+        <LayerNode key={i} layer={l as AnyLayer} path={[i]} selection={selection} multiSel={multiSel}
           onSelect={onSelect} onMove={onMove} onDuplicate={onDuplicate} onRemove={onRemove} />
       ))}
     </div>
   );
 }
 
-function LayerNode({ layer, path, selection, onSelect, onMove, onDuplicate, onRemove }: {
-  layer: AnyLayer; path: SelPath; selection: SelPath;
-  onSelect: (p: SelPath) => void; onMove: (i: number, dir: -1 | 1) => void;
+function LayerNode({ layer, path, selection, multiSel, onSelect, onMove, onDuplicate, onRemove }: {
+  layer: AnyLayer; path: SelPath; selection: SelPath; multiSel: number[];
+  onSelect: (p: SelPath, toggle?: boolean) => void; onMove: (i: number, dir: -1 | 1) => void;
   onDuplicate: (i: number) => void; onRemove: (p: SelPath) => void;
 }) {
   const [open, setOpen] = useState(true);
-  const isSel = selection.length === path.length && selection.every((v, i) => v === path[i]);
+  const isSel = (selection.length === path.length && selection.every((v, i) => v === path[i]))
+    || (path.length === 1 && multiSel.length > 1 && multiSel.includes(path[0]!));
   const children = layer.type === "group" && Array.isArray(layer.layers) ? (layer.layers as Layer[]) : [];
   const top = path.length === 1;
   return (
     <>
-      <div className={`layer-row${isSel ? " selected" : ""}`} style={{ paddingLeft: 8 + (path.length - 1) * 16 }} onClick={() => onSelect(path)}>
+      <div className={`layer-row${isSel ? " selected" : ""}`} style={{ paddingLeft: 8 + (path.length - 1) * 16 }}
+        onClick={(e) => onSelect(path, top && (e.shiftKey || e.metaKey))}>
         {children.length > 0
           ? <button className="icon-btn" style={{ width: 18, height: 18 }} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}><Icon name={open ? "chevD" : "chevR"} size={12} /></button>
           : <span style={{ width: 4 }} />}
@@ -196,7 +202,7 @@ function LayerNode({ layer, path, selection, onSelect, onMove, onDuplicate, onRe
         </span>
       </div>
       {open ? children.map((c, i) => (
-        <LayerNode key={i} layer={c as AnyLayer} path={[...path, i]} selection={selection}
+        <LayerNode key={i} layer={c as AnyLayer} path={[...path, i]} selection={selection} multiSel={multiSel}
           onSelect={onSelect} onMove={onMove} onDuplicate={onDuplicate} onRemove={onRemove} />
       )) : null}
     </>

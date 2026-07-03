@@ -44,6 +44,7 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [projectName, setProjectName] = useState(restored?.name ?? "未命名项目");
   const [selection, setSelection] = useState<SelPath>([]);
+  const [multiSel, setMultiSel] = useState<number[]>([]);
   const [selKf, setSelKf] = useState<KfSel>(null);
   const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -485,7 +486,18 @@ export function App() {
       else if (mod && (e.key === "Z" || (e.key === "z" && e.shiftKey) || e.key === "y")) { e.preventDefault(); history.redo(); }
       else if (mod && e.key === "s") { e.preventDefault(); saveProject(); }
       else if (mod && e.key === "d") { e.preventDefault(); if (selection.length === 1) duplicateLayer(selection[0]!); }
-      else if (e.key === "Backspace" || e.key === "Delete") { if (selection.length) { e.preventDefault(); removeLayer(selection); } }
+      else if (mod && (e.key === "g" || e.key === "G")) {
+        e.preventDefault();
+        if (e.shiftKey) ungroupSelected();
+        else groupSelected();
+      }
+      else if (e.key === "Backspace" || e.key === "Delete") {
+        if (multiSel.length > 1) {
+          e.preventDefault();
+          apply({ ...composition, layers: composition.layers.filter((_, i) => !multiSel.includes(i)) });
+          select([]);
+        } else if (selection.length) { e.preventDefault(); removeLayer(selection); }
+      }
       else if (e.key === "ArrowLeft") { e.preventDefault(); setTimeMs((t) => clamp(0, durRef.current, t - frameMs * (e.shiftKey ? 10 : 1))); }
       else if (e.key === "ArrowRight") { e.preventDefault(); setTimeMs((t) => clamp(0, durRef.current, t + frameMs * (e.shiftKey ? 10 : 1))); }
     };
@@ -494,6 +506,79 @@ export function App() {
   });
 
   const selLayer = selection.length ? layerAtPath(composition, selection) : undefined;
+
+  // ---- selection (single + shift/⌘ multi on top-level layers) -----------------
+  function select(path: SelPath, toggle = false): void {
+    setSelKf(null);
+    if (!toggle || path.length !== 1) {
+      setSelection(path);
+      setMultiSel(path.length ? [path[0]!] : []);
+      return;
+    }
+    const i = path[0]!;
+    const base = multiSel.length ? multiSel : selection.length === 1 ? [selection[0]!] : [];
+    const next = base.includes(i) ? base.filter((x) => x !== i) : [...base, i];
+    setMultiSel(next);
+    setSelection(next.length ? [next[next.length - 1]!] : []);
+  }
+
+  // ---- group / ungroup ---------------------------------------------------------
+  function groupSelected(): void {
+    const idx = [...new Set(multiSel)].sort((a, b) => a - b);
+    if (idx.length < 2) { setStatus("按住 ⇧/⌘ 点选多个图层后再成组"); return; }
+    const members = idx.map((i) => composition.layers[i]!).filter(Boolean);
+    const layers = composition.layers.filter((_, i) => !idx.includes(i));
+    // startMs stays 0 so children keep their own global clocks — grouping is
+    // visually lossless; the group then moves/animates as one unit.
+    layers.splice(idx[0]!, 0, { type: "group", id: "组", layers: members } as Layer);
+    apply({ ...composition, layers });
+    select([idx[0]!]);
+    setStatus(`已将 ${members.length} 个图层成组（⌘G）`);
+  }
+
+  function ungroupSelected(): void {
+    if (selection.length !== 1) return;
+    const i = selection[0]!;
+    const g = composition.layers[i] as AnyLayer | undefined;
+    if (!g || g.type !== "group" || !Array.isArray(g.layers)) { setStatus("请选中一个顶层组再解组"); return; }
+    const gs = (g.startMs as number) ?? 0;
+    const ge = g.endMs as number | undefined;
+    const gt = (g.transform as Record<string, unknown>) ?? {};
+    const ox = typeof gt.x === "number" ? gt.x : 0;
+    const oy = typeof gt.y === "number" ? gt.y : 0;
+    const shiftTrack = (v: unknown, d: number): unknown =>
+      d === 0 ? v : Array.isArray(v) ? (v as Kf[]).map((k) => ({ ...k, value: k.value + d })) : (typeof v === "number" ? v : 0) + d;
+    const children = (g.layers as Layer[]).map((c) => {
+      const cc = structuredClone(c) as AnyLayer;
+      // Children lived on the group's local clock — shift times back to global.
+      if (gs) {
+        cc.startMs = ((cc.startMs as number) ?? 0) + gs || undefined;
+        if (cc.endMs !== undefined) cc.endMs = (cc.endMs as number) + gs;
+        if (cc.type !== "group" && cc.type !== "plugin" && cc.transform) {
+          const tr = cc.transform as Record<string, unknown>;
+          for (const k of TRANSFORM_KEYS) {
+            if (Array.isArray(tr[k])) tr[k] = (tr[k] as Kf[]).map((kf) => ({ ...kf, timeMs: kf.timeMs + gs }));
+          }
+        }
+      }
+      if (cc.endMs === undefined && ge !== undefined) cc.endMs = ge;
+      // Bake the group's static offset so nothing jumps on screen.
+      if (ox || oy) {
+        const tr = (cc.transform as Record<string, unknown>) ?? {};
+        cc.transform = { ...tr, x: shiftTrack(tr.x, ox), y: shiftTrack(tr.y, oy) } as Layer["transform"];
+      }
+      return cc as Layer;
+    });
+    const layers = [...composition.layers];
+    layers.splice(i, 1, ...children);
+    apply({ ...composition, layers });
+    select(children.length ? [i] : []);
+    const lossy = Array.isArray(gt.x) || Array.isArray(gt.y) || (typeof gt.scale === "number" && gt.scale !== 1) || Array.isArray(gt.scale) || gt.rotate || gt.opacity !== undefined || g.reveal || g.clip;
+    setStatus(lossy ? "已解组 — 组上的缩放/旋转/透明度/动画/裁剪未合并到子图层，请检查" : `已解组为 ${children.length} 个图层`);
+  }
+
+  const canGroup = multiSel.length >= 2;
+  const canUngroup = selection.length === 1 && selLayer?.type === "group";
 
   return (
     <div className="app">
@@ -515,6 +600,8 @@ export function App() {
         onNew={newProject} onOpen={openProject} onSave={saveProject}
         showJson={showJson}
         onToggleJson={() => { if (!showJson) syncJson(composition); setShowJson((s) => !s); }}
+        canGroup={canGroup} canUngroup={canUngroup}
+        onGroup={groupSelected} onUngroup={ungroupSelected}
         theme={theme} onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
         onExport={() => setRenderOpen(true)}
         status={status}
@@ -527,22 +614,27 @@ export function App() {
           onAddAssetLayer={(a) => addAssetLayer(a)}
           onAddFactory={(kind) => addFactory(kind)}
           onAddPlugin={addPlugin}
-          onSelect={(p) => { setSelection(p); setSelKf(null); }}
+          multiSel={multiSel}
+          onSelect={select}
           onMove={moveLayer} onDuplicate={duplicateLayer} onRemove={removeLayer}
         />
 
         <StagePanel
           canvasRef={canvasRef}
           composition={composition} expanded={expansion.comp} timeMs={timeMs}
-          selection={selection} error={expansion.error}
+          selection={selection} multiSel={multiSel} error={expansion.error}
           mediaSize={(src) => rendererRef.current?.mediaSize(src)}
-          onSelect={(p) => { setSelection(p); setSelKf(null); }}
+          onSelect={select}
           onGestureStart={history.begin}
-          onLivePatchTransform={(index, patch) => {
-            applyLive(updateLayerAtPath(composition, [index], (l) => ({
-              ...l,
-              transform: { ...(((l as AnyLayer).transform as Record<string, unknown>) ?? {}), ...patch }
-            } as Layer)));
+          onLivePatchTransform={(patches) => {
+            let next = composition;
+            for (const { index, patch } of patches) {
+              next = updateLayerAtPath(next, [index], (l) => ({
+                ...l,
+                transform: { ...(((l as AnyLayer).transform as Record<string, unknown>) ?? {}), ...patch }
+              } as Layer));
+            }
+            applyLive(next);
           }}
           onDropAsset={(id, x, y) => { const a = assets.find((x2) => x2.id === id); if (a) addAssetLayer(a, [x, y]); }}
           onDropFiles={(files, x, y) => void importFiles(files, [x, y])}
@@ -552,7 +644,7 @@ export function App() {
           composition={composition}
           layer={selLayer}
           selection={selection}
-          onSelect={(p) => { setSelection(p); setSelKf(null); }}
+          onSelect={(p) => select(p)}
           timeMs={timeMs}
           resolved={resolvedSel}
           plugins={PLUGINS}
@@ -571,9 +663,9 @@ export function App() {
 
       <TimelinePanel
         composition={composition} timeMs={timeMs} playing={playing} loop={loop}
-        selection={selection} selKf={selKf}
+        selection={selection} multiSel={multiSel} selKf={selKf}
         onSeek={(t) => setTimeMs(clamp(0, composition.durationMs, t))}
-        onSelect={(p) => { setSelection(p); setSelKf(null); }}
+        onSelect={select}
         onTogglePlay={() => setPlaying((p) => !p)}
         onToggleLoop={() => setLoop((l) => !l)}
         onStepFrame={(dir) => setTimeMs((t) => clamp(0, composition.durationMs, t + dir * frameMs))}
