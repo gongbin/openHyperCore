@@ -132,6 +132,27 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
 
   function onPointerUp(): void { gestureRef.current = null; }
 
+  // Double-click drills into a group's child (e.g. to edit a card's gradient
+  // rect directly) — hit test the resolved children in group-local space.
+  function onDoubleClick(e: React.MouseEvent): void {
+    const [cx, cy] = toComp(e);
+    const hit = hitTest(cx, cy);
+    if (hit === null || !expanded) return;
+    const rl = resolveLayerAt(expanded, [hit], timeMs);
+    if (!rl || rl.type !== "group") return;
+    const children = (rl as unknown as { layers?: unknown }).layers as import("openhypercore").ResolvedLayer[] | undefined;
+    if (!children?.length) return;
+    const [lx, ly] = parentToLocal(xfOf(rl), cx, cy);
+    for (let i = children.length - 1; i >= 0; i -= 1) {
+      const child = children[i]!;
+      if (child.type === "audio") continue;
+      const box = localBox(child, mediaSize);
+      if (!box) continue;
+      const [px, py] = parentToLocal(xfOf(child), lx, ly);
+      if (pointInBox(box, px, py)) { onSelect([hit, i]); return; }
+    }
+  }
+
   // selection outline geometry (comp coords)
   let outline: [number, number][] | null = null;
   let rotateHandle: [number, number] | null = null;
@@ -162,7 +183,7 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
         <div ref={wrapRef} className="canvas-wrap" style={{ aspectRatio: `${W} / ${H}`, width: `min(100%, calc((100vh - 380px) * ${W / H}))` }}>
           <canvas ref={canvasRef} width={W} height={H} />
           <svg ref={svgRef} className="stage-overlay" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
-            onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
+            onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onDoubleClick={onDoubleClick}>
             {outline ? (
               <g>
                 <polygon points={outline.map((p) => p.join(",")).join(" ")}

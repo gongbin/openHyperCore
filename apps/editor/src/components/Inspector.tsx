@@ -9,9 +9,11 @@ const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "light
 
 export type KfSel = { path: SelPath; key: TKey; kfIdx: number } | null;
 
-export function Inspector({ composition, layer, timeMs, resolved, plugins, assets, selKf, showJson, jsonText, jsonError, patchLayer, editTransform, toggleKey, setKfEasing, applyAnim, patchComposition, onJsonEdit }: {
+export function Inspector({ composition, layer, selection, onSelect, timeMs, resolved, plugins, assets, selKf, showJson, jsonText, jsonError, patchLayer, editTransform, toggleKey, setKfEasing, applyAnim, patchComposition, onJsonEdit }: {
   composition: Composition;
   layer: AnyLayer | undefined;
+  selection: SelPath;
+  onSelect: (path: SelPath) => void;
   timeMs: number;
   resolved: ResolvedLayer | null;
   plugins: PluginDefinition[];
@@ -64,6 +66,10 @@ export function Inspector({ composition, layer, timeMs, resolved, plugins, asset
       <div className="inspector-scroll">
         {layer ? (
           <>
+            {selection.length > 1 ? (
+              <button className="btn btn-ghost" style={{ alignSelf: "flex-start", padding: "3px 8px", fontSize: 11.5 }}
+                onClick={() => onSelect(selection.slice(0, -1))}>← 返回上级（组）</button>
+            ) : null}
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span className="type-dot" style={{ background: typeColor(layer.type), width: 11, height: 11 }} />
               <b style={{ fontSize: 13.5, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{layerLabel(layer)}</b>
@@ -148,7 +154,7 @@ export function Inspector({ composition, layer, timeMs, resolved, plugins, asset
             {layer.type === "image" ? <MediaProps layer={layer} kind="image" assets={assets} set={patchLayer} /> : null}
             {layer.type === "video" ? <VideoProps layer={layer} assets={assets} set={patchLayer} /> : null}
             {layer.type === "audio" ? <AudioProps layer={layer} assets={assets} set={patchLayer} /> : null}
-            {layer.type === "group" ? <GroupProps layer={layer} set={patchLayer} /> : null}
+            {layer.type === "group" ? <GroupProps layer={layer} selection={selection} onSelect={onSelect} set={patchLayer} /> : null}
             {layer.type === "plugin" ? <PluginProps layer={layer} plugins={plugins} assets={assets} set={patchLayer} /> : null}
           </>
         ) : (
@@ -392,11 +398,25 @@ function AudioProps({ layer, assets, set }: { layer: AnyLayer; assets: EditorAss
   );
 }
 
-function GroupProps({ layer, set }: { layer: AnyLayer; set: (p: Record<string, unknown>, tag?: string) => void }) {
+function GroupProps({ layer, selection, onSelect, set }: { layer: AnyLayer; selection: SelPath; onSelect: (p: SelPath) => void; set: (p: Record<string, unknown>, tag?: string) => void }) {
   const reveal = (layer.reveal as Record<string, unknown> | undefined);
   const clip = layer.clip as Record<string, unknown> | undefined;
+  const children = Array.isArray(layer.layers) ? (layer.layers as AnyLayer[]) : [];
   return (
     <Section title="组">
+      {children.length ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <span className="field-label">子图层（点击编辑其填充/属性，画布双击也可直达）</span>
+          {children.map((c, i) => (
+            <button key={i} className="layer-row" style={{ width: "100%", textAlign: "left", background: "var(--panel-2)", border: "1px solid var(--border)" }}
+              onClick={() => onSelect([...selection, i])}>
+              <span className="type-dot" style={{ background: typeColor(c.type) }} />
+              <span className="layer-name">{layerLabel(c)}</span>
+              <span style={{ color: "var(--faint)", fontSize: 10.5 }}>{c.type === "shape" && c.fill && typeof c.fill === "object" && !Array.isArray(c.fill) ? "渐变" : ""}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       {clip ? (
         <div style={{ color: "var(--muted)", fontSize: 11.5, display: "flex", alignItems: "center", gap: 6 }}>
           裁剪：{String(clip.type)} {clip.width ? `${String(clip.width)}×${String(clip.height)}` : ""}{clip.radius ? ` · 圆角 ${String(clip.radius)}` : ""}

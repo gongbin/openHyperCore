@@ -551,6 +551,8 @@ export function App() {
         <Inspector
           composition={composition}
           layer={selLayer}
+          selection={selection}
+          onSelect={(p) => { setSelection(p); setSelKf(null); }}
           timeMs={timeMs}
           resolved={resolvedSel}
           plugins={PLUGINS}
