@@ -692,3 +692,20 @@ test("color keyframes resolve on shape fill/stroke and text color", async () => 
   assert.equal(g1.layers[0]!.transform.opacity, 1);   // 400ms local — done
   assert.equal(g2.layers[0]!.transform.opacity, 0.5); // 100ms local — mid-fade
 });
+
+test("layer blur is keyframable and resolves on the transform clock", () => {
+  const composition = defineComposition({
+    fps: 30,
+    width: 100,
+    height: 100,
+    durationMs: 1000,
+    layers: [
+      { type: "shape", shape: "rect", width: 10, height: 10, fill: "#fff", blur: [{ timeMs: 0, value: 0 }, { timeMs: 1000, value: 8 }] },
+      { type: "shape", shape: "circle", radius: 5, fill: "#fff", blur: 3 }
+    ]
+  });
+
+  const frame = resolveFrame(composition, 500);
+  assert.equal((frame.layers[0] as { blur?: number }).blur, 4);
+  assert.equal((frame.layers[1] as { blur?: number }).blur, 3);
+});

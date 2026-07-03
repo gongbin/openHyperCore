@@ -356,3 +356,37 @@ process.stdin.on("end", () => {
 
   return { fakeFfmpeg, argsFile, stdinFile, outFile };
 }
+
+test("buildRawVideoPipeArgs maps video-sourced audio through source trim + atempo", () => {
+  const args = buildRawVideoPipeArgs({
+    fps: 30,
+    width: 640,
+    height: 360,
+    outFile: "/tmp/out.mp4",
+    audioInputs: [
+      { src: "/tmp/clip.mp4", startMs: 1000, endMs: 3000, sourceStartMs: 500, playbackRate: 2, volume: 0.8 }
+    ]
+  });
+
+  const filter = args[args.indexOf("-filter_complex") + 1]!;
+  // Source window = sourceStart .. sourceStart + duration·rate, compressed by atempo.
+  assert.equal(
+    filter,
+    "[1:a]atrim=start=0.5:end=4.5,asetpts=PTS-STARTPTS,atempo=2,volume=0.8,adelay=1000|1000[a0];[a0]apad[aout]"
+  );
+});
+
+test("buildRawVideoPipeArgs chains atempo for rates outside 0.5–2", () => {
+  const args = buildRawVideoPipeArgs({
+    fps: 30,
+    width: 640,
+    height: 360,
+    outFile: "/tmp/out.mp4",
+    audioInputs: [
+      { src: "/tmp/clip.mp4", startMs: 0, endMs: 1000, playbackRate: 0.25 }
+    ]
+  });
+
+  const filter = args[args.indexOf("-filter_complex") + 1]!;
+  assert.ok(filter.includes("atempo=0.5,atempo=0.5"), filter);
+});

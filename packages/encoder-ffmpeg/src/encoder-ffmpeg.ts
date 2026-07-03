@@ -21,6 +21,10 @@ export type AudioInput = {
   volume?: number | VolumePoint[];
   fadeInMs?: number;
   fadeOutMs?: number;
+  // Seek offset INTO the source before playback starts (video trimStartMs).
+  sourceStartMs?: number;
+  // Speed factor applied to the source (video playbackRate), via atempo.
+  playbackRate?: number;
 };
 
 export type EncodePngFramesOptions = ImagePipeArgsOptions & {
@@ -167,6 +171,8 @@ function audioFilterArgs(audioInputs: AudioInput[]): string[] {
     || audio.volume !== undefined
     || audio.fadeInMs !== undefined
     || audio.fadeOutMs !== undefined
+    || audio.sourceStartMs !== undefined
+    || audio.playbackRate !== undefined
   )) || audioInputs.length > 1;
   if (!needsFilterGraph) {
     return [];
@@ -191,11 +197,25 @@ function audioFilterArgs(audioInputs: AudioInput[]): string[] {
 function audioFilters(audio: AudioInput): string[] {
   const filters: string[] = [];
   const durationMs = audio.endMs !== undefined ? audio.endMs - (audio.startMs ?? 0) : undefined;
+  const sourceStartMs = audio.sourceStartMs ?? 0;
+  assertNonNegative("audio sourceStartMs", sourceStartMs);
+  const rate = audio.playbackRate ?? 1;
+  assertPositive("audio playbackRate", rate);
   if (durationMs !== undefined) {
     assertPositive("audio duration", durationMs);
-    filters.push(`atrim=duration=${formatSeconds(durationMs / 1000)}`);
+    if (sourceStartMs > 0 || rate !== 1) {
+      // Cut the SOURCE window [sourceStart, sourceStart + duration·rate];
+      // atempo below compresses/stretches it back onto the timeline window.
+      const endS = (sourceStartMs + durationMs * rate) / 1000;
+      filters.push(`atrim=start=${formatSeconds(sourceStartMs / 1000)}:end=${formatSeconds(endS)}`);
+    } else {
+      filters.push(`atrim=duration=${formatSeconds(durationMs / 1000)}`);
+    }
+  } else if (sourceStartMs > 0) {
+    filters.push(`atrim=start=${formatSeconds(sourceStartMs / 1000)}`);
   }
   filters.push("asetpts=PTS-STARTPTS");
+  filters.push(...atempoChain(rate));
   if (audio.volume !== undefined) {
     const filter = volumeFilter(audio.volume);
     if (filter) {
@@ -219,6 +239,28 @@ function audioFilters(audio: AudioInput): string[] {
     filters.push(`adelay=${delayMs}|${delayMs}`);
   }
   return filters;
+}
+
+// ffmpeg's atempo accepts 0.5–2 per instance; chain instances for rates
+// outside that window (e.g. 4x → atempo=2,atempo=2).
+function atempoChain(rate: number): string[] {
+  if (rate === 1) {
+    return [];
+  }
+  const factors: number[] = [];
+  let remaining = rate;
+  while (remaining > 2) {
+    factors.push(2);
+    remaining /= 2;
+  }
+  while (remaining < 0.5) {
+    factors.push(0.5);
+    remaining /= 0.5;
+  }
+  if (remaining !== 1) {
+    factors.push(remaining);
+  }
+  return factors.map((f) => `atempo=${formatNumber(f)}`);
 }
 
 // Build the `volume` filter for a constant gain or a keyframe envelope. A

@@ -10,6 +10,9 @@ import type { AudioInput, EncodePngFramesOptions } from "../../encoder-ffmpeg/sr
 import { defineComposition, frameCount, resolveFrame, timeForFrame } from "../../core/src/index.ts";
 import type { Composition, Layer, ResolvedFrame, ResolvedLayer } from "../../core/src/index.ts";
 import { expandComposition } from "../../plugins/src/index.ts";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { resolveDefaultFfmpegPath } from "../../encoder-ffmpeg/src/index.ts";
 import { createVideoFrameCache, prefetchVideoFrameBatch, renderPngFrame } from "../../renderer-skia/src/index.ts";
 import type { LayerRasterCacheStats } from "../../renderer-skia/src/index.ts";
 import { renderSvgFrame } from "../../renderer-svg/src/index.ts";
@@ -130,7 +133,7 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
     const file = requiredArg(args[1], "composition file");
     const options = parseRenderOptions(args.slice(2));
     const composition = applyRenderOverrides(await loadComposition(file), options);
-    await renderVideo(composition, options, extractAudioInputs(composition));
+    await renderVideo(composition, options, await extractAudioInputs(composition));
     stdout(options.out);
     return;
   }
@@ -139,7 +142,7 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
     const file = requiredArg(args[1], "composition file");
     const options = parseBenchOptions(args.slice(2));
     const composition = applyRenderOverrides(await loadComposition(file), options);
-    const metrics = await renderVideo(composition, { ...options, out: options.videoOut }, extractAudioInputs(composition));
+    const metrics = await renderVideo(composition, { ...options, out: options.videoOut }, await extractAudioInputs(composition));
     await writeFile(options.out, `${JSON.stringify(metrics, null, 2)}\n`, "utf8");
     stdout(options.out);
     return;
@@ -572,7 +575,7 @@ async function runBenchSuite(dynamicFile: string, options: BenchSuiteOptions): P
       ...benchmarkCase.options,
       out: videoOut
     } as RenderOptions;
-    const metrics = await renderVideo(benchmarkCase.composition, renderOptions, extractAudioInputs(benchmarkCase.composition));
+    const metrics = await renderVideo(benchmarkCase.composition, renderOptions, await extractAudioInputs(benchmarkCase.composition));
     results.push({
       name: benchmarkCase.name,
       fixture: benchmarkCase.fixture,
@@ -692,25 +695,91 @@ export async function renderVideo(composition: Composition, options: RenderOptio
   };
 }
 
-export function extractAudioInputs(composition: Composition): CompositionAudio {
-  const audioInputs: AudioInput[] = [];
+export async function extractAudioInputs(composition: Composition): Promise<CompositionAudio> {
+  const audioInputs: CollectedAudioInput[] = [];
   collectAudioInputs(composition.layers, 0, composition.durationMs, true, audioInputs);
-  if (audioInputs.length === 0) {
+
+  // Video layers contribute their embedded audio track — but only when the
+  // source actually has one (referencing a silent input in -filter_complex
+  // would make ffmpeg fail).
+  const probeCache = new Map<string, Promise<boolean>>();
+  const hasAudio = (src: string): Promise<boolean> => {
+    let pending = probeCache.get(src);
+    if (!pending) {
+      pending = videoHasAudioStream(src).catch(() => false);
+      probeCache.set(src, pending);
+    }
+    return pending;
+  };
+  const kept: AudioInput[] = [];
+  for (const input of audioInputs) {
+    const { fromVideo, ...audio } = input;
+    if (fromVideo && !(await hasAudio(audio.src))) {
+      continue;
+    }
+    kept.push(audio);
+  }
+  if (kept.length === 0) {
     return {};
   }
 
-  return { audioInputs };
+  return { audioInputs: kept };
 }
 
-// Audio layers may sit inside groups; group children live on the group's
-// LOCAL timeline, so nested audio is shifted by the accumulated group start
-// and clamped to the group's window on the composition timeline.
-function collectAudioInputs(layers: Layer[], offsetMs: number, windowEndMs: number, topLevel: boolean, out: AudioInput[]): void {
+type CollectedAudioInput = AudioInput & { fromVideo?: boolean };
+
+// Detect an embedded audio stream by parsing `ffmpeg -i` stream info — the
+// same ffprobe-free technique the video size probe uses (the ffmpeg installer
+// does not ship ffprobe).
+async function videoHasAudioStream(src: string): Promise<boolean> {
+  const ffmpegPath = await resolveDefaultFfmpegPath();
+  const child = spawn(ffmpegPath, ["-hide_banner", "-i", resolve(src)], { stdio: ["ignore", "ignore", "pipe"] });
+  const chunks: Buffer[] = [];
+  child.stderr.on("data", (chunk: Buffer) => chunks.push(chunk));
+  await once(child, "close");
+  return /^\s*Stream .*Audio:/m.test(Buffer.concat(chunks).toString("utf8"));
+}
+
+// Audio (and audible video) layers may sit inside groups; group children live
+// on the group's LOCAL timeline, so nested tracks are shifted by the
+// accumulated group start and clamped to the group's window on the
+// composition timeline.
+function collectAudioInputs(layers: Layer[], offsetMs: number, windowEndMs: number, topLevel: boolean, out: CollectedAudioInput[]): void {
   for (const layer of layers) {
     if (layer.type === "group") {
       const groupStartMs = offsetMs + (layer.startMs ?? 0);
       const groupEndMs = Math.min(layer.endMs !== undefined ? offsetMs + layer.endMs : windowEndMs, windowEndMs);
       collectAudioInputs(layer.layers, groupStartMs, groupEndMs, false, out);
+      continue;
+    }
+    if (layer.type === "video") {
+      // volume: 0 mutes the embedded track entirely.
+      if (typeof layer.volume === "number" && layer.volume <= 0) {
+        continue;
+      }
+      const startAbs = offsetMs + (layer.startMs ?? 0);
+      const endAbs = Math.min(offsetMs + (layer.endMs ?? (windowEndMs - offsetMs)), windowEndMs);
+      const rate = layer.playbackRate !== undefined && layer.playbackRate > 0 ? layer.playbackRate : 1;
+      const needsSourceWindow = (layer.trimStartMs ?? 0) > 0 || rate !== 1 || layer.trimEndMs !== undefined;
+      // Cap the source window at trimEnd so the audio stops with the picture
+      // (the looped tail is not re-muxed — loops play their audio once).
+      let endMs: number | undefined = layer.endMs !== undefined || !topLevel || needsSourceWindow ? endAbs : undefined;
+      if (endMs !== undefined && layer.trimEndMs !== undefined) {
+        const maxTimelineMs = startAbs + Math.max(0, (layer.trimEndMs - (layer.trimStartMs ?? 0)) / rate);
+        endMs = Math.min(endMs, maxTimelineMs);
+      }
+      if (endMs !== undefined && endMs - startAbs <= 0) {
+        continue;
+      }
+      out.push(omitUndefined({
+        src: layer.src,
+        startMs: startAbs > 0 ? startAbs : undefined,
+        endMs,
+        volume: layer.volume,
+        sourceStartMs: layer.trimStartMs,
+        playbackRate: rate !== 1 ? rate : undefined,
+        fromVideo: true
+      }) as CollectedAudioInput);
       continue;
     }
     if (layer.type !== "audio") {

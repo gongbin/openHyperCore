@@ -40,7 +40,8 @@ test("native text (CJK + Latin, per-char font stack) matches the wasm backend", 
     durationMs: 100,
     defaultFont: FONT,
     layers: [
-      { type: "text", text: "Hello 世界", size: 48, color: "#ffffff", transform: { x: 12, y: 64 } }
+      { type: "text", text: "Hello 世界", size: 48, color: "#ffffff", transform: { x: 12, y: 64 } },
+      { type: "text", text: "SPACED", size: 22, letterSpacing: 6, color: "#8ecdf7", transform: { x: 12, y: 88 } }
     ]
   });
 
