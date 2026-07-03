@@ -1,0 +1,38 @@
+import { Icon } from "../icons.tsx";
+
+export function TopBar({ projectName, onProjectName, canUndo, canRedo, onUndo, onRedo, onNew, onOpen, onSave, showJson, onToggleJson, theme, onToggleTheme, onExport, status }: {
+  projectName: string;
+  onProjectName: (v: string) => void;
+  canUndo: boolean; canRedo: boolean;
+  onUndo: () => void; onRedo: () => void;
+  onNew: () => void; onOpen: () => void; onSave: () => void;
+  showJson: boolean; onToggleJson: () => void;
+  theme: "dark" | "light"; onToggleTheme: () => void;
+  onExport: () => void;
+  status: string;
+}) {
+  return (
+    <header className="topbar">
+      <div className="brand">
+        <div className="brand-mark">H</div>
+        <div className="brand-name">open<em>Hyper</em>Editor</div>
+      </div>
+      <input className="project-name" value={projectName} onChange={(e) => onProjectName(e.target.value)} placeholder="未命名项目" spellCheck={false} />
+
+      <div className="divider" />
+      <button className="icon-btn" title="撤销 (⌘Z)" disabled={!canUndo} onClick={onUndo}><Icon name="undo" /></button>
+      <button className="icon-btn" title="重做 (⇧⌘Z)" disabled={!canRedo} onClick={onRedo}><Icon name="redo" /></button>
+
+      <div className="divider" />
+      <button className="btn btn-ghost" onClick={onNew}><Icon name="file" size={14} />新建</button>
+      <button className="btn btn-ghost" onClick={onOpen}><Icon name="open" size={14} />打开</button>
+      <button className="btn btn-ghost" title="保存工程 JSON (⌘S)" onClick={onSave}><Icon name="save" size={14} />保存</button>
+
+      <div className="spacer" />
+      <span style={{ color: "var(--muted)", fontSize: 12, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{status}</span>
+      <button className="icon-btn" title={theme === "dark" ? "切换浅色主题" : "切换深色主题"} onClick={onToggleTheme}><Icon name={theme === "dark" ? "sun" : "moon"} size={16} /></button>
+      <button className={`icon-btn${showJson ? " active" : ""}`} title="IR JSON" onClick={onToggleJson}><Icon name="json" size={17} /></button>
+      <button className="btn btn-primary" onClick={onExport}><Icon name="export" size={15} />导出视频</button>
+    </header>
+  );
+}

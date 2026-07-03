@@ -138,14 +138,14 @@ registerPlugin(definePlugin({
 - Motion-effect plugins: `{ type: "plugin" }` IR nodes expand into plain layers via `openhypercore/plugins` (`expandComposition`, auto-run by the CLI/service/editor), with a serializable param schema editors turn into forms — 8 built-ins from stage curtains to a rotating satellite globe (see the section above), plus `definePlugin`/`registerPlugin` for your own.
 - Scene timeline builder: `createTimeline(...).scene(...).transition(...).build()` lays out named scenes and transitions sequentially, returning both a ready Composition and timing markers.
 - Layer fit modes: `ImageLayer.fit` and `VideoLayer.fit` support `fill` (stretch), `cover` (centre-crop), and `contain` (letterbox); circular clips default to `cover`.
-- Visual effects: gradient fills (`fill`/`color`/`backgroundColor` accept `{ type: "linear"|"radial", stops }`), per-layer `blendMode` (multiply/screen/overlay/add/...), full-layer `blur` (Gaussian), and directional `motionBlur` ({ angle, distance, samples }). See `examples/effects-showcase.ts`.
+- Visual effects: gradient fills (`fill`/`color`/`backgroundColor` accept `{ type: "linear"|"radial", stops }`), per-layer `blendMode` (multiply/screen/overlay/add/...), full-layer `blur` (Gaussian, **keyframable** — focus pulls and pulsing glows), and directional `motionBlur` ({ angle, distance, samples }). See `examples/effects-showcase.ts`.
 - Arbitrary clipping: any layer (or whole group) sets `clip` to a `rect` (with optional corner `radius`), `circle`, or SVG `path` region in its local space.
-- Text layout: multi-line text/captions with explicit `\n` and automatic word/CJK wrapping via `maxWidth`, plus per-line `align` (left/center/right).
+- Text layout: multi-line text/captions with explicit `\n` and automatic word/CJK wrapping via `maxWidth`, per-line `align` (left/center/right), and `letterSpacing` tracking for headlines (applied per character across both backends).
 - Fonts: a named font registry (`registerFont(name, path)`) and per-character fallback stack with optional colour-emoji fallback (`registerEmojiFont`).
 - Subtitles: `parseSubtitles` reads SRT/WebVTT into timed cues and `subtitlesToCaptions` turns them into styled, time-bounded CaptionLayers.
 - FFmpeg encoder backend: pipes raw RGBA frames to FFmpeg and outputs H.264/yuv420p MP4; with audio layers it outputs AAC audio.
 - AudioLayer: supports single audio, multi-audio `amix`, start/end timing, fade in/out, and `volume` as either a constant or a keyframe envelope (ducking/swells) compiled to an FFmpeg per-frame volume expression.
-- VideoLayer: extracts frames from local video by timeline time and draws them into the Skia canvas, with `playbackRate` (speed up/slow down) and `loop` over the trimmed window. Video layers with `width/height` use source-sized batched raw RGBA decoding, bypassing the PNG intermediate format and CanvasKit per-frame image decoding.
+- VideoLayer: extracts frames from local video by timeline time and draws them into the Skia canvas, with `playbackRate` (speed up/slow down) and `loop` over the trimmed window. The video's **embedded audio track is muxed into the MP4** automatically (honouring `startMs`, trim, `playbackRate` via atempo, and `volume` — set `volume: 0` to mute; sources are probed and silent files skipped). Video layers with `width/height` use source-sized batched raw RGBA decoding, bypassing the PNG intermediate format and CanvasKit per-frame image decoding.
 - Asset probe/cache: provides metadata probing and task-level cache APIs for images, video, and audio.
 - Frame-level reuse: visually identical consecutive frames reuse the same RGBA buffer while preserving encoded frame order and PTS.
 - worker_threads render pool: supports `--workers N`, `--workers auto`, and `--worker-window N` to control parallelism and memory buffering.
@@ -159,7 +159,8 @@ registerPlugin(definePlugin({
 - Text layout supports multi-line wrapping, alignment, font registration, and emoji fallback, but not yet full rich-text runs (mixed styles within a line) or bidirectional/complex-script shaping.
 - Colour-emoji fallback depends on an emoji font being available on the host (auto-detected, or set via `registerEmojiFont`); without one, emoji fall back to the default typeface.
 - Transition helpers support easing presets, a composed property timeline DSL (`composeTimeline`/`delayTransition`), and a lightweight scene timeline builder. A richer track-based editor timeline is still future work.
-- The HTTP render service (`openhyper serve`), the decoupled web editor (`apps/editor`) and npm packaging exist; native per-platform prebuilt binaries are still planned (build from source meanwhile).
+- The HTTP render service (`openhyper serve`), the decoupled web editor (`apps/editor` — asset library with drag-and-drop media import, click-to-add captions/shapes/SVG art, canvas selection with move/scale/rotate handles, gradient + rgba color editing, playback transport, a track-style timeline with clip drag/trim and keyframe editing, undo/redo, project save/open, dark/light themes, and one-click MP4 export through the render service) and npm packaging exist; native per-platform prebuilt binaries are still planned (build from source meanwhile).
+- Looped videos play their embedded audio once (the looped tail is silent); audio for `loop` repetitions is a future refinement.
 
 ## Requirements
 

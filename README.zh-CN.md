@@ -122,14 +122,14 @@ registerPlugin(definePlugin({
 - 动效插件：`{ type: "plugin" }` IR 节点经 `openhypercore/plugins` 展开为普通图层（`expandComposition`，CLI/服务/编辑器自动执行），参数带可序列化 schema（编辑器自动生成表单）——从舞台幕布到旋转卫星地球仪共 8 个内置插件（见上文章节），并可用 `definePlugin`/`registerPlugin` 自定义。
 - 场景时间线 builder：`createTimeline(...).scene(...).transition(...).build()` 可顺序编排命名场景和转场，并返回 Composition 与 timing markers。
 - 图层 fit 模式：`ImageLayer.fit` 与 `VideoLayer.fit` 支持 `fill`（拉伸）、`cover`（居中裁切）、`contain`（letterbox 留边）；圆形裁切默认 `cover`。
-- 视觉效果：渐变填充（`fill`/`color`/`backgroundColor` 接受 `{ type: "linear"|"radial", stops }`）、逐图层 `blendMode`（multiply/screen/overlay/add/...）、整层 `blur`（高斯模糊）与方向性 `motionBlur`（{ angle, distance, samples }），见 `examples/effects-showcase.ts`。
+- 视觉效果：渐变填充（`fill`/`color`/`backgroundColor` 接受 `{ type: "linear"|"radial", stops }`）、逐图层 `blendMode`（multiply/screen/overlay/add/...）、整层 `blur`（高斯模糊，**支持关键帧**——焦点虚化、呼吸辉光）与方向性 `motionBlur`（{ angle, distance, samples }），见 `examples/effects-showcase.ts`。文本/字幕支持 `letterSpacing` 字距（两个后端逐字符一致应用）。
 - 任意形状裁剪：任意图层（或整个 group）可设置 `clip` 为本地坐标系下的 `rect`（可带圆角 `radius`）、`circle` 或 SVG `path` 区域。
 - 文本排版：text/caption 支持显式 `\n` 与按 `maxWidth` 自动换行（Latin 按词、CJK 按字），并支持逐行 `align`（left/center/right）。
 - 字体：提供命名字体注册表（`registerFont(name, path)`）与逐字符 fallback 字体栈，支持彩色 emoji fallback（`registerEmojiFont`）。
 - 字幕：`parseSubtitles` 解析 SRT/WebVTT 为带时间的 cue，`subtitlesToCaptions` 生成带样式、按时间显示的 CaptionLayer。
 - FFmpeg 编码后端：通过 raw RGBA stdin pipe 输出 H.264/yuv420p MP4；有音频时输出 AAC。
 - AudioLayer：支持单音频、多音频 amix、start/end、fadeIn/fadeOut；`volume` 既可为常量也可为关键帧包络（压低/渐强），编译为 FFmpeg 逐帧 volume 表达式。
-- VideoLayer：支持从本地视频按时间点抽帧并贴入 Skia 画布，支持 `playbackRate`（变速）与 `loop`（在 trim 窗口内循环）；有 `width/height` 的视频层会按源视频尺寸批量解码 raw RGBA，绕过 PNG 中间格式与 CanvasKit 每帧图片解码。
+- VideoLayer：支持从本地视频按时间点抽帧并贴入 Skia 画布，支持 `playbackRate`（变速）与 `loop`（在 trim 窗口内循环）；有 `width/height` 的视频层会按源视频尺寸批量解码 raw RGBA，绕过 PNG 中间格式与 CanvasKit 每帧图片解码。视频**自带的音轨会自动混入导出的 MP4**（遵循 `startMs`、trim、`playbackRate`（经 atempo）与 `volume`；`volume: 0` 静音；自动探测源文件，无音轨的自动跳过；loop 循环段暂不重复音频）。
 - 资产 probe/cache：提供图片、视频、音频 metadata probe，以及任务级缓存 API。
 - 帧级优化：连续视觉内容相同则复用 RGBA buffer，保持编码帧序和 PTS 不变。
 - worker_threads 并行渲染池：支持 `--workers N`、`--workers auto`、`--worker-window N` 控制并行度与内存窗口。
@@ -143,7 +143,7 @@ registerPlugin(definePlugin({
 - 文本排版已支持多行换行、对齐、字体注册和 emoji fallback，但尚未支持行内富文本（单行内混合样式）或双向/复杂文种 shaping。
 - 彩色 emoji fallback 依赖宿主机存在 emoji 字体（自动探测，或通过 `registerEmojiFont` 指定）；若没有，则 emoji 回退到默认字体。
 - 转场 helper 已支持 easing preset、组合属性时间线 DSL（`composeTimeline`/`delayTransition`）与轻量场景时间线 builder；更完整的 track-based 编辑时间线仍是后续工作。
-- HTTP 渲染服务（`openhyper serve`）、解耦的 Web 编辑器（`apps/editor`）和 npm 发布均已就绪；跨平台原生 prebuilt 二进制仍在规划中（当前可从源码构建）。
+- HTTP 渲染服务（`openhyper serve`）、解耦的 Web 编辑器（`apps/editor`——素材库拖拽/点击导入图片视频音频、字幕/形状/SVG 图案一键添加、画布点选拖拽缩放旋转、渐变与 rgba 颜色可视化编辑、播放器走带、轨道式时间轴（片段拖动/两端裁剪/关键帧编辑）、撤销重做、工程保存/打开、深浅色主题、一键渲染下载 MP4）和 npm 发布均已就绪；跨平台原生 prebuilt 二进制仍在规划中（当前可从源码构建）。
 
 ## 环境要求
 
