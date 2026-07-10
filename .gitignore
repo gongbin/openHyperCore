@@ -1,6 +1,7 @@
 node_modules/
 dist/
-docs/
+docs/*
+!docs/screenshots/
 Plans.md
 .DS_Store
 *.log
