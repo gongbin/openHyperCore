@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Composition, ResolvedLayer } from "openhypercore";
 import type { ParamSpec, PluginDefinition } from "openhypercore/plugins";
 import { BezierEditor, Col, ColorField, KfNum, KfRange, Num, Row, Sel, Section, Toggle } from "../fields.tsx";
@@ -163,6 +164,7 @@ export function Inspector({ composition, layer, selection, onSelect, timeMs, res
             {layer.type === "audio" ? <AudioProps layer={layer} assets={assets} set={patchLayer} /> : null}
             {layer.type === "group" ? <GroupProps layer={layer} selection={selection} onSelect={onSelect} set={patchLayer} /> : null}
             {layer.type === "plugin" ? <PluginProps layer={layer} plugins={plugins} assets={assets} set={patchLayer} /> : null}
+            <IrPanel layer={layer} />
           </>
         ) : (
           <div className="empty-hint">未选中图层。<br />点击画布或时间轴选中后在此调节。</div>
@@ -185,6 +187,34 @@ export function Inspector({ composition, layer, selection, onSelect, timeMs, res
 }
 
 // ---------------------------------------------------------------------------
+// Collapsible per-layer Scene Graph IR — the exact JSON node the renderer
+// receives for the selected layer (Studio-style inspector footer).
+function IrPanel({ layer }: { layer: AnyLayer }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const json = JSON.stringify(layer, (_k, v: unknown) => (typeof v === "string" && v.startsWith("data:") ? `${v.slice(0, 48)}…(内嵌)` : v), 2);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <button className="ir-toggle" onClick={() => setOpen((o) => !o)}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span className="brace">{"{ }"}</span> Scene Graph IR</span>
+        <span className="chev">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        <>
+          <pre className="ir-pre">{json}</pre>
+          <button className="btn btn-ghost" style={{ alignSelf: "flex-start", padding: "4px 10px", fontSize: 11.5 }}
+            onClick={() => {
+              void navigator.clipboard.writeText(JSON.stringify(layer, null, 2)).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1200);
+              });
+            }}>{copied ? "✓ 已复制" : "复制 JSON"}</button>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function AssetPicker({ assets, kind, onPick }: { assets: EditorAsset[]; kind: EditorAsset["kind"]; onPick: (url: string) => void }) {
   const list = assets.filter((a) => a.kind === kind);
   if (!list.length) return null;
@@ -330,6 +360,7 @@ function TextProps({ layer, caption, set }: { layer: AnyLayer; caption: boolean;
         <Num label="行高" step={0.1} value={(layer.lineHeight as number) ?? 1.3} onChange={(v) => set({ lineHeight: v }, "lh")} />
         <ColorField label="颜色" value={color} onChange={(v) => set({ color: v }, "color")} />
       </Row>
+      <Num label="字距 letterSpacing（px）" value={(layer.letterSpacing as number) ?? 0} onChange={(v) => set({ letterSpacing: v || undefined }, "lsp")} />
       {caption ? (
         <Row>
           <ColorField label="底色" value={typeof layer.backgroundColor === "string" ? layer.backgroundColor : "#000000"} onChange={(v) => set({ backgroundColor: v }, "bg")} />
@@ -386,7 +417,7 @@ function VideoProps({ layer, assets, set }: { layer: AnyLayer; assets: EditorAss
         <Num label="音量" step={0.1} value={typeof layer.volume === "number" ? layer.volume : 1} onChange={(v) => set({ volume: v === 1 ? undefined : v }, "vol")} />
       </Row>
       <Toggle label="循环播放（需设置裁出）" checked={Boolean(layer.loop)} onChange={(v) => set({ loop: v || undefined })} />
-      <div style={{ color: "var(--faint)", fontSize: 11 }}>预览为逐帧抓取，播放可能低于全速；导出 MP4 为精确逐帧。</div>
+      <div style={{ color: "var(--faint)", fontSize: 11 }}>视频自带音轨会按上面的裁剪/倍速/音量混入导出的 MP4（音量 0 = 静音）；预览为逐帧抓取，播放可能低于全速。</div>
     </Section>
   );
 }
@@ -475,7 +506,7 @@ function PluginProps({ layer, plugins, assets, set }: { layer: AnyLayer; plugins
   );
 }
 
-function ParamField({ name, spec, value, assets, onChange }: { name: string; spec: ParamSpec; value: unknown; assets: EditorAsset[]; onChange: (v: unknown, tag?: string) => void }) {
+export function ParamField({ name, spec, value, assets, onChange }: { name: string; spec: ParamSpec; value: unknown; assets: EditorAsset[]; onChange: (v: unknown, tag?: string) => void }) {
   const label = spec.label ?? name;
   switch (spec.type) {
     case "number":

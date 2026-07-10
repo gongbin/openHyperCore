@@ -45,6 +45,32 @@ export function TimelinePanel({ composition, timeMs, playing, loop, selection, m
   const [pxPerSec, setPxPerSec] = useState(0); // 0 = fit
   const [viewW, setViewW] = useState(800);
 
+  // Panel height, draggable via the top-edge handle (persisted).
+  const MIN_H = 150, MAX_H = Math.max(MIN_H, Math.round(window.innerHeight * 0.7));
+  const [height, setHeight] = useState(() => {
+    const saved = Number(localStorage.getItem("ohe.tlHeight"));
+    return Number.isFinite(saved) && saved >= MIN_H ? Math.min(saved, MAX_H) : 236;
+  });
+  const [resizing, setResizing] = useState(false);
+  const resizeRef = useRef<{ startY: number; startH: number } | null>(null);
+
+  function onResizeDown(e: React.PointerEvent): void {
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    resizeRef.current = { startY: e.clientY, startH: height };
+    setResizing(true);
+  }
+  function onResizeMove(e: React.PointerEvent): void {
+    const r = resizeRef.current;
+    if (!r || !e.buttons) return;
+    const h = clamp(MIN_H, MAX_H, r.startH + (r.startY - e.clientY));
+    setHeight(h);
+  }
+  function onResizeUp(): void {
+    if (resizeRef.current) localStorage.setItem("ohe.tlHeight", String(Math.round(height)));
+    resizeRef.current = null;
+    setResizing(false);
+  }
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -170,11 +196,13 @@ export function TimelinePanel({ composition, timeMs, playing, loop, selection, m
   const fps = composition.fps || 30;
 
   return (
-    <div className="timeline">
+    <div className="timeline" style={{ height }}>
+      <div className={`tl-resize${resizing ? " dragging" : ""}`} title="拖动调整时间线高度"
+        onPointerDown={onResizeDown} onPointerMove={onResizeMove} onPointerUp={onResizeUp} />
       <div className="transport">
         <button className="icon-btn" title="回到开头" onClick={() => onSeek(0)}><Icon name="skipStart" size={15} /></button>
         <button className="icon-btn" title="上一帧 ←" onClick={() => onStepFrame(-1)}><Icon name="prevFrame" size={15} /></button>
-        <button className="icon-btn active" style={{ width: 34, height: 34 }} title="播放/暂停 (空格)" onClick={onTogglePlay}>
+        <button className="btn-play" title="播放/暂停 (空格)" onClick={onTogglePlay}>
           <Icon name={playing ? "pause" : "play"} size={19} />
         </button>
         <button className="icon-btn" title="下一帧 →" onClick={() => onStepFrame(1)}><Icon name="nextFrame" size={15} /></button>

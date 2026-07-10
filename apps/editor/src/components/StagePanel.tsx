@@ -38,6 +38,7 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
   const gestureRef = useRef<Gesture | null>(null);
   const recordRef = useRef<{ index: number; startCx: number; startCy: number; baseX: number; baseY: number; startedAt: number; samples: PathSample[] } | null>(null);
   const [displayW, setDisplayW] = useState(1);
+  const [safeGuides, setSafeGuides] = useState(() => localStorage.getItem("ohe.safeGuides") === "1");
 
   const { width: W, height: H } = composition;
 
@@ -235,6 +236,12 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
         {error ? <div className="error-banner">插件展开失败：{error}</div> : null}
         <div ref={wrapRef} className="canvas-wrap" style={{ aspectRatio: `${W} / ${H}`, width: `min(100%, calc((100vh - 380px) * ${W / H}))` }}>
           <canvas ref={canvasRef} width={W} height={H} />
+          <div className="hud-badge" style={{ top: 12, left: 12 }}><span className="hud-dot" />PREVIEW</div>
+          <div className="hud-badge square" style={{ top: 12, right: 12 }}>{W}×{H} · {composition.fps}fps</div>
+          {safeGuides ? <div className="safe-guides"><i /><i /></div> : null}
+          <button className="hud-badge square" title="安全区参考线（5% / 10%）"
+            style={{ bottom: 12, right: 12, pointerEvents: "auto", cursor: "pointer", background: safeGuides ? "var(--accent-soft)" : "rgba(6,10,16,.66)", color: safeGuides ? "var(--accent)" : undefined }}
+            onClick={() => setSafeGuides((s) => { localStorage.setItem("ohe.safeGuides", s ? "0" : "1"); return !s; })}>▦ 安全区</button>
           <svg ref={svgRef} className="stage-overlay" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
             onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onDoubleClick={onDoubleClick}>
             {extraOutlines.map((o) => (

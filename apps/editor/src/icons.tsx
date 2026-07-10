@@ -61,7 +61,17 @@ export const PLUGIN_ICONS: Record<string, { icon: string; tint: string }> = {
   "globe-intro": { icon: "globe", tint: "linear-gradient(135deg,#4d8dff,#1e4fd1)" },
   "globe-route": { icon: "globe", tint: "linear-gradient(135deg,#22d3ee,#0e7fa8)" },
   "countdown": { icon: "timer", tint: "linear-gradient(135deg,#f2c94c,#c98a1e)" },
-  "light-sweep-title": { icon: "sweep", tint: "linear-gradient(135deg,#7b5cff,#4d8dff)" }
+  "light-sweep-title": { icon: "sweep", tint: "linear-gradient(135deg,#7b5cff,#4d8dff)" },
+  "neon-trace-title": { icon: "text", tint: "linear-gradient(135deg,#4f8cff,#2b4fd1)" },
+  "aperture-reveal": { icon: "camera", tint: "linear-gradient(135deg,#5a7dc7,#22335f)" },
+  "radar-sweep": { icon: "sweep", tint: "linear-gradient(135deg,#3ecf8e,#0e7a5a)" },
+  "kinetic-bars": { icon: "rect", tint: "linear-gradient(135deg,#4f8cff,#1e4fd1)" },
+  "particle-assemble": { icon: "sparkle", tint: "linear-gradient(135deg,#6ea3ff,#2b57c9)" },
+  "hyperspace-warp": { icon: "sun", tint: "linear-gradient(135deg,#8fb4ff,#3a2b9e)" },
+  "velocity-zoom": { icon: "video", tint: "linear-gradient(135deg,#a45cff,#ff2e63)" },
+  "beat-bounce": { icon: "audio", tint: "linear-gradient(135deg,#2f3a52,#0d1119)" },
+  "rgb-glitch-shake": { icon: "sparkle", tint: "linear-gradient(135deg,#ff2e63,#2effe6)" },
+  "sticker-pop": { icon: "circle", tint: "linear-gradient(135deg,#ff7ab8,#7a3bd6)" }
 };
 export const pluginIcon = (name: string): { icon: string; tint: string } =>
   PLUGIN_ICONS[name] ?? { icon: "sparkle", tint: "linear-gradient(135deg,#6d7cff,#22d3ee)" };

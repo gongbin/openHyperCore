@@ -13,12 +13,14 @@ import type { AnyLayer } from "./helpers.ts";
 // pairing drawFrameToCanvas with a browser AssetProvider (fonts/images via
 // fetch, video frames via a seeked <video> element).
 
-// Default preview fonts, tried in order (the old skia-cdn Roboto now 403s).
-// Noto Sans SC covers 中文 + latin so captions/titles preview correctly; the
-// tiny Roboto WOFF is the fallback when the CJK download fails.
+import instantFontUrl from "./assets/ZCOOLKuaiLe-Regular.ttf?url";
+
+// Default preview fonts. The bundled ZCOOL KuaiLe TTF (local asset, 中文+latin)
+// makes text render on the very first frame with zero network; the neutral
+// Noto Sans SC (~8MB CDN download) replaces it as soon as it lands.
 const DEFAULT_FONT_URLS = [
   "https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@Sans2.004/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf",
-  "https://cdn.jsdelivr.net/npm/@fontsource/roboto@5.1.0/files/roboto-latin-400-normal.woff"
+  instantFontUrl
 ];
 
 function isAssetUrl(src: string): boolean {
@@ -95,12 +97,26 @@ export class PreviewRenderer {
     return p;
   }
 
-  async #defaultTypeface(): Promise<Typeface | null> {
-    for (const url of DEFAULT_FONT_URLS) {
-      const tf = await this.#fetchTypeface(url);
-      if (tf) return tf;
-    }
-    return null;
+  #cjkTypeface: Typeface | null = null;
+  /** Fired once when the full CJK default font finishes downloading — callers
+   *  should re-render any static frame so 中文 text upgrades from the latin
+   *  fallback. */
+  onFontUpgrade: (() => void) | null = null;
+
+  #defaultTypeface(): Promise<Typeface | null> {
+    // The full CJK font is ~8MB and can take minutes on a slow link — never
+    // block a frame on it. Start (or reuse) the download, and until it lands
+    // serve the tiny latin fallback so text renders immediately; frames render
+    // continuously, so later frames upgrade to the CJK face automatically.
+    const cjk = this.#fetchTypeface(DEFAULT_FONT_URLS[0]!);
+    void cjk.then((tf) => {
+      if (tf && !this.#cjkTypeface) {
+        this.#cjkTypeface = tf;
+        this.onFontUpgrade?.();
+      }
+    });
+    if (this.#cjkTypeface) return Promise.resolve(this.#cjkTypeface);
+    return this.#fetchTypeface(DEFAULT_FONT_URLS[1]!).then((latin) => latin ?? cjk);
   }
 
   #videoEntry(src: string): VideoEntry {

@@ -136,7 +136,7 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
                 <div key={p.name} className="fx-card" onClick={() => onAddPlugin(p)}>
                   <div className="fx-icon" style={{ background: tint }}><Icon name={icon} size={20} /></div>
                   <div style={{ minWidth: 0 }}>
-                    <b>{p.displayName ?? p.name}</b>
+                    <b>{p.displayName ?? p.name}{p.category === "tiktok" ? <span className="tag-tiktok">TIKTOK</span> : null}</b>
                     <p>{p.description ?? ""}</p>
                   </div>
                 </div>

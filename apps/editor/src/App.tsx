@@ -12,6 +12,8 @@ import {
 } from "./helpers.ts";
 import type { AnyLayer, Bezier, Kf, PathSample, SelPath, TKey } from "./helpers.ts";
 import { TopBar } from "./components/TopBar.tsx";
+import type { EditorView } from "./components/TopBar.tsx";
+import { PluginGallery } from "./components/PluginGallery.tsx";
 import { LibraryPanel, importFile } from "./components/LibraryPanel.tsx";
 import type { EditorAsset } from "./components/LibraryPanel.tsx";
 import { StagePanel } from "./components/StagePanel.tsx";
@@ -59,6 +61,7 @@ export function App() {
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState("");
   const [theme, setTheme] = useState<"dark" | "light">(() => (localStorage.getItem("ohe.theme") === "light" ? "light" : "dark"));
+  const [view, setView] = useState<EditorView>("editor");
   const fileRef = useRef<HTMLInputElement>(null);
   const filePurpose = useRef<{ mode: "layer" | "svg" | "project"; at?: [number, number] }>({ mode: "layer" });
 
@@ -91,11 +94,18 @@ export function App() {
       });
   }, []);
 
+  const [fontTick, setFontTick] = useState(0);
   useEffect(() => {
     let cancelled = false;
     if (!canvasRef.current) return;
     PreviewRenderer.create(canvasRef.current)
-      .then((r) => { if (!cancelled) { rendererRef.current = r; setReady(true); } })
+      .then((r) => {
+        if (cancelled) return;
+        // Redraw the current frame once the full CJK font finishes loading.
+        r.onFontUpgrade = () => setFontTick((t) => t + 1);
+        rendererRef.current = r;
+        setReady(true);
+      })
       .catch((e: unknown) => setStatus(`预览初始化失败: ${String(e)}`));
     return () => { cancelled = true; };
   }, []);
@@ -106,7 +116,7 @@ export function App() {
 
   useEffect(() => {
     if (ready && expansion.comp) drawFrame(expansion.comp, timeMs);
-  }, [ready, expansion, timeMs, drawFrame]);
+  }, [ready, expansion, timeMs, drawFrame, fontTick]);
 
   // ---- playback ------------------------------------------------------------
   const durRef = useRef(composition.durationMs);
@@ -341,9 +351,9 @@ export function App() {
       default: return;
     }
   }
-  function addPlugin(def: PluginDefinition): void {
+  function addPlugin(def: PluginDefinition, params?: Record<string, unknown>): void {
     const endMs = Math.min(def.defaultDurationMs ?? composition.durationMs, composition.durationMs);
-    addLayer({ type: "plugin", plugin: def.name, params: pluginDefaults(def), endMs } as Layer);
+    addLayer({ type: "plugin", plugin: def.name, params: params ?? pluginDefaults(def), endMs } as Layer);
   }
   function addAssetLayer(asset: EditorAsset, at?: [number, number]): void {
     const W = composition.width, H = composition.height;
@@ -642,6 +652,7 @@ export function App() {
         }} />
 
       <TopBar
+        view={view} onView={setView}
         projectName={projectName} onProjectName={setProjectName}
         canUndo={history.canUndo} canRedo={history.canRedo}
         onUndo={history.undo} onRedo={history.redo}
@@ -656,6 +667,9 @@ export function App() {
         status={status}
       />
 
+      {/* The editor stays mounted while the gallery is open — the preview
+          renderer is bound to the live <canvas> element. */}
+      <div style={{ display: view === "editor" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <div className="body">
         <LibraryPanel
           composition={composition} selection={selection} assets={assets} plugins={PLUGINS}
@@ -727,6 +741,19 @@ export function App() {
         onKfRetime={kfRetime}
         onKfDelete={deleteKey}
       />
+      </div>
+
+      {view === "plugins" ? (
+        <PluginGallery
+          plugins={PLUGINS}
+          assets={assets}
+          onAddToTimeline={(def, params) => {
+            addPlugin(def, params);
+            setView("editor");
+            setStatus(`已添加插件「${def.displayName ?? def.name}」到时间线`);
+          }}
+        />
+      ) : null}
 
       {renderOpen ? <RenderDialog composition={composition} projectName={projectName} onClose={() => setRenderOpen(false)} /> : null}
       <AssistantPanel open={aiOpen} onClose={() => setAiOpen(false)} composition={composition} plugins={PLUGINS} onApply={applyAiComposition} />

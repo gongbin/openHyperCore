@@ -12,8 +12,8 @@ importers:
         specifier: ^0.41.1
         version: 0.41.1
       openhypercore:
-        specifier: ^0.3.0
-        version: 0.3.0
+        specifier: ^0.5.0
+        version: 0.5.0
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -579,8 +579,8 @@ packages:
     resolution: {integrity: sha512-J6l92tKHX6w8Jy5nO1Vuc01NoIiRGi/d6qBKVxh+IQ8Cr3b6HbVNfKiF8ZpFKufTwpwxMmce2W3iQZ861ZRyTg==}
     engines: {node: '>=18'}
 
-  openhypercore@0.3.0:
-    resolution: {integrity: sha512-HlzkIEJd6deDXu/TfExo4kTsCRRjwCzWFqts9rE2j6n1GEturFGgEU4YUtX5U8bAneyqleUk8vpPXTNzj4R3WQ==}
+  openhypercore@0.5.0:
+    resolution: {integrity: sha512-gD25BBgWfOA7P1mBWlT8MybbmZR5cLiPmomkc2ecvalIkbVCZYq86sJAkl/5x3ETQDegkTH/q5p6aXwqeMkXGA==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -1106,7 +1106,7 @@ snapshots:
 
   node-releases@2.0.50: {}
 
-  openhypercore@0.3.0:
+  openhypercore@0.5.0:
     dependencies:
       '@ffmpeg-installer/ffmpeg': 1.1.0
       canvaskit-wasm: 0.41.1
