@@ -28,6 +28,8 @@ export type {
   TransitionSeriesTransitionMarker
 } from "./scene-transitions.ts";
 export { interpolate, random, spring, springDurationMs, springKeyframes, stagger } from "./interpolate.ts";
+export { motionPathKeyframes } from "./motion-path.ts";
+export type { MotionPathOptions, MotionPathTracks } from "./motion-path.ts";
 export type { ExtrapolateType, InterpolateOptions, SpringConfig, SpringKeyframesOptions, SpringOptions } from "./interpolate.ts";
 export { interpolateColors, mixColors, parseCssColor, resolveColor } from "./color.ts";
 export type { Rgba } from "./color.ts";

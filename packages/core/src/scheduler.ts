@@ -50,6 +50,11 @@ function resolveLayer(layer: Layer, timeMs: number, durationMs: number, defaultF
     ...rest,
     transform: resolveTransform(transform, transformTimeMs)
   } as ResolvedLayer;
+  // Layer blur is keyframable on every layer type (plain numbers pass through
+  // the spread above); it runs on the same clock as the transform.
+  if (Array.isArray(layer.blur)) {
+    resolved.blur = resolveScalar(layer.blur, transformTimeMs, 0);
+  }
   // Apply the composition-level default font to text/captions that don't set
   // their own, so each composition can pick its typeface without hardcoding.
   if ((resolved.type === "text" || resolved.type === "caption") && resolved.font === undefined && defaultFont !== undefined) {

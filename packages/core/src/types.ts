@@ -97,15 +97,18 @@ export type BaseLayer = {
   clip?: LayerClip;
   // Blend mode for compositing this layer onto the content beneath it.
   blendMode?: BlendMode;
-  // Gaussian blur (sigma, px) over the whole rendered layer. NOTE: shape layers
-  // interpret their own `blur` as a mask-filter glow instead (see ShapeLayer);
-  // for every other layer type this blurs the composited result.
-  blur?: number;
+  // Gaussian blur (sigma, px) over the whole rendered layer — keyframable
+  // (focus pulls, dreamy intros). NOTE: shape layers interpret their own
+  // `blur` as a mask-filter glow instead (see ShapeLayer); for every other
+  // layer type this blurs the composited result.
+  blur?: AnimatedScalar;
   // Directional accumulation motion blur.
   motionBlur?: MotionBlur;
 };
 
 export type TextStyle = {
+  // Extra advance (px) inserted between characters — headline tracking.
+  letterSpacing?: number;
   // Outline drawn behind the fill — great for making titles pop.
   stroke?: string;
   strokeWidth?: number;
@@ -158,7 +161,8 @@ export type ShapeLayer = BaseLayer & {
   dash?: number[];
   dashPhase?: number;
   // Soft blur (mask filter sigma) — enables neon glow / soft light shapes.
-  blur?: number;
+  // Keyframable (pulsing glows).
+  blur?: AnimatedScalar;
   // Animatable draw window over the path's TOTAL length, both 0..1: only the
   // [trimStart, trimEnd] fraction is drawn. Keyframing trimEnd 0→1 "draws"
   // the path over time (route lines, signatures). shape:"path" only.
@@ -310,10 +314,11 @@ export type ResolvedGroupReveal = Omit<GroupReveal, "progress"> & {
 
 // A resolved group carries recursively resolved children (each already
 // evaluated at the group's local time).
-export type ResolvedGroupLayer = Omit<GroupLayer, "transform" | "layers" | "reveal"> & {
+export type ResolvedGroupLayer = Omit<GroupLayer, "transform" | "layers" | "reveal" | "blur"> & {
   transform: ResolvedTransform;
   layers: ResolvedLayer[];
   reveal?: ResolvedGroupReveal;
+  blur?: number;
 };
 
 export type ResolvedGlobeRoute = Omit<GlobeRoute, "progress"> & {
@@ -321,34 +326,38 @@ export type ResolvedGlobeRoute = Omit<GlobeRoute, "progress"> & {
 };
 
 // A resolved globe carries rotation/radius/route-progress as plain numbers.
-export type ResolvedGlobeLayer = Omit<GlobeLayer, "transform" | "radius" | "yaw" | "pitch" | "routes"> & {
+export type ResolvedGlobeLayer = Omit<GlobeLayer, "transform" | "radius" | "yaw" | "pitch" | "routes" | "blur"> & {
   transform: ResolvedTransform;
   radius: number;
   yaw: number;
   pitch: number;
   routes?: ResolvedGlobeRoute[];
+  blur?: number;
 };
 
 // A resolved shape carries trim/color/stroke tracks evaluated to plain values.
-export type ResolvedShapeLayer = Omit<ShapeLayer, "transform" | "trimStart" | "trimEnd" | "fill" | "stroke" | "strokeWidth"> & {
+export type ResolvedShapeLayer = Omit<ShapeLayer, "transform" | "trimStart" | "trimEnd" | "fill" | "stroke" | "strokeWidth" | "blur"> & {
   transform: ResolvedTransform;
   trimStart?: number;
   trimEnd?: number;
   fill?: Fill;
   stroke?: string;
   strokeWidth?: number;
+  blur?: number;
 };
 
 // A resolved text layer carries its color track evaluated to a plain fill.
-export type ResolvedTextLayer = Omit<TextLayer, "transform" | "color"> & {
+export type ResolvedTextLayer = Omit<TextLayer, "transform" | "color" | "blur"> & {
   transform: ResolvedTransform;
   color?: Fill;
+  blur?: number;
 };
 
 // Plugin nodes never survive to resolve time (expandComposition replaces them),
 // so they are excluded here and renderers only ever meet core layer types.
-export type ResolvedLayer<T extends Layer = Layer> = T extends GroupLayer ? ResolvedGroupLayer : T extends ShapeLayer ? ResolvedShapeLayer : T extends TextLayer ? ResolvedTextLayer : T extends GlobeLayer ? ResolvedGlobeLayer : T extends PluginLayer ? never : T extends Layer ? Omit<T, "transform"> & {
+export type ResolvedLayer<T extends Layer = Layer> = T extends GroupLayer ? ResolvedGroupLayer : T extends ShapeLayer ? ResolvedShapeLayer : T extends TextLayer ? ResolvedTextLayer : T extends GlobeLayer ? ResolvedGlobeLayer : T extends PluginLayer ? never : T extends Layer ? Omit<T, "transform" | "blur"> & {
   transform: ResolvedTransform;
+  blur?: number;
 } : never;
 
 export type ResolvedFrame = {

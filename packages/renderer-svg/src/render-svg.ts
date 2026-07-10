@@ -34,7 +34,7 @@ function renderLayerContent(layer: ResolvedLayer): string {
     case "group":
       return layer.layers.map(renderLayer).join("");
     case "text":
-      return `<text x="0" y="0" font-family="${escapeAttribute(layer.font ?? "sans-serif")}" font-size="${layer.size ?? 16}" fill="${escapeAttribute(solidColor(layer.color, "#000"))}" text-anchor="${textAnchor(layer.align)}">${escapeText(layer.text)}</text>`;
+      return `<text x="0" y="0" font-family="${escapeAttribute(layer.font ?? "sans-serif")}" font-size="${layer.size ?? 16}"${layer.letterSpacing ? ` letter-spacing="${layer.letterSpacing}"` : ""} fill="${escapeAttribute(solidColor(layer.color, "#000"))}" text-anchor="${textAnchor(layer.align)}">${escapeText(layer.text)}</text>`;
     case "caption":
       return renderCaption(layer);
     case "shape":
@@ -62,7 +62,7 @@ function renderCaption(layer: Extract<ResolvedLayer, { type: "caption" }>): stri
   const background = layer.backgroundColor
     ? `<rect x="${formatNumber(x - padding)}" y="${formatNumber(-lineHeight - padding)}" width="${formatNumber(textWidth + padding * 2)}" height="${formatNumber(lineHeight + padding * 2)}" fill="${escapeAttribute(solidColor(layer.backgroundColor, "#000"))}" />`
     : "";
-  const text = `<text x="0" y="0" font-family="${escapeAttribute(layer.font ?? "sans-serif")}" font-size="${size}" fill="${escapeAttribute(solidColor(layer.color, "#fff"))}" text-anchor="${textAnchor(layer.align)}">${escapeText(layer.text)}</text>`;
+  const text = `<text x="0" y="0" font-family="${escapeAttribute(layer.font ?? "sans-serif")}" font-size="${size}"${layer.letterSpacing ? ` letter-spacing="${layer.letterSpacing}"` : ""} fill="${escapeAttribute(solidColor(layer.color, "#fff"))}" text-anchor="${textAnchor(layer.align)}">${escapeText(layer.text)}</text>`;
   return [background, text].filter(Boolean).join("");
 }
 

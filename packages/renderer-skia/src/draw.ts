@@ -473,6 +473,7 @@ function drawShape(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Resolved
 }
 
 type TextStyle = {
+  letterSpacing?: number;
   stroke?: string;
   strokeWidth?: number;
   shadowColor?: string;
@@ -487,6 +488,11 @@ type TextStyle = {
 type FontRun = { fontIndex: number; text: string };
 
 function splitRuns(stack: Font[], text: string): FontRun[] {
+  // No typeface could be loaded at all (e.g. a browser provider offline):
+  // degrade to drawing nothing instead of crashing the whole frame.
+  if (stack.length === 0) {
+    return [];
+  }
   const runs: FontRun[] = [];
   for (const ch of text) {
     let fontIndex = 0;
@@ -522,22 +528,35 @@ function measureTextWidth(font: Font, text: string): number {
   return sum;
 }
 
-// Total width of a string across the font stack (fallbacks included).
-function measureStack(stack: Font[], text: string): number {
+// Total width of a string across the font stack (fallbacks included), with
+// optional per-character tracking (letterSpacing).
+function measureStack(stack: Font[], text: string, letterSpacing = 0): number {
   let sum = 0;
   for (const run of splitRuns(stack, text)) {
     sum += measureTextWidth(stack[run.fontIndex]!, run.text);
   }
+  if (letterSpacing !== 0) {
+    sum += letterSpacing * Math.max(0, [...text].length - 1);
+  }
   return sum;
 }
 
-// Draw each run with its resolved font, advancing x by the run's width.
-function drawRuns(canvas: Canvas, runs: FontRun[], stack: Font[], x: number, baselineY: number, paint: Paint): void {
+// Draw each run with its resolved font, advancing x by the run's width. With
+// letterSpacing the run is drawn per character so tracking applies inside
+// runs too, not just between them.
+function drawRuns(canvas: Canvas, runs: FontRun[], stack: Font[], x: number, baselineY: number, paint: Paint, letterSpacing = 0): void {
   let cursor = x;
   for (const run of runs) {
     const font = stack[run.fontIndex]!;
-    canvas.drawText(run.text, cursor, baselineY, paint, font);
-    cursor += measureTextWidth(font, run.text);
+    if (letterSpacing === 0) {
+      canvas.drawText(run.text, cursor, baselineY, paint, font);
+      cursor += measureTextWidth(font, run.text);
+      continue;
+    }
+    for (const ch of run.text) {
+      canvas.drawText(ch, cursor, baselineY, paint, font);
+      cursor += measureTextWidth(font, ch) + letterSpacing;
+    }
   }
 }
 
@@ -546,13 +565,14 @@ function drawRuns(canvas: Canvas, runs: FontRun[], stack: Font[], x: number, bas
 // applied via the font stack.
 function drawStyledText(CanvasKit: CanvasKit, canvas: Canvas, text: string, x: number, baselineY: number, color: Fill, opacity: number, stack: Font[], style: TextStyle): void {
   const runs = splitRuns(stack, text);
+  const letterSpacing = style.letterSpacing ?? 0;
 
   if (style.shadowColor) {
     const shadowPaint = makePaint(CanvasKit, style.shadowColor, opacity);
     const blur = CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, Math.max(0.1, style.shadowBlur ?? 6), false);
     shadowPaint.setMaskFilter(blur);
     try {
-      drawRuns(canvas, runs, stack, x + (style.shadowDx ?? 0), baselineY + (style.shadowDy ?? 4), shadowPaint);
+      drawRuns(canvas, runs, stack, x + (style.shadowDx ?? 0), baselineY + (style.shadowDy ?? 4), shadowPaint, letterSpacing);
     } finally {
       blur.delete();
       shadowPaint.delete();
@@ -566,7 +586,7 @@ function drawStyledText(CanvasKit: CanvasKit, canvas: Canvas, text: string, x: n
     strokePaint.setStrokeJoin(CanvasKit.StrokeJoin.Round);
     strokePaint.setStrokeCap(CanvasKit.StrokeCap.Round);
     try {
-      drawRuns(canvas, runs, stack, x, baselineY, strokePaint);
+      drawRuns(canvas, runs, stack, x, baselineY, strokePaint, letterSpacing);
     } finally {
       strokePaint.delete();
     }
@@ -574,7 +594,7 @@ function drawStyledText(CanvasKit: CanvasKit, canvas: Canvas, text: string, x: n
 
   const { paint: fillPaint, shader: fillShader } = makeFillPaint(CanvasKit, color, opacity);
   try {
-    drawRuns(canvas, runs, stack, x, baselineY, fillPaint);
+    drawRuns(canvas, runs, stack, x, baselineY, fillPaint, letterSpacing);
   } finally {
     fillPaint.delete();
     fillShader?.delete();
@@ -648,9 +668,10 @@ async function drawText(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Res
 
   try {
     const lineHeight = layer.lineHeight ?? size * 1.2;
-    const lines = layer.maxWidth ? wrapText((t) => measureStack(stack, t), layer.text, layer.maxWidth) : layer.text.split("\n");
+    const spacing = layer.letterSpacing ?? 0;
+    const lines = layer.maxWidth ? wrapText((t) => measureStack(stack, t, spacing), layer.text, layer.maxWidth) : layer.text.split("\n");
     lines.forEach((line, index) => {
-      const x = lineX(layer.align, measureStack(stack, line));
+      const x = lineX(layer.align, measureStack(stack, line, spacing));
       drawStyledText(CanvasKit, canvas, line, x, index * lineHeight, layer.color ?? "#000", layer.transform.opacity, stack, layer);
     });
   } finally {
@@ -665,7 +686,7 @@ async function drawCaption(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<
 
   const stack = await loadFontStack(CanvasKit, size, layer.font, provider);
   try {
-    const measure = (t: string) => measureStack(stack, t);
+    const measure = (t: string) => measureStack(stack, t, layer.letterSpacing ?? 0);
     const lines = layer.maxWidth ? wrapText(measure, layer.text, layer.maxWidth) : layer.text.split("\n");
     const blockWidth = layer.maxWidth ?? Math.max(0, ...lines.map(measure));
 
@@ -1073,7 +1094,7 @@ function textStylePad(layer: { stroke?: string; strokeWidth?: number; shadowColo
 async function textBlockBounds(CanvasKit: CanvasKit, layer: Extract<ResolvedLayer, { type: "text" | "caption" }>, size: number, lineHeight: number, provider: AssetProvider): Promise<{ rect: Rect; lines: number; blockWidth: number }> {
   const stack = await loadFontStack(CanvasKit, size, layer.font, provider);
   try {
-    const measure = (t: string) => measureStack(stack, t);
+    const measure = (t: string) => measureStack(stack, t, layer.letterSpacing ?? 0);
     const lines = layer.maxWidth ? wrapText(measure, layer.text, layer.maxWidth) : layer.text.split("\n");
     let minX = 0;
     let maxX = 0;

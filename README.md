@@ -6,6 +6,25 @@ OpenHyperCore is a lightweight video editing and rendering engine prototype for 
 
 The project is currently in alpha. The core CLI and rendering pipeline are usable, but OpenHyperCore is not yet a complete HyperFrames replacement. Implemented capabilities include graphic/text composition, captions, reusable cinematic effect helpers, timeline composition, PNG still export, silent MP4 rendering, audio muxing, multi-audio mixing, VideoLayer, local asset probe/cache, batched raw RGBA video-frame decoding, incremental frame reuse, worker_threads frame rendering, and AWS 2CPU/2G benchmark validation. HTTP service APIs and release packaging remain on the roadmap.
 
+## Screenshots
+
+**openHyperEditor** — the companion browser studio (`apps/editor`): WYSIWYG CanvasKit preview of the exact engine draw tree, layer/keyframe timeline, schema-driven inspectors, one-click MP4 rendering via the HTTP service:
+
+![openHyperEditor](docs/screenshots/editor.png)
+
+The built-in **plugin gallery** — every motion-effect plugin with a live looping preview, auto-generated parameter form and the Scene Graph IR it produces:
+
+![Plugin gallery](docs/screenshots/plugin-gallery.png)
+
+A few of the motion-effect plugins, rendered by the engine itself (`openhyper still`). Each one is a single non-destructive `{ type: "plugin" }` node in the IR:
+
+| | |
+| --- | --- |
+| ![neon-trace-title](docs/screenshots/neon-trace-title.png) `neon-trace-title` | ![hyperspace-warp](docs/screenshots/hyperspace-warp.png) `hyperspace-warp` |
+| ![rgb-glitch-shake](docs/screenshots/rgb-glitch-shake.png) `rgb-glitch-shake` | ![sticker-pop](docs/screenshots/sticker-pop.png) `sticker-pop` |
+| ![kinetic-bars](docs/screenshots/kinetic-bars.png) `kinetic-bars` | ![radar-sweep](docs/screenshots/radar-sweep.png) `radar-sweep` |
+| ![aperture-reveal](docs/screenshots/aperture-reveal.png) `aperture-reveal` | ![particle-assemble](docs/screenshots/particle-assemble.png) `particle-assemble` |
+
 ## Open Source
 
 OpenHyperCore is an open-source TypeScript video rendering core for template video generation, batch editing, server-side rendering, and automated content production pipelines. The project is released under the MIT License. See [LICENSE](LICENSE).
@@ -95,6 +114,124 @@ Built-in plugins (`openhypercore/plugins`):
 | `ken-burns` | Full-frame photo with a slow centred zoom + drift, fading in/out | `src`, `zoomFrom/To`, `driftX/Y` |
 | `glitch-title` | Centered RGB-split glitch title with flicker and slice bars | `text`, `size`, accent colors |
 | `light-sweep-title` | Title rises in, an underline grows, a light bar sweeps across | `text`, `size`, `sweepColor` |
+| `neon-trace-title` | Letters ignite one by one along a glowing neon trace, an underline draws with a travelling light node, then the word floods to full fill | `text`, `size`, `color`, `glow`, `traceMs`, `background` |
+| `aperture-reveal` | A camera iris of angled blades holds shut, then rotates apart to expose the scene behind, dropping a centred title as the last blade clears | `blades`, `color`, `holdMs`, `openMs`, `title`, `background` |
+| `radar-sweep` | A phosphor radar grid with a rotating sweep line and a decaying trail; blips flare and ring out as the beam passes over them | `color`, `rings`, `sweepMs`, `blips`, `background` |
+| `kinetic-bars` | Solid colour bars punch in from alternating sides, each masking a line of type that snaps into place with a staggered ease | `lines` (`/`-separated), `barColor`, `staggerMs`, `slideMs`, `background` |
+| `particle-assemble` | Scattered particles converge into a ring-mark logo before the wordmark fades up beneath it | `count`, `color`, `assembleMs`, `shape`, `title`, `background` |
+| `hyperspace-warp` | Star streaks accelerate radially to a white flash at light-speed, then the title punches in from oversize | `streaks`, `accel`, `flashMs`, `title` |
+| `velocity-zoom` | CapCut-style speed-ramp opener: the frame punch-zooms on the beat with a motion-blur shake, then snaps to the title | `text`, `beats`, `zoom`, `shake`, `blur`, `accent` |
+| `beat-bounce` | Bold word slams in and squash-bounces on every beat with a drop shadow — the classic caption-on-the-beat lyric style | `text`, `bounce`, `beatMs`, `boxColor`/`textColor`, `accent` |
+| `rgb-glitch-shake` | Chromatic-aberration glitch: RGB channels split and jitter, slice bars tear across the title, digital noise flickers | `text`, `split`, `sliceRate`, `noise`, `color`/`colorB` |
+| `sticker-pop` | Emoji/sticker confetti bursts in with elastic overshoot around a bouncing speech-bubble caption | `caption`, `stickers`, `pop`, `spin`, `bubbleColor`, `accent` |
+
+The ten newest are six `opener` effects (`neon-trace-title` through `hyperspace-warp`) plus a TikTok/CapCut-style pack of four (`velocity-zoom`, `beat-bounce`, `rgb-glitch-shake`, `sticker-pop`, category `tiktok`) — punchy, beat-driven short-video openers. Their full parameter schemas:
+
+**`neon-trace-title`** (default duration 3400 ms)
+
+| Param | Label | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| `text` | Title text | string | `"HYPERCORE"` | — |
+| `size` | Font size (0 = auto) | number | `0` | ≥ 0 |
+| `color` | Neon color | color | `#4f8cff` | — |
+| `glow` | Glow radius (px) | number | `18` | 0–60 |
+| `traceMs` | Trace duration (ms) | number | `2400` | ≥ 200 |
+| `background` | Background | color | `#0d1526` | — |
+
+**`aperture-reveal`** (default duration 3600 ms)
+
+| Param | Label | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| `blades` | Blades | number | `8` | 3–16 |
+| `color` | Accent color | color | `#4f8cff` | — |
+| `holdMs` | Hold shut (ms) | number | `300` | ≥ 0 |
+| `openMs` | Open duration (ms) | number | `1600` | ≥ 200 |
+| `title` | Title text | string | `"APERTURE"` | — |
+| `background` | Backdrop color | color | `#2a3b66` | — |
+
+**`radar-sweep`** (default duration 4000 ms)
+
+| Param | Label | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| `color` | Phosphor color | color | `#7dffcf` | — |
+| `rings` | Rings | number | `4` | 1–8 |
+| `sweepMs` | Sweep period (ms) | number | `4000` | ≥ 500 |
+| `blips` | Blips | number | `4` | 0–8 |
+| `background` | Background | color | `#060d0a` | — |
+
+**`kinetic-bars`** (default duration 3600 ms)
+
+| Param | Label | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| `lines` | Lines (separated by /) | string | `"MOTION / IN / FRAMES"` | — |
+| `barColor` | Bar color | color | `#4f8cff` | — |
+| `staggerMs` | Stagger (ms) | number | `120` | 0–600 |
+| `slideMs` | Slide duration (ms) | number | `400` | 100–2000 |
+| `background` | Background | color | `#0b0f16` | — |
+
+**`particle-assemble`** (default duration 4000 ms)
+
+| Param | Label | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| `count` | Particles | number | `90` | 8–240 |
+| `color` | Particle color | color | `#4f8cff` | — |
+| `assembleMs` | Assemble duration (ms) | number | `2800` | ≥ 300 |
+| `shape` | Target shape | select | `ring` | `ring` / `burst` |
+| `title` | Title text | string | `"ASSEMBLE"` | — |
+| `background` | Background | color | `#070a12` | — |
+
+**`hyperspace-warp`** (default duration 3800 ms)
+
+| Param | Label | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| `streaks` | Streak count | number | `120` | 20–240 |
+| `accel` | Acceleration exponent | number | `2.0` | 1–4 |
+| `flashMs` | Flash duration (ms) | number | `300` | 0–1000 |
+| `title` | Title text | string | `"HYPERSPACE"` | — |
+
+**`velocity-zoom`** (default duration 2600 ms)
+
+| Param | Label | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| `text` | Title text | string | `"GO VIRAL"` | — |
+| `beats` | Beats | number | `3` | 1–8 |
+| `zoom` | Punch zoom | number | `1.9` | 1.1–3 |
+| `shake` | Shake (px) | number | `14` | 0–40 |
+| `blur` | Motion blur | number | `0.6` | 0–1 |
+| `accent` | Accent color | color | `#4f8cff` | — |
+
+**`beat-bounce`** (default duration 2400 ms)
+
+| Param | Label | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| `text` | Caption text | string | `"LET’S GO"` | — |
+| `bounce` | Bounce amount | number | `0.7` | 0–1 |
+| `beatMs` | Beat period (ms) | number | `400` | 120–1200 |
+| `boxColor` | Box color | color | `#000000` | — |
+| `textColor` | Text color | color | `#ffffff` | — |
+| `accent` | Accent color | color | `#4f8cff` | — |
+
+**`rgb-glitch-shake`** (default duration 2600 ms)
+
+| Param | Label | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| `text` | Title text | string | `"GLITCH"` | — |
+| `split` | Channel split (px) | number | `16` | 0–48 |
+| `sliceRate` | Slice tear rate | number | `0.4` | 0–1 |
+| `noise` | Noise amount | number | `0.3` | 0–1 |
+| `color` | Channel A color | color | `#ff2e63` | — |
+| `colorB` | Channel B color | color | `#2effe6` | — |
+
+**`sticker-pop`** (default duration 3000 ms)
+
+| Param | Label | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| `caption` | Caption | string | `"OMG 😱"` | — |
+| `stickers` | Stickers (space-separated) | string | `"✨ 🔥 💖 😂 ⭐"` | — |
+| `pop` | Pop overshoot | number | `0.8` | 0–1 |
+| `spin` | Orbit drift | number | `0.3` | 0–1 |
+| `bubbleColor` | Bubble color | color | `#ffffff` | — |
+| `accent` | Sticker accent | color | `#ffd166` | — |
 
 Plugin content lives on a LOCAL timeline: the node's `startMs/endMs` place the whole effect, and its base props (`transform`, `clip`, `blendMode`, ...) apply to the expanded group — so effects relocate, fade and mask like any other layer. Expanding manually (e.g. for inspection) is one call:
 
@@ -135,17 +272,17 @@ registerPlugin(definePlugin({
 - Per-axis scale and reveal masks in the IR: `transform.scaleX/scaleY` (multiplied with uniform `scale`), and `GroupLayer.reveal` (`wipe`/`clock` with an animated 0→1 `progress`) clip a group to a swept rect or clock wedge.
 - Static-layer raster cache: groups whose resolved content repeats across frames (only their transform/opacity/reveal animating) are rastered once and blitted afterwards. Cost-driven and self-tuning — it times every direct draw and caches only subtrees that draw slower than the predicted blit, so cheap flat scenes never regress while glow/text-heavy cards speed up. Opt out per group with `cache: false` or globally with `--no-layer-cache`; image layers are also decode-cached across frames.
 - Cinematic effect helpers: `cinematicBars`, `flashTransitionLayer`, `speedLineBurst`, and `glitchTitle` generate reusable intro/transition layer stacks for high-energy reels without hand-writing dozens of layers.
-- Motion-effect plugins: `{ type: "plugin" }` IR nodes expand into plain layers via `openhypercore/plugins` (`expandComposition`, auto-run by the CLI/service/editor), with a serializable param schema editors turn into forms — 8 built-ins from stage curtains to a rotating satellite globe (see the section above), plus `definePlugin`/`registerPlugin` for your own.
+- Motion-effect plugins: `{ type: "plugin" }` IR nodes expand into plain layers via `openhypercore/plugins` (`expandComposition`, auto-run by the CLI/service/editor), with a serializable param schema editors turn into forms — 18 built-ins from stage curtains to a rotating satellite globe (see the section above), plus `definePlugin`/`registerPlugin` for your own.
 - Scene timeline builder: `createTimeline(...).scene(...).transition(...).build()` lays out named scenes and transitions sequentially, returning both a ready Composition and timing markers.
 - Layer fit modes: `ImageLayer.fit` and `VideoLayer.fit` support `fill` (stretch), `cover` (centre-crop), and `contain` (letterbox); circular clips default to `cover`.
-- Visual effects: gradient fills (`fill`/`color`/`backgroundColor` accept `{ type: "linear"|"radial", stops }`), per-layer `blendMode` (multiply/screen/overlay/add/...), full-layer `blur` (Gaussian), and directional `motionBlur` ({ angle, distance, samples }). See `examples/effects-showcase.ts`.
+- Visual effects: gradient fills (`fill`/`color`/`backgroundColor` accept `{ type: "linear"|"radial", stops }`), per-layer `blendMode` (multiply/screen/overlay/add/...), full-layer `blur` (Gaussian, **keyframable** — focus pulls and pulsing glows), and directional `motionBlur` ({ angle, distance, samples }). See `examples/effects-showcase.ts`.
 - Arbitrary clipping: any layer (or whole group) sets `clip` to a `rect` (with optional corner `radius`), `circle`, or SVG `path` region in its local space.
-- Text layout: multi-line text/captions with explicit `\n` and automatic word/CJK wrapping via `maxWidth`, plus per-line `align` (left/center/right).
+- Text layout: multi-line text/captions with explicit `\n` and automatic word/CJK wrapping via `maxWidth`, per-line `align` (left/center/right), and `letterSpacing` tracking for headlines (applied per character across both backends).
 - Fonts: a named font registry (`registerFont(name, path)`) and per-character fallback stack with optional colour-emoji fallback (`registerEmojiFont`).
 - Subtitles: `parseSubtitles` reads SRT/WebVTT into timed cues and `subtitlesToCaptions` turns them into styled, time-bounded CaptionLayers.
 - FFmpeg encoder backend: pipes raw RGBA frames to FFmpeg and outputs H.264/yuv420p MP4; with audio layers it outputs AAC audio.
 - AudioLayer: supports single audio, multi-audio `amix`, start/end timing, fade in/out, and `volume` as either a constant or a keyframe envelope (ducking/swells) compiled to an FFmpeg per-frame volume expression.
-- VideoLayer: extracts frames from local video by timeline time and draws them into the Skia canvas, with `playbackRate` (speed up/slow down) and `loop` over the trimmed window. Video layers with `width/height` use source-sized batched raw RGBA decoding, bypassing the PNG intermediate format and CanvasKit per-frame image decoding.
+- VideoLayer: extracts frames from local video by timeline time and draws them into the Skia canvas, with `playbackRate` (speed up/slow down) and `loop` over the trimmed window. The video's **embedded audio track is muxed into the MP4** automatically (honouring `startMs`, trim, `playbackRate` via atempo, and `volume` — set `volume: 0` to mute; sources are probed and silent files skipped). Video layers with `width/height` use source-sized batched raw RGBA decoding, bypassing the PNG intermediate format and CanvasKit per-frame image decoding.
 - Asset probe/cache: provides metadata probing and task-level cache APIs for images, video, and audio.
 - Frame-level reuse: visually identical consecutive frames reuse the same RGBA buffer while preserving encoded frame order and PTS.
 - worker_threads render pool: supports `--workers N`, `--workers auto`, and `--worker-window N` to control parallelism and memory buffering.
@@ -159,7 +296,8 @@ registerPlugin(definePlugin({
 - Text layout supports multi-line wrapping, alignment, font registration, and emoji fallback, but not yet full rich-text runs (mixed styles within a line) or bidirectional/complex-script shaping.
 - Colour-emoji fallback depends on an emoji font being available on the host (auto-detected, or set via `registerEmojiFont`); without one, emoji fall back to the default typeface.
 - Transition helpers support easing presets, a composed property timeline DSL (`composeTimeline`/`delayTransition`), and a lightweight scene timeline builder. A richer track-based editor timeline is still future work.
-- The HTTP render service (`openhyper serve`), the decoupled web editor (`apps/editor`) and npm packaging exist; native per-platform prebuilt binaries are still planned (build from source meanwhile).
+- The HTTP render service (`openhyper serve`), the decoupled web editor (`apps/editor` — asset library with drag-and-drop media import, click-to-add captions/shapes/SVG art, canvas selection with move/scale/rotate handles, gradient + rgba color editing, playback transport, a track-style timeline with clip drag/trim and keyframe editing, undo/redo, project save/open, dark/light themes, and one-click MP4 export through the render service) and npm packaging exist; native per-platform prebuilt binaries are still planned (build from source meanwhile).
+- Looped videos play their embedded audio once (the looped tail is silent); audio for `loop` repetitions is a future refinement.
 
 ## Requirements
 

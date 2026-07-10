@@ -161,6 +161,7 @@ struct ShapeLayer {
 }
 
 struct TextStyle<'a> {
+    letter_spacing: f32,
     stroke: Option<&'a str>,
     stroke_width: Option<f32>,
     shadow_color: Option<&'a str>,
@@ -187,6 +188,8 @@ struct TextLayer {
     line_height: Option<f32>,
     #[serde(default)]
     max_width: Option<f32>,
+    #[serde(default)]
+    letter_spacing: Option<f32>,
     #[serde(default)]
     stroke: Option<String>,
     #[serde(default)]
@@ -223,6 +226,8 @@ struct CaptionLayer {
     line_height: Option<f32>,
     #[serde(default)]
     max_width: Option<f32>,
+    #[serde(default)]
+    letter_spacing: Option<f32>,
     #[serde(default)]
     stroke: Option<String>,
     #[serde(default)]
@@ -561,19 +566,35 @@ fn measure_run(font: &Font, text: &str) -> f32 {
     font.measure_str(text, None).0
 }
 
-fn measure_stack(stack: &[Font], text: &str) -> f32 {
-    split_runs(stack, text)
+fn measure_stack(stack: &[Font], text: &str, letter_spacing: f32) -> f32 {
+    let base: f32 = split_runs(stack, text)
         .iter()
         .map(|run| measure_run(&stack[run.font_index], &run.text))
-        .sum()
+        .sum();
+    if letter_spacing != 0.0 {
+        let chars = text.chars().count();
+        base + letter_spacing * (chars.saturating_sub(1)) as f32
+    } else {
+        base
+    }
 }
 
-fn draw_runs(canvas: &Canvas, runs: &[Run], stack: &[Font], x: f32, baseline: f32, paint: &Paint) {
+// With letter_spacing the run is drawn per character so tracking applies
+// inside runs too, matching the wasm renderer.
+fn draw_runs(canvas: &Canvas, runs: &[Run], stack: &[Font], x: f32, baseline: f32, paint: &Paint, letter_spacing: f32) {
     let mut cursor = x;
     for run in runs {
         let font = &stack[run.font_index];
-        canvas.draw_str(&run.text, (cursor, baseline), font, paint);
-        cursor += measure_run(font, &run.text);
+        if letter_spacing == 0.0 {
+            canvas.draw_str(&run.text, (cursor, baseline), font, paint);
+            cursor += measure_run(font, &run.text);
+            continue;
+        }
+        for ch in run.text.chars() {
+            let s = ch.to_string();
+            canvas.draw_str(&s, (cursor, baseline), font, paint);
+            cursor += measure_run(font, &s) + letter_spacing;
+        }
     }
 }
 
@@ -610,7 +631,7 @@ fn wrap_tokens(paragraph: &str) -> Vec<String> {
     tokens
 }
 
-fn wrap_text(stack: &[Font], text: &str, max_width: Option<f32>) -> Vec<String> {
+fn wrap_text(stack: &[Font], text: &str, max_width: Option<f32>, letter_spacing: f32) -> Vec<String> {
     let max_width = match max_width {
         Some(w) if w.is_finite() && w > 0.0 => w,
         _ => return text.split('\n').map(|s| s.to_string()).collect(),
@@ -620,7 +641,7 @@ fn wrap_text(stack: &[Font], text: &str, max_width: Option<f32>) -> Vec<String> 
         let mut line = String::new();
         for token in wrap_tokens(paragraph) {
             let candidate = format!("{line}{token}");
-            if !line.is_empty() && measure_stack(stack, &candidate) > max_width {
+            if !line.is_empty() && measure_stack(stack, &candidate, letter_spacing) > max_width {
                 lines.push(line);
                 line = token.trim_start().to_string();
             } else {
@@ -662,7 +683,7 @@ fn draw_styled_text(
         if let Some(blur) = MaskFilter::blur(BlurStyle::Normal, style.shadow_blur.unwrap_or(6.0).max(0.1), false) {
             paint.set_mask_filter(blur);
         }
-        draw_runs(canvas, &runs, stack, x + style.shadow_dx.unwrap_or(0.0), baseline + style.shadow_dy.unwrap_or(4.0), &paint);
+        draw_runs(canvas, &runs, stack, x + style.shadow_dx.unwrap_or(0.0), baseline + style.shadow_dy.unwrap_or(4.0), &paint, style.letter_spacing);
     }
 
     if let Some(stroke) = style.stroke {
@@ -671,14 +692,15 @@ fn draw_styled_text(
         paint.set_stroke_width(style.stroke_width.unwrap_or(4.0));
         paint.set_stroke_join(Join::Round);
         paint.set_stroke_cap(Cap::Round);
-        draw_runs(canvas, &runs, stack, x, baseline, &paint);
+        draw_runs(canvas, &runs, stack, x, baseline, &paint, style.letter_spacing);
     }
 
     let fill = fill_paint(color, fallback, opacity);
-    draw_runs(canvas, &runs, stack, x, baseline, &fill);
+    draw_runs(canvas, &runs, stack, x, baseline, &fill, style.letter_spacing);
 }
 
 fn text_style<'a>(
+    letter_spacing: Option<f32>,
     stroke: Option<&'a str>,
     stroke_width: Option<f32>,
     shadow_color: Option<&'a str>,
@@ -686,7 +708,7 @@ fn text_style<'a>(
     shadow_dx: Option<f32>,
     shadow_dy: Option<f32>,
 ) -> TextStyle<'a> {
-    TextStyle { stroke, stroke_width, shadow_color, shadow_blur, shadow_dx, shadow_dy }
+    TextStyle { letter_spacing: letter_spacing.unwrap_or(0.0), stroke, stroke_width, shadow_color, shadow_blur, shadow_dx, shadow_dy }
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,8 +1062,10 @@ fn draw_text(canvas: &Canvas, layer: &TextLayer) {
         return;
     }
     let line_height = layer.line_height.unwrap_or(size * 1.2);
-    let lines = wrap_text(&stack, &layer.text, layer.max_width);
+    let spacing = layer.letter_spacing.unwrap_or(0.0);
+    let lines = wrap_text(&stack, &layer.text, layer.max_width, spacing);
     let style = text_style(
+        layer.letter_spacing,
         layer.stroke.as_deref(),
         layer.stroke_width,
         layer.shadow_color.as_deref(),
@@ -1050,7 +1074,7 @@ fn draw_text(canvas: &Canvas, layer: &TextLayer) {
         layer.shadow_dy,
     );
     for (i, line) in lines.iter().enumerate() {
-        let x = line_x(layer.align.as_deref(), measure_stack(&stack, line));
+        let x = line_x(layer.align.as_deref(), measure_stack(&stack, line, spacing));
         draw_styled_text(canvas, line, x, i as f32 * line_height, &layer.color, "#000000", layer.base.transform.opacity, &stack, &style);
     }
 }
@@ -1064,10 +1088,11 @@ fn draw_caption(canvas: &Canvas, layer: &CaptionLayer) {
     let line_height = layer.line_height.unwrap_or(size * 1.2);
     let padding = layer.padding.unwrap_or(8.0);
     let opacity = layer.base.transform.opacity;
-    let lines = wrap_text(&stack, &layer.text, layer.max_width);
+    let spacing = layer.letter_spacing.unwrap_or(0.0);
+    let lines = wrap_text(&stack, &layer.text, layer.max_width, spacing);
     let block_width = layer
         .max_width
-        .unwrap_or_else(|| lines.iter().map(|l| measure_stack(&stack, l)).fold(0.0, f32::max));
+        .unwrap_or_else(|| lines.iter().map(|l| measure_stack(&stack, l, spacing)).fold(0.0, f32::max));
 
     if layer.background_color.is_some() {
         let bg_x = line_x(layer.align.as_deref(), block_width);
@@ -1084,6 +1109,7 @@ fn draw_caption(canvas: &Canvas, layer: &CaptionLayer) {
     }
 
     let style = text_style(
+        layer.letter_spacing,
         layer.stroke.as_deref(),
         layer.stroke_width,
         layer.shadow_color.as_deref(),
@@ -1092,7 +1118,7 @@ fn draw_caption(canvas: &Canvas, layer: &CaptionLayer) {
         layer.shadow_dy,
     );
     for (i, line) in lines.iter().enumerate() {
-        let x = line_x(layer.align.as_deref(), measure_stack(&stack, line));
+        let x = line_x(layer.align.as_deref(), measure_stack(&stack, line, spacing));
         draw_styled_text(canvas, line, x, i as f32 * line_height, &layer.color, "#ffffff", opacity, &stack, &style);
     }
 }

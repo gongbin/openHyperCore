@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import ffmpeg from "@ffmpeg-installer/ffmpeg";
-import { planRenderResources, runCli } from "../src/index.ts";
+import { extractAudioInputs, planRenderResources, runCli } from "../src/index.ts";
+import { defineComposition } from "../../core/src/index.ts";
 
 test("runCli probe returns composition metadata JSON", async () => {
   const dir = await mkdtemp(join(tmpdir(), "openhyper-cli-"));
@@ -733,4 +734,44 @@ test("planRenderResources adapts worker count and buffer window to the host", ()
   const none = planRenderResources({ width: 1280, height: 720 }, undefined, undefined, { cores: 8, totalBytes: 16 * GB, freeBytes: 8 * GB });
   assert.equal(none.workerCount, 1);
   assert.equal(none.workerWindow, 0);
+});
+
+test("extractAudioInputs muxes a video layer's embedded audio track", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "openhyper-vidaudio-"));
+  const withAudio = join(dir, "with-audio.mp4");
+  const silent = join(dir, "silent.mp4");
+  // 1s test clip with a sine audio track, and one without any audio stream.
+  const gen1 = spawnSync(ffmpeg.path, [
+    "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", withAudio
+  ]);
+  const gen2 = spawnSync(ffmpeg.path, [
+    "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", silent
+  ]);
+  assert.equal(gen1.status, 0, String(gen1.stderr));
+  assert.equal(gen2.status, 0, String(gen2.stderr));
+
+  const composition = defineComposition({
+    fps: 10,
+    width: 64,
+    height: 64,
+    durationMs: 1000,
+    layers: [
+      { type: "video", src: withAudio, startMs: 200, trimStartMs: 100, playbackRate: 2, volume: 0.5 },
+      { type: "video", src: silent },
+      { type: "video", src: withAudio, volume: 0 }
+    ]
+  });
+
+  const audio = await extractAudioInputs(composition);
+  assert.equal(audio.audioInputs?.length, 1);
+  const input = audio.audioInputs![0]!;
+  assert.equal(input.src, withAudio);
+  assert.equal(input.startMs, 200);
+  assert.equal(input.endMs, 1000);
+  assert.equal(input.sourceStartMs, 100);
+  assert.equal(input.playbackRate, 2);
+  assert.equal(input.volume, 0.5);
 });

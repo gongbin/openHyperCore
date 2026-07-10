@@ -121,7 +121,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, maxBody: number
       renderOptions.workerWindow = body.workerWindow;
     }
 
-    const metrics = await renderVideo(composition, renderOptions, extractAudioInputs(composition));
+    const metrics = await renderVideo(composition, renderOptions, await extractAudioInputs(composition));
     const mp4 = await readFile(out);
 
     cors(res, allowOrigin);
