@@ -428,10 +428,13 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
 :root[data-theme="light"] .ir-pre { background: #f0f2f7; color: #45516b; }
 
 /* ---------- 动一动 (drag-to-animate) ---------- */
-.stage-fab {
+.stage-fabs {
   position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
-  pointer-events: auto; z-index: 6;
-  display: inline-flex; align-items: center; gap: 6px;
+  display: flex; gap: 10px; z-index: 6;
+}
+.stage-fab {
+  pointer-events: auto;
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
   background: rgba(8, 12, 20, 0.82); color: var(--gold);
   border: 1px solid rgba(240, 165, 58, 0.55); border-radius: 999px;
   padding: 7px 16px; font-size: 12.5px; font-weight: 600; cursor: pointer;

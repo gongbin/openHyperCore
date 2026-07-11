@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Composition } from "openhypercore";
 import {
-  AB_EASE_LABEL, boxCorners, clamp, layerAtPath, localBox, localToParent, parentToLocal,
-  pointInBox, resolveLayerAt, upsertKfArr, xfOf, xyKfTimes
+  AB_EASE_LABEL, anchorsToD, boxCorners, clamp, layerAtPath, localBox, localToParent, parentToLocal,
+  parsePathD, pointInBox, resolveLayerAt, sampleSegment, splitSegment, upsertKfArr, xfOf, xyKfTimes
 } from "../helpers.ts";
-import type { AbBubble, AbEase, AnyLayer, Kf, PathSample, SelPath } from "../helpers.ts";
+import type { AbBubble, AbEase, AnyLayer, Kf, ParsedPath, PathAnchor, PathSample, SelPath } from "../helpers.ts";
 import { t } from "../i18n.ts";
 
 type Gesture =
@@ -12,17 +12,31 @@ type Gesture =
   | { kind: "scale"; index: number; originX: number; originY: number; startDist: number; origScale: unknown }
   | { kind: "rotate"; index: number; originX: number; originY: number; startAngle: number; origRotate: unknown }
   // Dragging a keyframe dot on the motion path: reposition that keyframe in space.
-  | { kind: "kfdot"; index: number; timeTrack: number; startX: number; startY: number; baseX: number; baseY: number; origX: unknown; origY: unknown };
+  | { kind: "kfdot"; index: number; timeTrack: number; startX: number; startY: number; baseX: number; baseY: number; origX: unknown; origY: unknown }
+  // Node editor: dragging an anchor / one of its bezier control handles.
+  | { kind: "panchor"; index: number; ai: number; startX: number; startY: number; model: ParsedPath }
+  | { kind: "phandle"; index: number; ai: number; which: "in" | "out"; model: ParsedPath };
 
 // "动一动" drag in progress: object stays put, a ghost + arrow follow the cursor.
 type AbDrag = { index: number; sx: number; sy: number; pcx: number; pcy: number; dx: number; dy: number; pts: [number, number][] | null };
+
+// Serialize an edited path model back into a layer patch, growing the shape's
+// box to whatever the anchors/handles now span.
+function pathPatch(model: ParsedPath): Record<string, unknown> {
+  let mx = 1, my = 1;
+  for (const a of model.anchors) {
+    mx = Math.max(mx, a.x, a.in?.[0] ?? 0, a.out?.[0] ?? 0);
+    my = Math.max(my, a.y, a.in?.[1] ?? 0, a.out?.[1] ?? 0);
+  }
+  return { path: anchorsToD(model), width: Math.ceil(mx), height: Math.ceil(my) };
+}
 
 const shiftTrack = (v: unknown, d: number, dflt: number): unknown =>
   Array.isArray(v) ? (v as Kf[]).map((k) => ({ ...k, value: k.value + d })) : (typeof v === "number" ? v : dflt) + d;
 const scaleTrack = (v: unknown, f: number, dflt: number): unknown =>
   Array.isArray(v) ? (v as Kf[]).map((k) => ({ ...k, value: k.value * f })) : (typeof v === "number" ? v : dflt) * f;
 
-export function StagePanel({ canvasRef, composition, expanded, timeMs, selection, multiSel, error, recording, onRecorded, mediaSize, onSelect, animMode, onToggleAnimMode, onAnimateMove, abBubble, onAbDur, onAbEase, onAbReplay, onAbRemove, onAbDone, onGestureStart, onLivePatchTransform, onDropAsset, onDropFiles }: {
+export function StagePanel({ canvasRef, composition, expanded, timeMs, selection, multiSel, error, recording, onRecorded, mediaSize, onSelect, animMode, onToggleAnimMode, onAnimateMove, abBubble, onAbDur, onAbEase, onAbReplay, onAbRemove, onAbDone, pathEdit, onTogglePathEdit, onLivePatchLayer, onCommitLayer, onGestureStart, onLivePatchTransform, onDropAsset, onDropFiles }: {
   canvasRef: React.RefObject<HTMLCanvasElement>;
   composition: Composition;
   expanded: Composition | null;
@@ -43,6 +57,10 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
   onAbReplay: () => void;
   onAbRemove: () => void;
   onAbDone: () => void;
+  pathEdit: boolean;
+  onTogglePathEdit: () => void;
+  onLivePatchLayer: (index: number, patch: Record<string, unknown>) => void;
+  onCommitLayer: (index: number, patch: Record<string, unknown>, tag: string) => void;
   onGestureStart: () => void;
   onLivePatchTransform: (patches: { index: number; patch: Record<string, unknown> }[]) => void;
   onDropAsset: (assetId: string, x: number, y: number) => void;
@@ -76,6 +94,44 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
   );
   const selBox = selResolved ? localBox(selResolved, mediaSize) : null;
   const selXf = selResolved ? xfOf(selResolved) : null;
+
+  // ---- node editor model (path shapes) --------------------------------------
+  const selLayerRaw = selTop !== undefined ? (layerAtPath(composition, [selTop]) as AnyLayer | undefined) : undefined;
+  const selPathD = selLayerRaw?.type === "shape" && selLayerRaw.shape === "path" && typeof selLayerRaw.path === "string"
+    ? (selLayerRaw.path as string) : null;
+  const pathModel = useMemo(() => (pathEdit && selPathD ? parsePathD(selPathD) : null), [pathEdit, selPathD]);
+  const [pathSel, setPathSel] = useState<number | null>(null);
+  useEffect(() => { setPathSel(null); }, [pathEdit, selTop]);
+
+  // per-segment polyline samples in comp coords (drawing + click-to-insert)
+  const pathSegs = useMemo(() => {
+    if (!pathEdit || !pathModel || !selResolved) return null;
+    const xf = xfOf(selResolved);
+    const A = pathModel.anchors;
+    const n = pathModel.closed ? A.length : A.length - 1;
+    const segs: { i: number; pts: [number, number][] }[] = [];
+    for (let i = 0; i < n; i += 1) {
+      const b = A[(i + 1) % A.length]!;
+      segs.push({ i, pts: sampleSegment(A[i]!, b, 24).map(([px, py]) => localToParent(xf, px, py)) });
+    }
+    return segs;
+  }, [pathEdit, pathModel, selResolved]);
+
+  // ⌫ removes the selected node (line needs 2 anchors, closed shape 3)
+  useEffect(() => {
+    if (!pathEdit || pathSel === null || !pathModel || selTop === undefined) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Backspace" && e.key !== "Delete") return;
+      const el = e.target as HTMLElement;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) return;
+      if (pathModel.anchors.length <= (pathModel.closed ? 3 : 2)) return;
+      e.preventDefault();
+      onCommitLayer(selTop, pathPatch({ ...pathModel, anchors: pathModel.anchors.filter((_, i) => i !== pathSel) }), "path-node-del");
+      setPathSel(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pathEdit, pathSel, pathModel, selTop, onCommitLayer]);
 
   function toComp(e: { clientX: number; clientY: number }): [number, number] {
     const r = svgRef.current?.getBoundingClientRect();
@@ -151,6 +207,48 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
     if (e.button !== 0) return;
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     const [cx, cy] = toComp(e);
+
+    // Node editor swallows all stage pointer input while active.
+    if (pathEdit && pathModel && selTop !== undefined && selXf) {
+      const tgt = e.target as Element;
+      const aAttr = tgt.getAttribute?.("data-panchor");
+      if (aAttr != null) {
+        setPathSel(Number(aAttr));
+        onGestureStart();
+        gestureRef.current = { kind: "panchor", index: selTop, ai: Number(aAttr), startX: cx, startY: cy, model: pathModel };
+        return;
+      }
+      const hAttr = tgt.getAttribute?.("data-phandle");
+      if (hAttr) {
+        const [aiS, which] = hAttr.split(":");
+        onGestureStart();
+        gestureRef.current = { kind: "phandle", index: selTop, ai: Number(aiS), which: which as "in" | "out", model: pathModel };
+        return;
+      }
+      const segAttr = tgt.getAttribute?.("data-pseg");
+      if (segAttr != null && pathSegs) {
+        // Click on the path inserts a node there (de Casteljau split keeps the
+        // shape) and starts dragging it right away.
+        const seg = pathSegs[Number(segAttr)]!;
+        let best = 0, bd = Infinity;
+        seg.pts.forEach((p, si) => { const d = Math.hypot(p[0] - cx, p[1] - cy); if (d < bd) { bd = d; best = si; } });
+        const u = clamp(0.04, 0.96, best / (seg.pts.length - 1));
+        const A = pathModel.anchors;
+        const j = (seg.i + 1) % A.length;
+        const { a, mid, b } = splitSegment(A[seg.i]!, A[j]!, u);
+        const anchors = [...A];
+        anchors[seg.i] = a; anchors[j] = b;
+        anchors.splice(seg.i + 1, 0, mid);
+        const model = { ...pathModel, anchors };
+        onGestureStart();
+        onLivePatchLayer(selTop, pathPatch(model));
+        setPathSel(seg.i + 1);
+        gestureRef.current = { kind: "panchor", index: selTop, ai: seg.i + 1, startX: cx, startY: cy, model };
+        return;
+      }
+      setPathSel(null);
+      return;
+    }
 
     // Motion-path keyframe dot — drag it to reposition that keyframe in space.
     const dotAttr = (e.target as Element).getAttribute?.("data-kfdot");
@@ -258,6 +356,26 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
           y: upsertKfArr(g.origY, g.timeTrack, g.baseY + (cy - g.startY))
         }
       }]);
+    } else if (g.kind === "panchor") {
+      if (!selXf) return;
+      const [lx, ly] = parentToLocal(selXf, cx, cy);
+      const [sx0, sy0] = parentToLocal(selXf, g.startX, g.startY);
+      const dx = lx - sx0, dy = ly - sy0;
+      const src = g.model.anchors[g.ai]!;
+      const moved: PathAnchor = {
+        x: src.x + dx, y: src.y + dy,
+        ...(src.in ? { in: [src.in[0] + dx, src.in[1] + dy] as [number, number] } : {}),
+        ...(src.out ? { out: [src.out[0] + dx, src.out[1] + dy] as [number, number] } : {})
+      };
+      const anchors = [...g.model.anchors];
+      anchors[g.ai] = moved;
+      onLivePatchLayer(g.index, pathPatch({ ...g.model, anchors }));
+    } else if (g.kind === "phandle") {
+      if (!selXf) return;
+      const [lx, ly] = parentToLocal(selXf, cx, cy);
+      const anchors = [...g.model.anchors];
+      anchors[g.ai] = { ...anchors[g.ai]!, [g.which]: [lx, ly] as [number, number] };
+      onLivePatchLayer(g.index, pathPatch({ ...g.model, anchors }));
     } else if (g.kind === "scale") {
       const f = Math.max(0.02, Math.hypot(cx - g.originX, cy - g.originY) / g.startDist);
       onLivePatchTransform([{ index: g.index, patch: { scale: scaleTrack(g.origScale, f, 1) } }]);
@@ -283,6 +401,31 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
   // Double-click drills into a group's child (e.g. to edit a card's gradient
   // rect directly) — hit test the resolved children in group-local space.
   function onDoubleClick(e: React.MouseEvent): void {
+    if (pathEdit) {
+      // Double-click a node: corner (straight neighbours) ⇄ smooth (tangent
+      // handles at 1/3 of the neighbour distances).
+      const aAttr = (e.target as Element).getAttribute?.("data-panchor");
+      if (aAttr != null && pathModel && selTop !== undefined) {
+        const ai = Number(aAttr);
+        const A = pathModel.anchors;
+        const a = A[ai]!;
+        const anchors = [...A];
+        if (a.in || a.out) {
+          anchors[ai] = { x: a.x, y: a.y };
+        } else {
+          const prev = A[(ai - 1 + A.length) % A.length]!;
+          const next = A[(ai + 1) % A.length]!;
+          let tx = next.x - prev.x, ty = next.y - prev.y;
+          const len = Math.hypot(tx, ty) || 1;
+          tx /= len; ty /= len;
+          const r = Math.max(8, Math.min(Math.hypot(next.x - a.x, next.y - a.y), Math.hypot(a.x - prev.x, a.y - prev.y)) / 3);
+          anchors[ai] = { ...a, in: [a.x - tx * r, a.y - ty * r], out: [a.x + tx * r, a.y + ty * r] };
+        }
+        onCommitLayer(selTop, pathPatch({ ...pathModel, anchors }), "path-node-kind");
+        setPathSel(ai);
+      }
+      return; // never drill into groups while editing nodes
+    }
     const [cx, cy] = toComp(e);
     const hit = hitTest(cx, cy);
     if (hit === null || !expanded) return;
@@ -384,7 +527,7 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
             ))}
 
             {/* motion path: golden trail + start/end ghosts + draggable keyframe dots */}
-            {motion ? (
+            {motion && !pathEdit ? (
               <g>
                 {motion.gA ? (
                   <polygon points={motion.gA.map((p) => p.join(",")).join(" ")} pointerEvents="none"
@@ -414,7 +557,7 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
               </g>
             ) : null}
 
-            {outline ? (
+            {outline && !pathEdit ? (
               <g>
                 <polygon points={outline.map((p) => p.join(",")).join(" ")}
                   fill="none" stroke="var(--accent)" strokeWidth={1.6 * k} />
@@ -430,6 +573,51 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
                       fill="#fff" stroke="var(--accent)" strokeWidth={1.2 * k} style={{ cursor: "grab" }} />
                   </>
                 ) : null}
+              </g>
+            ) : null}
+
+            {/* node editor: path outline with clickable segments, anchors, handles */}
+            {pathEdit && pathModel && pathSegs && selXf ? (
+              <g>
+                {pathSegs.map((s) => (
+                  <g key={s.i}>
+                    <polyline points={s.pts.map((p) => p.join(",")).join(" ")} pointerEvents="none"
+                      fill="none" stroke="var(--accent)" strokeWidth={1.5 * k} opacity={0.95} />
+                    <polyline data-pseg={s.i} points={s.pts.map((p) => p.join(",")).join(" ")}
+                      fill="none" stroke="transparent" strokeWidth={13 * k} pointerEvents="stroke" style={{ cursor: "copy" }}>
+                      <title>{t("点击线段插入节点")}</title>
+                    </polyline>
+                  </g>
+                ))}
+                {pathSel !== null && pathModel.anchors[pathSel] ? (() => {
+                  const a = pathModel.anchors[pathSel]!;
+                  const ap = localToParent(selXf, a.x, a.y);
+                  return (["in", "out"] as const).filter((w) => a[w]).map((w) => {
+                    const hp = localToParent(selXf, a[w]![0], a[w]![1]);
+                    return (
+                      <g key={w}>
+                        <line x1={ap[0]} y1={ap[1]} x2={hp[0]} y2={hp[1]} pointerEvents="none"
+                          stroke="#3dd6c7" strokeWidth={1.1 * k} />
+                        <circle data-phandle={`${pathSel}:${w}`} cx={hp[0]} cy={hp[1]} r={4.6 * k}
+                          fill="#3dd6c7" stroke="#10141c" strokeWidth={1.3 * k} style={{ cursor: "grab" }}>
+                          <title>{t("拖动调整曲线弯度")}</title>
+                        </circle>
+                      </g>
+                    );
+                  });
+                })() : null}
+                {pathModel.anchors.map((a, i) => {
+                  const p = localToParent(selXf, a.x, a.y);
+                  const curved = Boolean(a.in ?? a.out);
+                  return (
+                    <rect key={i} data-panchor={i} x={p[0] - 5.2 * k} y={p[1] - 5.2 * k}
+                      width={10.4 * k} height={10.4 * k} rx={curved ? 5.2 * k : 1.6 * k}
+                      fill={i === pathSel ? "var(--gold)" : "#fff"} stroke="#10141c" strokeWidth={1.4 * k}
+                      style={{ cursor: "grab" }}>
+                      <title>{t("拖动移动 · 双击 直线⇄曲线 · ⌫ 删除节点")}</title>
+                    </rect>
+                  );
+                })}
               </g>
             ) : null}
 
@@ -476,15 +664,24 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
             </div>
           ) : null}
 
-          {selTop !== undefined && !selIsAudio ? (
-            <button className={`stage-fab${animMode ? " active" : ""}`} onClick={onToggleAnimMode}
-              title={t("动一动：把选中的物体拖到它要去的位置，松手即生成移动动画")}>
-              {animMode ? t("✕ 退出动一动") : t("✦ 动一动")}
-            </button>
-          ) : null}
+          <div className="stage-fabs">
+            {selTop !== undefined && !selIsAudio && !pathEdit ? (
+              <button className={`stage-fab${animMode ? " active" : ""}`} onClick={onToggleAnimMode}
+                title={t("动一动：把选中的物体拖到它要去的位置，松手即生成移动动画")}>
+                {animMode ? t("✕ 退出动一动") : t("✦ 动一动")}
+              </button>
+            ) : null}
+            {selTop !== undefined && selPathD && !animMode && (pathEdit || parsePathD(selPathD) !== null) ? (
+              <button className={`stage-fab${pathEdit ? " active" : ""}`} onClick={onTogglePathEdit}
+                title={t("节点编辑：拖动节点改形状，点击线段插入节点，双击节点切换直线/曲线")}>
+                {pathEdit ? t("✓ 完成节点编辑") : t("✎ 编辑节点")}
+              </button>
+            ) : null}
+          </div>
         </div>
         <div className="stage-hint" style={recording ? { color: "var(--danger)" } : animMode ? { color: "var(--gold)" } : undefined}>
           {recording ? t("● 录制中：按住图层拖出运动轨迹，松开生成关键帧")
+            : pathEdit ? t("✎ 节点编辑：拖动节点 · 拖动青色圆点调曲线 · 点击线段插入节点 · 双击节点 直线⇄曲线 · ⌫ 删除")
             : animMode ? t("✦ 动一动：把物体拖到它要去的位置，松手即生成动画（当前位置 = 起点）")
               : selIsAudio ? t("音频图层没有画面 — 在时间轴/检查器中编辑")
                 : selTop !== undefined ? t("拖动移动 · 角点缩放 · 顶部圆点旋转 · 金色圆点 = 可拖的动画关键帧 · 双击进组")

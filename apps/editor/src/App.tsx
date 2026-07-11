@@ -72,6 +72,7 @@ export function App() {
   }, []);
   const [view, setView] = useState<EditorView>("editor");
   const [animMode, setAnimMode] = useState(false);
+  const [pathEdit, setPathEdit] = useState(false);
   const [abBubble, setAbBubble] = useState<AbBubble | null>(null);
   // Temporary composition shown instead of the real one while hover-previewing
   // a preset animation ("try before you buy"); never persisted.
@@ -406,6 +407,9 @@ export function App() {
   useEffect(() => {
     if (abBubble && selection[0] !== abBubble.index) setAbBubble(null);
   }, [selection, abBubble]);
+  // Node editing is bound to the selected layer — selection change exits it.
+  const pathEditSel = selection[0];
+  useEffect(() => { setPathEdit(false); }, [pathEditSel]);
 
   // ---- layer management ----------------------------------------------------------
   function addLayer(layer: Layer, select = true): void {
@@ -612,7 +616,11 @@ export function App() {
         if (e.shiftKey) ungroupSelected();
         else groupSelected();
       }
+      else if (e.key === "Escape") {
+        if (pathEdit) setPathEdit(false);
+      }
       else if (e.key === "Backspace" || e.key === "Delete") {
+        if (pathEdit) return; // the node editor consumes ⌫ (delete anchor)
         if (multiSel.length > 1) {
           e.preventDefault();
           apply({ ...composition, layers: composition.layers.filter((_, i) => !multiSel.includes(i)) });
@@ -790,13 +798,17 @@ export function App() {
           mediaSize={(src) => rendererRef.current?.mediaSize(src)}
           onSelect={select}
           animMode={animMode}
-          onToggleAnimMode={() => setAnimMode((m) => { if (m) setAbBubble(null); return !m; })}
+          onToggleAnimMode={() => { setPathEdit(false); setAnimMode((m) => { if (m) setAbBubble(null); return !m; }); }}
           onAnimateMove={animateMove}
           abBubble={abBubble}
           onAbDur={abRetime} onAbEase={abSetEase}
           onAbReplay={() => { if (abBubble) abPlay(abBubble); }}
           onAbRemove={abRemove}
           onAbDone={() => { setAbBubble(null); setAnimMode(false); }}
+          pathEdit={pathEdit}
+          onTogglePathEdit={() => { setAnimMode(false); setAbBubble(null); setPathEdit((p) => !p); }}
+          onLivePatchLayer={(index, patch) => patchLayerLive([index], patch)}
+          onCommitLayer={(index, patch, tag) => patchLayer([index], patch, tag)}
           onGestureStart={history.begin}
           onLivePatchTransform={(patches) => {
             let next = composition;

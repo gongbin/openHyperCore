@@ -501,6 +501,115 @@ export function starPath(points: number, outerR: number, innerR: number): string
  *  shape whose anchors/handles stay editable as raw path `d`. */
 export const BLOB_PATH = "M 128 12 C 196 4 236 66 228 128 C 221 184 172 236 112 228 C 52 220 8 172 14 110 C 20 52 66 20 128 12 Z";
 
+// ---- editable path model (canvas node editor) --------------------------------
+// A path is a list of anchors; the segment INTO anchor i+1 is a cubic when
+// either anchors[i].out or anchors[i+1].in exists, else a straight line.
+// Only single-subpath absolute M/L/C/Z is supported — exactly what the shape
+// generators and the editor itself emit; anything else returns null and the
+// node editor stays unavailable for that layer.
+export type PathAnchor = { x: number; y: number; in?: [number, number]; out?: [number, number] };
+export type ParsedPath = { anchors: PathAnchor[]; closed: boolean };
+
+export function parsePathD(d: string): ParsedPath | null {
+  const tokens = d.trim().match(/[MLCZmlcz]|-?\d*\.?\d+(?:e-?\d+)?/g);
+  if (!tokens || tokens.length === 0) return null;
+  const anchors: PathAnchor[] = [];
+  let closed = false;
+  let i = 0;
+  const num = (): number => Number(tokens[i++]);
+  while (i < tokens.length) {
+    const cmd = tokens[i++];
+    if (cmd === "M") {
+      if (anchors.length) return null; // one subpath only
+      anchors.push({ x: num(), y: num() });
+    } else if (cmd === "L") {
+      anchors.push({ x: num(), y: num() });
+    } else if (cmd === "C") {
+      const prev = anchors[anchors.length - 1];
+      if (!prev) return null;
+      const c1: [number, number] = [num(), num()];
+      const c2: [number, number] = [num(), num()];
+      const x = num(), y = num();
+      // A closing curve back to the first anchor folds into that anchor's `in`.
+      const first = anchors[0]!;
+      if (anchors.length > 1 && Math.hypot(x - first.x, y - first.y) < 0.75 && tokens[i] === "Z") {
+        prev.out = c1;
+        first.in = c2;
+        closed = true;
+        i += 1;
+      } else {
+        prev.out = c1;
+        anchors.push({ x, y, in: c2 });
+      }
+    } else if (cmd === "Z" || cmd === "z") {
+      closed = true;
+    } else {
+      return null;
+    }
+    if (anchors.some((a) => !Number.isFinite(a.x) || !Number.isFinite(a.y))) return null;
+  }
+  return anchors.length >= 2 ? { anchors, closed } : null;
+}
+
+const fmt = (v: number): string => String(Math.round(v * 100) / 100);
+
+export function anchorsToD(p: ParsedPath): string {
+  const { anchors, closed } = p;
+  const parts: string[] = [`M ${fmt(anchors[0]!.x)} ${fmt(anchors[0]!.y)}`];
+  const seg = (a: PathAnchor, b: PathAnchor): string => {
+    if (a.out || b.in) {
+      const c1 = a.out ?? [a.x, a.y];
+      const c2 = b.in ?? [b.x, b.y];
+      return `C ${fmt(c1[0])} ${fmt(c1[1])} ${fmt(c2[0])} ${fmt(c2[1])} ${fmt(b.x)} ${fmt(b.y)}`;
+    }
+    return `L ${fmt(b.x)} ${fmt(b.y)}`;
+  };
+  for (let i = 1; i < anchors.length; i += 1) parts.push(seg(anchors[i - 1]!, anchors[i]!));
+  if (closed) {
+    const back = seg(anchors[anchors.length - 1]!, anchors[0]!);
+    if (back.startsWith("C")) parts.push(back);
+    parts.push("Z");
+  }
+  return parts.join(" ");
+}
+
+/** Sample the segment leaving anchors[i] (into the next/first anchor). */
+export function sampleSegment(a: PathAnchor, b: PathAnchor, steps = 24): [number, number][] {
+  if (!a.out && !b.in) return [[a.x, a.y], [b.x, b.y]];
+  const c1 = a.out ?? [a.x, a.y];
+  const c2 = b.in ?? [b.x, b.y];
+  const pts: [number, number][] = [];
+  for (let s = 0; s <= steps; s += 1) {
+    const u = s / steps, v = 1 - u;
+    pts.push([
+      v * v * v * a.x + 3 * v * v * u * c1[0] + 3 * v * u * u * c2[0] + u * u * u * b.x,
+      v * v * v * a.y + 3 * v * v * u * c1[1] + 3 * v * u * u * c2[1] + u * u * u * b.y
+    ]);
+  }
+  return pts;
+}
+
+/** Split the segment a→b at parameter u, returning the midpoint anchor and
+ *  updated handles for a and b (de Casteljau — the shape is preserved). */
+export function splitSegment(a: PathAnchor, b: PathAnchor, u: number): { a: PathAnchor; mid: PathAnchor; b: PathAnchor } {
+  if (!a.out && !b.in) {
+    return { a, mid: { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u }, b };
+  }
+  const p0: [number, number] = [a.x, a.y];
+  const p1 = a.out ?? p0;
+  const p2 = b.in ?? [b.x, b.y];
+  const p3: [number, number] = [b.x, b.y];
+  const lerp = (m: [number, number], n: [number, number]): [number, number] => [m[0] + (n[0] - m[0]) * u, m[1] + (n[1] - m[1]) * u];
+  const q0 = lerp(p0, p1), q1 = lerp(p1, p2), q2 = lerp(p2, p3);
+  const r0 = lerp(q0, q1), r1 = lerp(q1, q2);
+  const s = lerp(r0, r1);
+  return {
+    a: { ...a, out: q0 },
+    mid: { x: s[0], y: s[1], in: r0, out: r1 },
+    b: { ...b, in: q2 }
+  };
+}
+
 export function fmtTime(ms: number): string {
   const s = Math.max(0, ms) / 1000;
   const m = Math.floor(s / 60);
