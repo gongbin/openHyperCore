@@ -4,6 +4,7 @@ import type { Composition, Layer } from "openhypercore";
 import { expandComposition, listPlugins } from "openhypercore/plugins";
 import type { PluginDefinition } from "openhypercore/plugins";
 import { PreviewRenderer } from "./preview.ts";
+import { getLang, setLang, t as tr } from "./i18n.ts";
 import { sampleComposition } from "./sample.ts";
 import { useHistory } from "./history.ts";
 import {
@@ -33,7 +34,7 @@ function loadAutosaved(): { name: string; composition: Composition } | null {
     const raw = localStorage.getItem(AUTOSAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw) as { name?: string; composition?: unknown };
-    return { name: data.name ?? "未命名项目", composition: defineComposition(data.composition as Composition) };
+    return { name: data.name ?? tr("未命名项目"), composition: defineComposition(data.composition as Composition) };
   } catch {
     return null;
   }
@@ -47,7 +48,7 @@ export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<PreviewRenderer | null>(null);
   const [ready, setReady] = useState(false);
-  const [projectName, setProjectName] = useState(restored?.name ?? "未命名项目");
+  const [projectName, setProjectName] = useState(restored?.name ?? tr("未命名项目"));
   const [selection, setSelection] = useState<SelPath>([]);
   const [multiSel, setMultiSel] = useState<number[]>([]);
   const [selKf, setSelKf] = useState<KfSel>(null);
@@ -63,6 +64,12 @@ export function App() {
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState("");
   const [theme, setTheme] = useState<"dark" | "light">(() => (localStorage.getItem("ohe.theme") === "light" ? "light" : "dark"));
+  // Language lives in the i18n module; this state only exists to re-render the tree.
+  const [, setLangTick] = useState(0);
+  const toggleLang = useCallback(() => {
+    setLang(getLang() === "zh" ? "en" : "zh");
+    setLangTick((n) => n + 1);
+  }, []);
   const [view, setView] = useState<EditorView>("editor");
   const [animMode, setAnimMode] = useState(false);
   const [abBubble, setAbBubble] = useState<AbBubble | null>(null);
@@ -94,7 +101,7 @@ export function App() {
     if (renderBusy.current) { renderPending.current = { comp, t }; return; }
     renderBusy.current = true;
     r.renderFrame(comp, t)
-      .catch((e: unknown) => { console.error("preview render failed at t=", t, e); setStatus(`预览错误: ${String(e)}`); })
+      .catch((e: unknown) => { console.error("preview render failed at t=", t, e); setStatus(tr("预览错误: {e}", { e: String(e) })); })
       .finally(() => {
         renderBusy.current = false;
         const p = renderPending.current;
@@ -115,7 +122,7 @@ export function App() {
         rendererRef.current = r;
         setReady(true);
       })
-      .catch((e: unknown) => setStatus(`预览初始化失败: ${String(e)}`));
+      .catch((e: unknown) => setStatus(tr("预览初始化失败: {e}", { e: String(e) })));
     return () => { cancelled = true; };
   }, []);
 
@@ -412,9 +419,9 @@ export function App() {
     switch (kind) {
       case "rect": addLayer({ type: "shape", shape: "rect", width: 320, height: 180, fill: "#4d8dff", transform: { x: cx - 160, y: cy - 90 } }); return;
       case "circle": addLayer({ type: "shape", shape: "circle", radius: 90, fill: "#f2c94c", transform: { x: cx - 90, y: cy - 90 } }); return;
-      case "text": addLayer({ type: "text", text: "双击右侧编辑文字", size: 72, color: "#ffffff", align: "center", transform: { x: cx, y: cy } }); return;
+      case "text": addLayer({ type: "text", text: tr("双击右侧编辑文字"), size: 72, color: "#ffffff", align: "center", transform: { x: cx, y: cy } }); return;
       case "caption": addLayer({
-        type: "caption", text: "这里是字幕", size: Math.round(H * 0.05), color: "#ffffff",
+        type: "caption", text: tr("这里是字幕"), size: Math.round(H * 0.05), color: "#ffffff",
         backgroundColor: "rgba(0,0,0,0.55)", padding: 10, align: "center",
         transform: { x: cx, y: Math.round(H * 0.9) }
       }); return;
@@ -447,7 +454,7 @@ export function App() {
     const [cx, cy] = at ?? [W / 2, H / 2];
     if (asset.kind === "audio") {
       addLayer({ type: "audio", src: asset.url } as Layer);
-      setStatus(`已添加音频「${asset.name}」（导出时混音）`);
+      setStatus(tr("已添加音频「{name}」（导出时混音）", { name: asset.name }));
       return;
     }
     const w = Math.round(W * (asset.kind === "video" ? 0.62 : 0.5));
@@ -466,10 +473,10 @@ export function App() {
         continue;
       }
       const asset = await importFile(f);
-      if (!asset) { setStatus(`不支持的文件类型: ${f.name}`); continue; }
+      if (!asset) { setStatus(tr("不支持的文件类型: {name}", { name: f.name })); continue; }
       setAssets((a) => [asset, ...a]);
       if (addAt && first) { addAssetLayer(asset, addAt); first = false; }
-      else if (!addAt) setStatus(`已导入「${asset.name}」— 点击素材添加到画布`);
+      else if (!addAt) setStatus(tr("已导入「{name}」— 点击素材添加到画布", { name: asset.name }));
     }
   }
 
@@ -479,7 +486,7 @@ export function App() {
       const doc = new DOMParser().parseFromString(text, "image/svg+xml");
       const svg = doc.querySelector("svg");
       const paths = [...doc.querySelectorAll("path")];
-      if (!svg || !paths.length) { setStatus(`SVG 中没有 <path>：${file.name}（可先在矢量工具中转换为路径）`); return; }
+      if (!svg || !paths.length) { setStatus(tr("SVG 中没有 <path>：{name}（可先在矢量工具中转换为路径）", { name: file.name })); return; }
       const vb = (svg.getAttribute("viewBox") ?? "").split(/[\s,]+/).map(Number);
       const [vx, vy, vw, vh] = vb.length === 4 && vb.every(Number.isFinite)
         ? (vb as [number, number, number, number])
@@ -506,9 +513,9 @@ export function App() {
         transform: { x: Math.round(cx - (vw * scale) / 2), y: Math.round(cy - (vh * scale) / 2), scale },
         layers: children
       } as Layer);
-      setStatus(`已导入 SVG「${file.name}」（${children.length} 条路径）`);
+      setStatus(tr("已导入 SVG「{name}」（{n} 条路径）", { name: file.name, n: children.length }));
     } catch (e) {
-      setStatus(`SVG 解析失败: ${e instanceof Error ? e.message : String(e)}`);
+      setStatus(tr("SVG 解析失败: {e}", { e: e instanceof Error ? e.message : String(e) }));
     }
   }
 
@@ -529,7 +536,7 @@ export function App() {
     const src = composition.layers[i];
     if (!src) return;
     const copy = structuredClone(src) as AnyLayer;
-    if (typeof copy.id === "string" && copy.id) copy.id = `${copy.id}-副本`;
+    if (typeof copy.id === "string" && copy.id) copy.id = tr("{id}-副本", { id: copy.id });
     const layers = [...composition.layers];
     layers.splice(i + 1, 0, copy as Layer);
     apply({ ...composition, layers });
@@ -545,7 +552,7 @@ export function App() {
     a.download = `${projectName || "openhyper"}.ohproj.json`;
     a.click();
     URL.revokeObjectURL(url);
-    setStatus("已保存工程文件");
+    setStatus(tr("已保存工程文件"));
   }
   function openProject(): void {
     filePurpose.current = { mode: "project" };
@@ -562,15 +569,15 @@ export function App() {
       setProjectName(data.name ?? f.name.replace(/\.(ohproj\.)?json$/i, ""));
       setSelection([]); setSelKf(null); setTimeMs(0);
       if (showJson) syncJson(comp);
-      setStatus(`已打开「${f.name}」`);
+      setStatus(tr("已打开「{name}」", { name: f.name }));
     } catch (e) {
-      setStatus(`打开失败: ${e instanceof Error ? e.message : String(e)}`);
+      setStatus(tr("打开失败: {e}", { e: e instanceof Error ? e.message : String(e) }));
     }
   }
   function newProject(): void {
-    if (!window.confirm("新建项目？当前项目请先保存。")) return;
+    if (!window.confirm(tr("新建项目？当前项目请先保存。"))) return;
     history.reset(sampleComposition);
-    setProjectName("未命名项目");
+    setProjectName(tr("未命名项目"));
     setSelection([]); setSelKf(null); setTimeMs(0);
   }
 
@@ -635,22 +642,22 @@ export function App() {
   // ---- group / ungroup ---------------------------------------------------------
   function groupSelected(): void {
     const idx = [...new Set(multiSel)].sort((a, b) => a - b);
-    if (idx.length < 2) { setStatus("按住 ⇧/⌘ 点选多个图层后再成组"); return; }
+    if (idx.length < 2) { setStatus(tr("按住 ⇧/⌘ 点选多个图层后再成组")); return; }
     const members = idx.map((i) => composition.layers[i]!).filter(Boolean);
     const layers = composition.layers.filter((_, i) => !idx.includes(i));
     // startMs stays 0 so children keep their own global clocks — grouping is
     // visually lossless; the group then moves/animates as one unit.
-    layers.splice(idx[0]!, 0, { type: "group", id: "组", layers: members } as Layer);
+    layers.splice(idx[0]!, 0, { type: "group", id: tr("组"), layers: members } as Layer);
     apply({ ...composition, layers });
     select([idx[0]!]);
-    setStatus(`已将 ${members.length} 个图层成组（⌘G）`);
+    setStatus(tr("已将 {n} 个图层成组（⌘G）", { n: members.length }));
   }
 
   function ungroupSelected(): void {
     if (selection.length !== 1) return;
     const i = selection[0]!;
     const g = composition.layers[i] as AnyLayer | undefined;
-    if (!g || g.type !== "group" || !Array.isArray(g.layers)) { setStatus("请选中一个顶层组再解组"); return; }
+    if (!g || g.type !== "group" || !Array.isArray(g.layers)) { setStatus(tr("请选中一个顶层组再解组")); return; }
     const gs = (g.startMs as number) ?? 0;
     const ge = g.endMs as number | undefined;
     const gt = (g.transform as Record<string, unknown>) ?? {};
@@ -684,7 +691,7 @@ export function App() {
     apply({ ...composition, layers });
     select(children.length ? [i] : []);
     const lossy = Array.isArray(gt.x) || Array.isArray(gt.y) || (typeof gt.scale === "number" && gt.scale !== 1) || Array.isArray(gt.scale) || gt.rotate || gt.opacity !== undefined || g.reveal || g.clip;
-    setStatus(lossy ? "已解组 — 组上的缩放/旋转/透明度/动画/裁剪未合并到子图层，请检查" : `已解组为 ${children.length} 个图层`);
+    setStatus(lossy ? tr("已解组 — 组上的缩放/旋转/透明度/动画/裁剪未合并到子图层，请检查") : tr("已解组为 {n} 个图层", { n: children.length }));
   }
 
   const canGroup = multiSel.length >= 2;
@@ -693,7 +700,7 @@ export function App() {
   // ---- gesture recording (drag a path → baked keyframes) ----------------------
   function onRecorded(index: number, samples: PathSample[]): void {
     setRecording(false);
-    if (samples.length < 3) { setStatus("录制太短，未生成关键帧"); return; }
+    if (samples.length < 3) { setStatus(tr("录制太短，未生成关键帧")); return; }
     let simplified = simplifyPath(samples, composition.width * 0.008);
     if (simplified.length > 16) {
       const step = (simplified.length - 1) / 15;
@@ -708,7 +715,7 @@ export function App() {
       ...l,
       transform: { ...(((l as AnyLayer).transform as Record<string, unknown>) ?? {}), x, y }
     } as Layer)));
-    setStatus(`已录制运动路径：${simplified.length} 个关键帧（${startAt}→${end}ms）`);
+    setStatus(tr("已录制运动路径：{n} 个关键帧（{from}→{to}ms）", { n: simplified.length, from: startAt, to: end }));
   }
 
   // ---- AI assistant applies a full composition (undoable) ----------------------
@@ -751,6 +758,7 @@ export function App() {
         onGroup={groupSelected} onUngroup={ungroupSelected}
         aiOpen={aiOpen} onToggleAi={() => setAiOpen((s) => !s)}
         theme={theme} onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        onToggleLang={toggleLang}
         onExport={() => setRenderOpen(true)}
         status={status}
       />
@@ -848,7 +856,7 @@ export function App() {
           onAddToTimeline={(def, params) => {
             addPlugin(def, params);
             setView("editor");
-            setStatus(`已添加插件「${def.displayName ?? def.name}」到时间线`);
+            setStatus(tr("已添加插件「{name}」到时间线", { name: def.displayName ?? def.name }));
           }}
         />
       ) : null}
@@ -865,7 +873,7 @@ export function App() {
             setQuickOpen(false);
             setTimeMs(0);
             setPlaying(true);
-            setStatus("已生成你的视频 — 空格暂停，点击画布上的物体继续编辑");
+            setStatus(tr("已生成你的视频 — 空格暂停，点击画布上的物体继续编辑"));
           }}
         />
       ) : null}

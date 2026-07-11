@@ -5,6 +5,7 @@ import {
   pointInBox, resolveLayerAt, upsertKfArr, xfOf, xyKfTimes
 } from "../helpers.ts";
 import type { AbBubble, AbEase, AnyLayer, Kf, PathSample, SelPath } from "../helpers.ts";
+import { t } from "../i18n.ts";
 
 type Gesture =
   | { kind: "move"; startX: number; startY: number; targets: { index: number; origX: unknown; origY: unknown }[] }
@@ -365,15 +366,15 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
           if (assetId) onDropAsset(assetId, x, y);
           else if (e.dataTransfer.files.length) onDropFiles([...e.dataTransfer.files], x, y);
         }}>
-        {error ? <div className="error-banner">插件展开失败：{error}</div> : null}
+        {error ? <div className="error-banner">{t("插件展开失败：")}{error}</div> : null}
         <div ref={wrapRef} className="canvas-wrap" style={{ aspectRatio: `${W} / ${H}`, width: `min(100%, calc((100vh - 380px) * ${W / H}))` }}>
           <canvas ref={canvasRef} width={W} height={H} />
           <div className="hud-badge" style={{ top: 12, left: 12 }}><span className="hud-dot" />PREVIEW</div>
           <div className="hud-badge square" style={{ top: 12, right: 12 }}>{W}×{H} · {composition.fps}fps</div>
           {safeGuides ? <div className="safe-guides"><i /><i /></div> : null}
-          <button className="hud-badge square" title="安全区参考线（5% / 10%）"
+          <button className="hud-badge square" title={t("安全区参考线（5% / 10%）")}
             style={{ bottom: 12, right: 12, pointerEvents: "auto", cursor: "pointer", background: safeGuides ? "var(--accent-soft)" : "rgba(6,10,16,.66)", color: safeGuides ? "var(--accent)" : undefined }}
-            onClick={() => setSafeGuides((s) => { localStorage.setItem("ohe.safeGuides", s ? "0" : "1"); return !s; })}>▦ 安全区</button>
+            onClick={() => setSafeGuides((s) => { localStorage.setItem("ohe.safeGuides", s ? "0" : "1"); return !s; })}>▦ {t("安全区")}</button>
           <svg ref={svgRef} className="stage-overlay" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
             style={animMode ? { cursor: "crosshair" } : undefined}
             onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onDoubleClick={onDoubleClick}>
@@ -399,15 +400,15 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
                 {motion.dots.length ? (
                   <>
                     <text x={motion.dots[0]!.c[0]} y={motion.dots[0]!.c[1] - 12 * k} pointerEvents="none"
-                      fontSize={12 * k} fill="#8a93a6" textAnchor="middle">起点</text>
+                      fontSize={12 * k} fill="#8a93a6" textAnchor="middle">{t("起点")}</text>
                     <text x={motion.dots[motion.dots.length - 1]!.c[0]} y={motion.dots[motion.dots.length - 1]!.c[1] - 12 * k} pointerEvents="none"
-                      fontSize={12 * k} fill="var(--gold)" textAnchor="middle">终点</text>
+                      fontSize={12 * k} fill="var(--gold)" textAnchor="middle">{t("终点")}</text>
                   </>
                 ) : null}
                 {motion.dots.map((d) => (
                   <circle key={d.t} data-kfdot={d.t} cx={d.c[0]} cy={d.c[1]} r={5.5 * k}
                     fill="var(--gold)" stroke="#141821" strokeWidth={1.4 * k} style={{ cursor: "grab" }}>
-                    <title>关键帧 @ {Math.round(d.t)}ms — 拖动改变位置</title>
+                    <title>{t("关键帧 @ {ms}ms — 拖动改变位置", { ms: Math.round(d.t) })}</title>
                   </circle>
                 ))}
               </g>
@@ -452,42 +453,42 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
           {abBubble && bubblePos ? (
             <div className="ab-bubble" style={{ left: `${bubblePos.left}%`, top: `${bubblePos.top}%` }}
               onPointerDown={(e) => e.stopPropagation()}>
-              <div className="ab-title">移动动画已生成<span>调节即回放</span></div>
+              <div className="ab-title">{t("移动动画已生成")}<span>{t("调节即回放")}</span></div>
               <label className="ab-row">
-                <span>时长</span>
+                <span>{t("时长")}</span>
                 <input type="range" min={200} max={3000} step={100}
                   value={abBubble.t1 - abBubble.t0} onChange={(e) => onAbDur(Number(e.target.value))} />
                 <b>{((abBubble.t1 - abBubble.t0) / 1000).toFixed(1)}s</b>
               </label>
               <div className="ab-row">
-                <span>节奏</span>
+                <span>{t("节奏")}</span>
                 {(["linear", "emph", "back"] as AbEase[]).map((ez) => (
                   <button key={ez} className={`ab-chip${abBubble.ease === ez ? " active" : ""}`}
-                    onClick={() => onAbEase(ez)}>{AB_EASE_LABEL[ez]}</button>
+                    onClick={() => onAbEase(ez)}>{t(AB_EASE_LABEL[ez])}</button>
                 ))}
               </div>
               <div className="ab-row">
-                <button className="ab-chip" onClick={onAbReplay}>↺ 重播</button>
-                <button className="ab-chip danger" onClick={onAbRemove}>删除</button>
+                <button className="ab-chip" onClick={onAbReplay}>↺ {t("重播")}</button>
+                <button className="ab-chip danger" onClick={onAbRemove}>{t("删除")}</button>
                 <span style={{ flex: 1 }} />
-                <button className="ab-done" onClick={onAbDone}>完成 ✓</button>
+                <button className="ab-done" onClick={onAbDone}>{t("完成 ✓")}</button>
               </div>
             </div>
           ) : null}
 
           {selTop !== undefined && !selIsAudio ? (
             <button className={`stage-fab${animMode ? " active" : ""}`} onClick={onToggleAnimMode}
-              title="动一动：把选中的物体拖到它要去的位置，松手即生成移动动画">
-              {animMode ? "✕ 退出动一动" : "✦ 动一动"}
+              title={t("动一动：把选中的物体拖到它要去的位置，松手即生成移动动画")}>
+              {animMode ? t("✕ 退出动一动") : t("✦ 动一动")}
             </button>
           ) : null}
         </div>
         <div className="stage-hint" style={recording ? { color: "var(--danger)" } : animMode ? { color: "var(--gold)" } : undefined}>
-          {recording ? "● 录制中：按住图层拖出运动轨迹，松开生成关键帧"
-            : animMode ? "✦ 动一动：把物体拖到它要去的位置，松手即生成动画（当前位置 = 起点）"
-              : selIsAudio ? "音频图层没有画面 — 在时间轴/检查器中编辑"
-                : selTop !== undefined ? "拖动移动 · 角点缩放 · 顶部圆点旋转 · 金色圆点 = 可拖的动画关键帧 · 双击进组"
-                  : "点击图层选中 · 拖入文件添加素材 · 空格播放"}
+          {recording ? t("● 录制中：按住图层拖出运动轨迹，松开生成关键帧")
+            : animMode ? t("✦ 动一动：把物体拖到它要去的位置，松手即生成动画（当前位置 = 起点）")
+              : selIsAudio ? t("音频图层没有画面 — 在时间轴/检查器中编辑")
+                : selTop !== undefined ? t("拖动移动 · 角点缩放 · 顶部圆点旋转 · 金色圆点 = 可拖的动画关键帧 · 双击进组")
+                  : t("点击图层选中 · 拖入文件添加素材 · 空格播放")}
         </div>
       </div>
     </div>

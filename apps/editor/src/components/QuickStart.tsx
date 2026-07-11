@@ -5,6 +5,7 @@ import { Icon, pluginIcon } from "../icons.tsx";
 import { EMPH, pluginDefaults } from "../helpers.ts";
 import { importFile } from "./LibraryPanel.tsx";
 import type { EditorAsset } from "./LibraryPanel.tsx";
+import { t } from "../i18n.ts";
 
 // Text-driven intro plugins that work out of the box (no required remote assets).
 const INTRO_NAMES = [
@@ -93,7 +94,7 @@ export function QuickStart({ plugins, onClose, onCreate }: {
     }
     return {
       comp: { width: W, height: H, fps: 30, durationMs: Math.round(total), layers } as Composition,
-      name: title.trim() || "我的视频"
+      name: title.trim() || t("我的视频")
     };
   }
 
@@ -103,7 +104,7 @@ export function QuickStart({ plugins, onClose, onCreate }: {
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal qs-modal">
-        <h2><Icon name="sparkle" size={17} />快速开始 — 三步做出你的视频
+        <h2><Icon name="sparkle" size={17} />{t("快速开始 — 三步做出你的视频")}
           <span style={{ flex: 1 }} />
           <button className="icon-btn" onClick={onClose}><Icon name="close" size={15} /></button>
         </h2>
@@ -111,19 +112,19 @@ export function QuickStart({ plugins, onClose, onCreate }: {
         <div className="qs-steps">
           {steps.map((s, i) => (
             <button key={s} className={`qs-step${i === step ? " active" : ""}${i < step ? " done" : ""}`} onClick={() => setStep(i)}>
-              <em>{i < step ? "✓" : i + 1}</em>{s}
+              <em>{i < step ? "✓" : i + 1}</em>{t(s)}
             </button>
           ))}
         </div>
 
         {step === 0 ? (
           <>
-            <div className="qs-hint">片头会自动带上你的标题，全部都能之后再改。</div>
+            <div className="qs-hint">{t("片头会自动带上你的标题，全部都能之后再改。")}</div>
             <div className="qs-grid">
               <button className={`qs-tile${pick === null ? " active" : ""}`} onClick={() => setPick(null)}>
                 <div className="qs-tile-icon" style={{ background: "var(--panel-2)", color: "var(--muted)" }}><Icon name="close" size={18} /></div>
-                <b>不要片头</b>
-                <p>直接从你的素材开始</p>
+                <b>{t("不要片头")}</b>
+                <p>{t("直接从你的素材开始")}</p>
               </button>
               {openers.map((p) => {
                 const { icon, tint } = pluginIcon(p.name);
@@ -141,8 +142,8 @@ export function QuickStart({ plugins, onClose, onCreate }: {
 
         {step === 1 ? (
           <>
-            <div className="qs-hint">这行字会出现在片头里，也会成为项目名。</div>
-            <input className="input qs-title" autoFocus placeholder="比如：周末去海边"
+            <div className="qs-hint">{t("这行字会出现在片头里，也会成为项目名。")}</div>
+            <input className="input qs-title" autoFocus placeholder={t("比如：周末去海边")}
               value={title} onChange={(e) => setTitle(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") setStep(2); }} />
           </>
@@ -150,7 +151,7 @@ export function QuickStart({ plugins, onClose, onCreate }: {
 
         {step === 2 ? (
           <>
-            <div className="qs-hint">你拍的视频或照片会接在片头后面，自动淡入。也可以先跳过，之后从素材面板加入。</div>
+            <div className="qs-hint">{t("你拍的视频或照片会接在片头后面，自动淡入。也可以先跳过，之后从素材面板加入。")}</div>
             <input ref={fileRef} type="file" accept="video/*,image/*" style={{ display: "none" }}
               onChange={(e) => { void onFiles([...(e.target.files ?? [])]); e.target.value = ""; }} />
             <div className={`qs-drop${dragOver ? " over" : ""}`}
@@ -165,13 +166,13 @@ export function QuickStart({ plugins, onClose, onCreate }: {
                     : <img src={asset.url} alt="" />}
                   <div>
                     <b>{asset.name}</b>
-                    <p>{asset.kind === "video" ? (videoDurMs ? `${(videoDurMs / 1000).toFixed(1)} 秒` : "读取时长中…") : "照片（自动缓推运镜）"} · 点击可更换</p>
+                    <p>{asset.kind === "video" ? (videoDurMs ? t("{s} 秒", { s: (videoDurMs / 1000).toFixed(1) }) : t("读取时长中…")) : t("照片（自动缓推运镜）")} · {t("点击可更换")}</p>
                   </div>
                 </div>
               ) : (
                 <>
                   <div style={{ color: "var(--accent)" }}><Icon name="video" size={26} /></div>
-                  {busy ? "导入中…" : "点击选择 或 拖入 视频 / 照片"}
+                  {busy ? t("导入中…") : t("点击选择 或 拖入 视频 / 照片")}
                 </>
               )}
             </div>
@@ -179,15 +180,15 @@ export function QuickStart({ plugins, onClose, onCreate }: {
         ) : null}
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button className="btn btn-ghost" onClick={onClose}>跳过，直接进编辑器</button>
+          <button className="btn btn-ghost" onClick={onClose}>{t("跳过，直接进编辑器")}</button>
           <span style={{ flex: 1 }} />
-          {step > 0 ? <button className="btn" onClick={() => setStep(step - 1)}>上一步</button> : null}
+          {step > 0 ? <button className="btn" onClick={() => setStep(step - 1)}>{t("上一步")}</button> : null}
           {step < 2 ? (
-            <button className="btn btn-primary" onClick={() => setStep(step + 1)}>下一步 →</button>
+            <button className="btn btn-primary" onClick={() => setStep(step + 1)}>{t("下一步 →")}</button>
           ) : (
             <button className="btn btn-primary" disabled={!canCreate || busy}
               onClick={() => { const { comp, name } = build(); onCreate(comp, name, asset); }}>
-              <Icon name="sparkle" size={14} />生成我的视频
+              <Icon name="sparkle" size={14} />{t("生成我的视频")}
             </button>
           )}
         </div>

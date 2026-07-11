@@ -7,6 +7,7 @@ import { PreviewRenderer } from "../preview.ts";
 import { pluginDefaults } from "../helpers.ts";
 import { ParamField } from "./Inspector.tsx";
 import type { EditorAsset } from "./LibraryPanel.tsx";
+import { t } from "../i18n.ts";
 
 // The plugin gallery ("插件库") — a Studio-style full-page browser over the
 // plugin registry: poster-frame cards for every plugin, a live looping hero
@@ -166,19 +167,19 @@ export function PluginGallery({ plugins, assets, onAddToTimeline }: {
     return () => { alive = false; cancelAnimationFrame(raf); };
   }, [preview]);
 
-  if (!def) return <div className="gallery"><div className="gallery-main"><h1>插件库</h1><p className="gallery-sub">没有已注册的插件。</p></div></div>;
+  if (!def) return <div className="gallery"><div className="gallery-main"><h1>{t("插件库")}</h1><p className="gallery-sub">{t("没有已注册的插件。")}</p></div></div>;
 
   const irNode = { type: "plugin", plugin: def.name, startMs: 0, endMs: def.defaultDurationMs ?? 3000, params };
 
   return (
     <div className="gallery">
       <div className="gallery-main">
-        <h1>从插件生成</h1>
-        <p className="gallery-sub">往时间线放一个 <code>{"{ type: \"plugin\" }"}</code> 节点 — 参数保持可编辑、非破坏性。点击卡片选择，右侧实时预览。</p>
+        <h1>{t("从插件生成")}</h1>
+        <p className="gallery-sub">{t("往时间线放一个")} <code>{"{ type: \"plugin\" }"}</code> {t("节点 — 参数保持可编辑、非破坏性。点击卡片选择，右侧实时预览。")}</p>
         <div className="cat-chips">
           {CATEGORIES.filter(([k]) => k === "all" || plugins.some((p) => (p.category ?? "opener") === k)).map(([k, label]) => (
             <button key={k} className="chip" style={cat === k ? { color: "var(--accent)", borderColor: "var(--accent)", background: "var(--accent-soft)" } : undefined}
-              onClick={() => setCat(k)}>{label}</button>
+              onClick={() => setCat(k)}>{t(label)}</button>
           ))}
         </div>
         <div className="gallery-grid">
@@ -207,7 +208,7 @@ export function PluginGallery({ plugins, assets, onAddToTimeline }: {
         </div>
         <div className="gallery-side-scroll">
           <div className="section-title" style={{ display: "flex", justifyContent: "space-between" }}>
-            <span>参数</span>
+            <span>{t("参数")}</span>
             <span style={{ fontFamily: "var(--mono)", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>auto-form</span>
           </div>
           {Object.entries(def.params).map(([key, spec]) => (
@@ -221,14 +222,14 @@ export function PluginGallery({ plugins, assets, onAddToTimeline }: {
           {showIr ? <pre className="ir-pre">{JSON.stringify(irNode, null, 2)}</pre> : null}
         </div>
         <div className="gallery-side-foot">
-          <button className="btn btn-primary" style={{ justifyContent: "center", width: "100%" }} onClick={() => onAddToTimeline(def, params)}>添加到时间线</button>
+          <button className="btn btn-primary" style={{ justifyContent: "center", width: "100%" }} onClick={() => onAddToTimeline(def, params)}>{t("添加到时间线")}</button>
           <button className="btn" style={{ justifyContent: "center", width: "100%" }}
             onClick={() => {
               void navigator.clipboard.writeText(JSON.stringify(irNode, null, 2)).then(() => {
                 setCopied(true);
                 setTimeout(() => setCopied(false), 1200);
               });
-            }}>{copied ? "✓ 已复制" : "复制插件 JSON"}</button>
+            }}>{copied ? t("✓ 已复制") : t("复制插件 JSON")}</button>
         </div>
       </aside>
     </div>

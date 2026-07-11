@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { Composition, Layer } from "openhypercore";
 import type { PluginDefinition } from "openhypercore/plugins";
 import { Icon, pluginIcon } from "../icons.tsx";
+import { t } from "../i18n.ts";
 import { layerLabel, typeColor } from "../helpers.ts";
 import type { AnyLayer, SelPath } from "../helpers.ts";
 
@@ -69,7 +70,7 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
     <aside className="library">
       <div className="tabs">
         {([["media", "素材"], ["add", "组件"], ["fx", "特效"], ["layers", "图层"]] as const).map(([k, name]) => (
-          <button key={k} className={`tab${tab === k ? " active" : ""}`} onClick={() => setTab(k)}>{name}</button>
+          <button key={k} className={`tab${tab === k ? " active" : ""}`} onClick={() => setTab(k)}>{t(name)}</button>
         ))}
       </div>
 
@@ -90,15 +91,17 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
                 color: "var(--muted)", fontSize: 12, marginBottom: 10, transition: "all .13s"
               }}>
               <div style={{ color: "var(--accent)", marginBottom: 6 }}><Icon name="plus" size={20} /></div>
-              点击导入 或 拖入图片 / 视频 / 音频
+              {t("点击导入 或 拖入图片 / 视频 / 音频")}
             </div>
-            {assets.length === 0 ? <div className="empty-hint">还没有素材。<br />导入后点击即可添加到画布，也可直接拖到画布上。</div> : null}
+            {assets.length === 0 ? <div className="empty-hint">{t("还没有素材。")}<br />{t("导入后点击即可添加到画布，也可直接拖到画布上。")}</div> : null}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               {assets.map((a) => (
                 <div key={a.id} draggable
                   onDragStart={(e) => { e.dataTransfer.setData("application/x-openhyper-asset", a.id); e.dataTransfer.effectAllowed = "copy"; }}
                   onClick={() => onAddAssetLayer(a)}
-                  title={`${a.name}${a.previewOnly ? "（blob 素材仅预览，导出请用 URL/内嵌）" : ""} — 点击添加，或拖到画布`}
+                  title={a.previewOnly
+                    ? t("{name}（blob 素材仅预览，导出请用 URL/内嵌） — 点击添加，或拖到画布", { name: a.name })
+                    : t("{name} — 点击添加，或拖到画布", { name: a.name })}
                   style={{ borderRadius: 9, overflow: "hidden", border: "1px solid var(--border)", cursor: "grab", background: "var(--panel-2)" }}>
                   <div style={{ height: 64, display: "grid", placeItems: "center", background: "#0d1017", position: "relative" }}>
                     {a.kind === "image"
@@ -106,7 +109,7 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
                       : a.kind === "video"
                         ? <video src={a.url} muted preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                         : <span style={{ color: "var(--cyan)" }}><Icon name="audio" size={26} /></span>}
-                    {a.previewOnly ? <span title="blob 素材：仅本地预览可见" style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,.6)", color: "var(--gold)", borderRadius: 4, fontSize: 9, padding: "1px 4px" }}>预览</span> : null}
+                    {a.previewOnly ? <span title={t("blob 素材：仅本地预览可见")} style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,.6)", color: "var(--gold)", borderRadius: 4, fontSize: 9, padding: "1px 4px" }}>{t("预览")}</span> : null}
                   </div>
                   <div style={{ padding: "4px 7px", fontSize: 10.5, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</div>
                 </div>
@@ -122,7 +125,7 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
               ["audio", "音频", "audio"], ["svg", "SVG 图案", "svgFile"], ["group", "组", "group"]].map(([kind, name, icon]) => (
               <button key={kind} className="add-card" onClick={() => onAddFactory(kind!)}>
                 <Icon name={icon!} size={22} />
-                {name}
+                {t(name!)}
               </button>
             ))}
           </div>
@@ -147,9 +150,9 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
 
         {tab === "layers" ? (
           composition.layers.length === 0
-            ? <div className="empty-hint">还没有图层，从素材/组件/特效添加。</div>
+            ? <div className="empty-hint">{t("还没有图层，从素材/组件/特效添加。")}</div>
             : <>
-                <div style={{ color: "var(--faint)", fontSize: 10.5, marginBottom: 6 }}>⇧/⌘ 点选多个 → 顶栏「成组」(⌘G)</div>
+                <div style={{ color: "var(--faint)", fontSize: 10.5, marginBottom: 6 }}>{t("⇧/⌘ 点选多个 → 顶栏「成组」(⌘G)")}</div>
                 <LayerTree layers={composition.layers} selection={selection} multiSel={multiSel} onSelect={onSelect} onMove={onMove} onDuplicate={onDuplicate} onRemove={onRemove} />
               </>
         ) : null}
@@ -194,11 +197,11 @@ function LayerNode({ layer, path, selection, multiSel, onSelect, onMove, onDupli
         <span className="layer-name">{layerLabel(layer)}</span>
         <span className="actions">
           {top ? <>
-            <button className="icon-btn" title="上移" onClick={(e) => { e.stopPropagation(); onMove(path[0]!, -1); }}><Icon name="up" size={12} /></button>
-            <button className="icon-btn" title="下移" onClick={(e) => { e.stopPropagation(); onMove(path[0]!, 1); }}><Icon name="down" size={12} /></button>
-            <button className="icon-btn" title="复制 (⌘D)" onClick={(e) => { e.stopPropagation(); onDuplicate(path[0]!); }}><Icon name="dup" size={12} /></button>
+            <button className="icon-btn" title={t("上移")} onClick={(e) => { e.stopPropagation(); onMove(path[0]!, -1); }}><Icon name="up" size={12} /></button>
+            <button className="icon-btn" title={t("下移")} onClick={(e) => { e.stopPropagation(); onMove(path[0]!, 1); }}><Icon name="down" size={12} /></button>
+            <button className="icon-btn" title={t("复制 (⌘D)")} onClick={(e) => { e.stopPropagation(); onDuplicate(path[0]!); }}><Icon name="dup" size={12} /></button>
           </> : null}
-          <button className="icon-btn danger" title="删除" onClick={(e) => { e.stopPropagation(); onRemove(path); }}><Icon name="trash" size={12} /></button>
+          <button className="icon-btn danger" title={t("删除")} onClick={(e) => { e.stopPropagation(); onRemove(path); }}><Icon name="trash" size={12} /></button>
         </span>
       </div>
       {open ? children.map((c, i) => (

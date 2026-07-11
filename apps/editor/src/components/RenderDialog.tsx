@@ -3,6 +3,7 @@ import type { Composition, Layer } from "openhypercore";
 import { Icon } from "../icons.tsx";
 import { Col, Row, Sel } from "../fields.tsx";
 import type { AnyLayer } from "../helpers.ts";
+import { t } from "../i18n.ts";
 
 function collectBlobSrcs(layers: Layer[], found: string[]): void {
   for (const l of layers) {
@@ -71,7 +72,7 @@ export function RenderDialog({ composition, projectName, onClose }: {
       a.download = `${projectName || "openhyper"}.mp4`;
       a.click();
       URL.revokeObjectURL(url);
-      setResult(`完成 — ${(blob.size / 1024 / 1024).toFixed(2)} MB${renderMs ? ` · 服务端渲染 ${(Number(renderMs) / 1000).toFixed(1)}s` : ""}`);
+      setResult(t("完成 — {mb} MB", { mb: (blob.size / 1024 / 1024).toFixed(2) }) + (renderMs ? t(" · 服务端渲染 {s}s", { s: (Number(renderMs) / 1000).toFixed(1) }) : ""));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -83,37 +84,37 @@ export function RenderDialog({ composition, projectName, onClose }: {
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
       <div className="modal">
-        <h2><Icon name="export" size={17} />导出视频<span style={{ flex: 1 }} />
+        <h2><Icon name="export" size={17} />{t("导出视频")}<span style={{ flex: 1 }} />
           <button className="icon-btn" onClick={onClose} disabled={busy}><Icon name="close" size={15} /></button>
         </h2>
 
         <div style={{ color: "var(--muted)", fontSize: 12 }}>
           {composition.width}×{composition.height} · {composition.fps} fps · {(composition.durationMs / 1000).toFixed(1)}s
-          · 服务端逐帧渲染，与预览完全一致
+          · {t("服务端逐帧渲染，与预览完全一致")}
         </div>
 
-        <Col label="渲染服务地址（openhyper serve）">
+        <Col label={t("渲染服务地址（openhyper serve）")}>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input className="input" value={serviceUrl} onChange={(e) => setServiceUrl(e.target.value)} />
-            <span className="status-dot" title={health === "ok" ? "服务在线" : health === "down" ? "无法连接" : "检查中"}
+            <span className="status-dot" title={health === "ok" ? t("服务在线") : health === "down" ? t("无法连接") : t("检查中")}
               style={{ background: health === "ok" ? "var(--ok)" : health === "down" ? "var(--danger)" : "var(--gold)", flexShrink: 0 }} />
           </div>
         </Col>
         {health === "down" ? (
           <div style={{ color: "var(--gold)", fontSize: 11.5, lineHeight: 1.5 }}>
-            服务未响应 — 在装有 openhypercore 的机器上运行 <code style={{ background: "var(--panel)", padding: "1px 5px", borderRadius: 4 }}>npx openhyper serve</code>
+            {t("服务未响应 — 在装有 openhypercore 的机器上运行")} <code style={{ background: "var(--panel)", padding: "1px 5px", borderRadius: 4 }}>npx openhyper serve</code>
           </div>
         ) : null}
 
         <Row>
-          <Sel label="渲染后端" value={renderer} options={["默认", "native", "wasm"]}
-            labels={{ 默认: "默认（服务端自动）", native: "native（Rust + Skia）", wasm: "wasm（CanvasKit）" }} onChange={setRenderer} />
+          <Sel label={t("渲染后端")} value={renderer} options={["默认", "native", "wasm"]}
+            labels={{ 默认: t("默认（服务端自动）"), native: t("native（Rust + Skia）"), wasm: t("wasm（CanvasKit）") }} onChange={setRenderer} />
         </Row>
 
         {blobLayers.length ? (
           <div style={{ display: "flex", gap: 8, color: "var(--gold)", fontSize: 11.5, lineHeight: 1.5 }}>
             <Icon name="warn" size={15} />
-            <span>这些图层使用了本地 blob 素材，渲染服务读不到：{blobLayers.join("、")}。请改用 http(s) URL、内嵌小图，或把文件放到服务器可访问的路径。</span>
+            <span>{t("这些图层使用了本地 blob 素材，渲染服务读不到：{list}。请改用 http(s) URL、内嵌小图，或把文件放到服务器可访问的路径。", { list: blobLayers.join(t("、")) })}</span>
           </div>
         ) : null}
 
@@ -121,9 +122,9 @@ export function RenderDialog({ composition, projectName, onClose }: {
         {result ? <div style={{ color: "var(--ok)", fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}><Icon name="check" size={14} />{result}</div> : null}
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <button className="btn" onClick={onClose} disabled={busy}>关闭</button>
+          <button className="btn" onClick={onClose} disabled={busy}>{t("关闭")}</button>
           <button className="btn btn-primary" onClick={render} disabled={busy || health !== "ok"}>
-            {busy ? <><span className="spinner" />渲染中 {elapsed}s…</> : <> <Icon name="export" size={14} />渲染并下载 MP4</>}
+            {busy ? <><span className="spinner" />{t("渲染中 {s}s…", { s: elapsed })}</> : <> <Icon name="export" size={14} />{t("渲染并下载 MP4")}</>}
           </button>
         </div>
       </div>

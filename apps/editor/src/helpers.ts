@@ -1,6 +1,7 @@
 import { motionPathKeyframes, resolveFrame } from "openhypercore";
 import type { Composition, Layer, ResolvedLayer } from "openhypercore";
 import type { PluginDefinition } from "openhypercore/plugins";
+import { t } from "./i18n.ts";
 
 export type Bezier = [number, number, number, number];
 export type Kf = { timeMs: number; value: number; easing?: unknown };
@@ -242,11 +243,11 @@ export function layerLabel(l: AnyLayer): string {
     case "shape": return String(l.shape ?? "shape");
     case "text": case "caption": return String(l.text ?? "text").split("\n")[0]!.slice(0, 14) || "text";
     case "plugin": return String(l.plugin);
-    case "image": return "图片";
-    case "video": return "视频";
-    case "audio": return "音频";
-    case "group": return "组";
-    case "globe": return "地球仪";
+    case "image": return t("图片");
+    case "video": return t("视频");
+    case "audio": return t("音频");
+    case "group": return t("组");
+    case "globe": return t("地球仪");
     default: return String((l as { type?: string }).type ?? "layer");
   }
 }
@@ -257,7 +258,7 @@ export function pluginDefaults(def: PluginDefinition): Record<string, unknown> {
     if (spec.default !== undefined) params[key] = spec.default;
     else if (spec.required) {
       if (spec.type === "asset") params[key] = spec.placeholder ?? (spec.kind === "image" || spec.kind === undefined ? "https://picsum.photos/seed/openhyper/1280/720" : "");
-      else if (spec.type === "string") params[key] = "你的标题";
+      else if (spec.type === "string") params[key] = t("你的标题");
       else if (spec.type === "number") params[key] = 0;
       else if (spec.type === "latlng") params[key] = [39.9, 116.4];
     }

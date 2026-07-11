@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Composition } from "openhypercore";
 import { Icon } from "../icons.tsx";
+import { t } from "../i18n.ts";
 import { TRANSFORM_KEYS, clamp, fmtTime, layerLabel, typeColor } from "../helpers.ts";
 import type { AnyLayer, Kf, SelPath, TKey } from "../helpers.ts";
 import type { KfSel } from "./Inspector.tsx";
@@ -197,23 +198,23 @@ export function TimelinePanel({ composition, timeMs, playing, loop, selection, m
 
   return (
     <div className="timeline" style={{ height }}>
-      <div className={`tl-resize${resizing ? " dragging" : ""}`} title="拖动调整时间线高度"
+      <div className={`tl-resize${resizing ? " dragging" : ""}`} title={t("拖动调整时间线高度")}
         onPointerDown={onResizeDown} onPointerMove={onResizeMove} onPointerUp={onResizeUp} />
       <div className="transport">
-        <button className="icon-btn" title="回到开头" onClick={() => onSeek(0)}><Icon name="skipStart" size={15} /></button>
-        <button className="icon-btn" title="上一帧 ←" onClick={() => onStepFrame(-1)}><Icon name="prevFrame" size={15} /></button>
-        <button className="btn-play" title="播放/暂停 (空格)" onClick={onTogglePlay}>
+        <button className="icon-btn" title={t("回到开头")} onClick={() => onSeek(0)}><Icon name="skipStart" size={15} /></button>
+        <button className="icon-btn" title={t("上一帧 ←")} onClick={() => onStepFrame(-1)}><Icon name="prevFrame" size={15} /></button>
+        <button className="btn-play" title={t("播放/暂停 (空格)")} onClick={onTogglePlay}>
           <Icon name={playing ? "pause" : "play"} size={19} />
         </button>
-        <button className="icon-btn" title="下一帧 →" onClick={() => onStepFrame(1)}><Icon name="nextFrame" size={15} /></button>
-        <button className={`icon-btn${loop ? " active" : ""}`} title="循环播放" onClick={onToggleLoop}><Icon name="loop" size={15} /></button>
+        <button className="icon-btn" title={t("下一帧 →")} onClick={() => onStepFrame(1)}><Icon name="nextFrame" size={15} /></button>
+        <button className={`icon-btn${loop ? " active" : ""}`} title={t("循环播放")} onClick={onToggleLoop}><Icon name="loop" size={15} /></button>
         <span className="timecode">{fmtTime(timeMs)} <span>/ {fmtTime(dur)}</span></span>
         <span style={{ color: "var(--faint)", fontSize: 11 }}>{Math.round(timeMs / (1000 / fps))} f</span>
         <span style={{ flex: 1 }} />
-        <span style={{ color: "var(--faint)", fontSize: 11 }}>拖动片段移动 · 拖两端裁剪 · ◆ 拖动改时刻 / 双击删除</span>
-        <button className="icon-btn" title="适配窗口" onClick={() => setPxPerSec(0)}><Icon name="fit" size={14} /></button>
+        <span style={{ color: "var(--faint)", fontSize: 11 }}>{t("拖动片段移动 · 拖两端裁剪 · ◆ 拖动改时刻 / 双击删除")}</span>
+        <button className="icon-btn" title={t("适配窗口")} onClick={() => setPxPerSec(0)}><Icon name="fit" size={14} /></button>
         <input type="range" min={20} max={600} value={pxPerSec > 0 ? pxPerSec : Math.round((laneW * 1000) / dur)}
-          onChange={(e) => setPxPerSec(Number(e.target.value))} style={{ width: 110 }} title="时间轴缩放" />
+          onChange={(e) => setPxPerSec(Number(e.target.value))} style={{ width: 110 }} title={t("时间轴缩放")} />
       </div>
 
       <div ref={scrollRef} className="tl-scroll" onPointerUp={endDrags}>
