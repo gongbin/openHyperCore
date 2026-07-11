@@ -647,6 +647,9 @@ export async function renderVideo(composition: Composition, options: RenderOptio
     fps: composition.fps,
     width: composition.width,
     height: composition.height,
+    // Frame-exact output bound — lets the encoder avoid `-shortest` (see
+    // ImagePipeArgsOptions.durationSeconds).
+    durationSeconds: frameCount(composition) / composition.fps,
     outFile: options.out,
     ffmpegArgsPrefix: options.ffmpegArgsPrefix
   };

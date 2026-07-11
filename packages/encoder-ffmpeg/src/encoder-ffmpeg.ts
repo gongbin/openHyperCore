@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { rm } from "node:fs/promises";
 
 export type ImagePipeArgsOptions = {
   fps: number;
@@ -8,6 +9,11 @@ export type ImagePipeArgsOptions = {
   outFile: string;
   audioFile?: string;
   audioInputs?: AudioInput[];
+  // Exact output duration. When set, audio is bounded with an explicit `-t`
+  // instead of `-shortest` — the bundled ffmpeg 4.x stops reading the video
+  // pipe as soon as a file-based audio input hits EOF under `-shortest`,
+  // killing renders with a mid-stream EPIPE.
+  durationSeconds?: number;
 };
 
 // A volume automation point (time relative to the audio's own start).
@@ -50,7 +56,7 @@ export function buildImagePipeArgs(options: ImagePipeArgsOptions): string[] {
     "pipe:0",
     ...audioInputArgs(audioInputs),
     ...audioFilterArgs(audioInputs),
-    ...codecArgs(audioInputs),
+    ...codecArgs(audioInputs, options.durationSeconds),
     "-movflags",
     "+faststart",
     options.outFile
@@ -77,7 +83,7 @@ export function buildRawVideoPipeArgs(options: ImagePipeArgsOptions): string[] {
     "pipe:0",
     ...audioInputArgs(audioInputs),
     ...audioFilterArgs(audioInputs),
-    ...codecArgs(audioInputs),
+    ...codecArgs(audioInputs, options.durationSeconds),
     "-movflags",
     "+faststart",
     options.outFile
@@ -85,11 +91,61 @@ export function buildRawVideoPipeArgs(options: ImagePipeArgsOptions): string[] {
 }
 
 export async function encodePngFrames(frames: AsyncIterable<Uint8Array> | Iterable<Uint8Array>, options: EncodePngFramesOptions): Promise<void> {
-  await encodeFramesWithArgs(frames, options, buildImagePipeArgs(options));
+  await encodeInStages(frames, options, buildImagePipeArgs);
 }
 
 export async function encodeRawVideoFrames(frames: AsyncIterable<Uint8Array> | Iterable<Uint8Array>, options: EncodeRawVideoFramesOptions): Promise<void> {
-  await encodeFramesWithArgs(frames, options, buildRawVideoPipeArgs(options));
+  await encodeInStages(frames, options, buildRawVideoPipeArgs);
+}
+
+// The bundled ffmpeg 4.x misreads a slow stdin video pipe as EOF (after a
+// couple of frames!) whenever a second, file-based input is present — so
+// audio can never share the piped encode. Stage 1 encodes video-only from
+// the pipe; stage 2 remuxes with `-c:v copy` and mixes the audio, reading
+// everything from disk.
+async function encodeInStages(frames: AsyncIterable<Uint8Array> | Iterable<Uint8Array>, options: EncodePngFramesOptions, buildArgs: (options: ImagePipeArgsOptions) => string[]): Promise<void> {
+  const audioInputs = normalizeAudioInputs(options);
+  if (audioInputs.length === 0) {
+    await encodeFramesWithArgs(frames, options, buildArgs(options));
+    return;
+  }
+  const videoOnlyFile = `${options.outFile}.video-only.mp4`;
+  const videoOnly: EncodePngFramesOptions = { ...options, outFile: videoOnlyFile };
+  delete videoOnly.audioFile;
+  delete videoOnly.audioInputs;
+  try {
+    await encodeFramesWithArgs(frames, videoOnly, buildArgs(videoOnly));
+    await muxAudio(videoOnlyFile, audioInputs, options);
+  } finally {
+    await rm(videoOnlyFile, { force: true }).catch(() => undefined);
+  }
+}
+
+async function muxAudio(videoFile: string, audioInputs: AudioInput[], options: EncodePngFramesOptions): Promise<void> {
+  const ffmpegPath = options.ffmpegPath ?? await resolveDefaultFfmpegPath();
+  const bound = options.durationSeconds !== undefined && options.durationSeconds > 0
+    ? ["-t", formatSeconds(options.durationSeconds)]
+    : ["-shortest"];
+  const args = [
+    ...(options.ffmpegArgsPrefix ?? []),
+    "-y",
+    "-i", videoFile,
+    ...audioInputArgs(audioInputs),
+    ...audioFilterArgs(audioInputs),
+    "-c:v", "copy",
+    "-c:a", "aac",
+    ...bound,
+    "-movflags", "+faststart",
+    options.outFile
+  ];
+  const child = spawn(ffmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
+  const stderrChunks: Buffer[] = [];
+  child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+  const [exitCode, signal] = await once(child, "close") as [number | null, NodeJS.Signals | null];
+  if (exitCode !== 0) {
+    const stderr = Buffer.concat(stderrChunks).toString("utf8").trim().split("\n").slice(-6).join("\n");
+    throw new Error(`ffmpeg audio mux exited with code ${exitCode}${stderr ? `: ${stderr}` : signal ? `: signal ${signal}` : ""}`);
+  }
 }
 
 async function encodeFramesWithArgs(frames: AsyncIterable<Uint8Array> | Iterable<Uint8Array>, options: EncodePngFramesOptions, pipeArgs: string[]): Promise<void> {
@@ -102,21 +158,29 @@ async function encodeFramesWithArgs(frames: AsyncIterable<Uint8Array> | Iterable
   const stderrChunks: Buffer[] = [];
   child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
 
+  let writeError: unknown;
   try {
     for await (const frame of frames) {
       await writeChunk(child.stdin, frame);
     }
     child.stdin.end();
   } catch (error) {
+    // A write failure (EPIPE) usually means ffmpeg itself died on bad
+    // args/inputs — wait for it below and prefer its stderr over the
+    // unhelpful pipe error.
+    writeError = error;
     child.kill("SIGTERM");
-    throw error;
   }
 
   const [exitCode, signal] = await once(child, "close") as [number | null, NodeJS.Signals | null];
-  if (exitCode !== 0) {
+  if (exitCode !== 0 || writeError) {
     const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
-    const suffix = stderr ? `: ${stderr}` : signal ? `: signal ${signal}` : "";
-    throw new Error(`ffmpeg exited with code ${exitCode}${suffix}`);
+    const tail = stderr.split("\n").slice(-6).join("\n");
+    const suffix = tail ? `: ${tail}` : signal ? `: signal ${signal}` : "";
+    if (tail || !writeError) {
+      throw new Error(`ffmpeg exited with code ${exitCode}${suffix}`);
+    }
+    throw writeError instanceof Error ? writeError : new Error(String(writeError));
   }
 }
 
@@ -305,13 +369,16 @@ function buildVolumeExpr(points: Array<{ t: number; v: number }>): string {
   return `if(lt(t,${formatNumber(first.t)}),${formatNumber(first.v)},${expr})`;
 }
 
-function codecArgs(audioInputs: AudioInput[]): string[] {
+function codecArgs(audioInputs: AudioInput[], durationSeconds?: number): string[] {
   const videoArgs = ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"];
   if (audioInputs.length === 0) {
     return ["-an", ...videoArgs];
   }
-
-  return [...videoArgs, "-c:a", "aac", "-shortest"];
+  // Prefer an explicit output duration over -shortest (see ImagePipeArgsOptions).
+  const bound = durationSeconds !== undefined && durationSeconds > 0
+    ? ["-t", formatSeconds(durationSeconds)]
+    : ["-shortest"];
+  return [...videoArgs, "-c:a", "aac", ...bound];
 }
 
 function formatSeconds(value: number): string {
