@@ -18,6 +18,54 @@ function collectBlobSrcs(layers: Layer[], found: string[]): void {
   }
 }
 
+// Every distinct blob: URL anywhere in the IR (layer srcs, plugin params).
+function collectBlobUrls(node: unknown, found: Set<string>): void {
+  if (Array.isArray(node)) { for (const item of node) collectBlobUrls(item, found); return; }
+  if (!node || typeof node !== "object") return;
+  for (const v of Object.values(node as Record<string, unknown>)) {
+    if (typeof v === "string" && v.startsWith("blob:")) found.add(v);
+    else collectBlobUrls(v, found);
+  }
+}
+
+function replaceStrings(node: unknown, map: Map<string, string>): void {
+  if (Array.isArray(node)) { for (const item of node) replaceStrings(item, map); return; }
+  if (!node || typeof node !== "object") return;
+  const rec = node as Record<string, unknown>;
+  for (const [k, v] of Object.entries(rec)) {
+    if (typeof v === "string" && map.has(v)) rec[k] = map.get(v)!;
+    else replaceStrings(v, map);
+  }
+}
+
+// blob URL → uploaded service URL, remembered per (service, blob) for the
+// session so re-exports skip the upload; entries are re-validated with a HEAD
+// (the service may have restarted and lost its temp assets).
+const uploadedAssets = new Map<string, string>();
+
+async function uploadBlobAsset(base: string, blobUrl: string): Promise<string> {
+  const cacheKey = `${base}|${blobUrl}`;
+  const cached = uploadedAssets.get(cacheKey);
+  if (cached) {
+    try {
+      const head = await fetch(cached, { method: "HEAD", signal: AbortSignal.timeout(4000) });
+      if (head.ok) return cached;
+    } catch { /* fall through to re-upload */ }
+    uploadedAssets.delete(cacheKey);
+  }
+  const blob = await fetch(blobUrl).then((r) => r.blob());
+  const res = await fetch(`${base}/assets`, {
+    method: "POST",
+    headers: { "content-type": blob.type || "application/octet-stream" },
+    body: blob
+  });
+  if (!res.ok) throw new Error(`${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const { url } = (await res.json()) as { url: string };
+  const absolute = `${base}${url}`;
+  uploadedAssets.set(cacheKey, absolute);
+  return absolute;
+}
+
 export function RenderDialog({ composition, projectName, onClose }: {
   composition: Composition;
   projectName: string;
@@ -27,6 +75,7 @@ export function RenderDialog({ composition, projectName, onClose }: {
   const [renderer, setRenderer] = useState("默认");
   const [health, setHealth] = useState<"checking" | "ok" | "down">("checking");
   const [busy, setBusy] = useState(false);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,9 +105,25 @@ export function RenderDialog({ composition, projectName, onClose }: {
     const startAt = Date.now();
     timerRef.current = window.setInterval(() => setElapsed(Math.round((Date.now() - startAt) / 1000)), 500);
     try {
-      const body: Record<string, unknown> = { composition };
+      const base = serviceUrl.replace(/\/$/, "");
+      // Browser-local blob assets can't be read by the service — upload them
+      // first and point the IR at the uploaded copies.
+      const comp = JSON.parse(JSON.stringify(composition)) as Composition;
+      const blobUrls = new Set<string>();
+      collectBlobUrls(comp, blobUrls);
+      if (blobUrls.size) {
+        const list = [...blobUrls];
+        const swaps = new Map<string, string>();
+        for (let i = 0; i < list.length; i += 1) {
+          setUploadNote(t("上传素材 {i}/{n}…", { i: i + 1, n: list.length }));
+          swaps.set(list[i]!, await uploadBlobAsset(base, list[i]!));
+        }
+        replaceStrings(comp, swaps);
+        setUploadNote(null);
+      }
+      const body: Record<string, unknown> = { composition: comp };
       if (renderer === "native" || renderer === "wasm") body.renderer = renderer;
-      const res = await fetch(`${serviceUrl.replace(/\/$/, "")}/render`, {
+      const res = await fetch(`${base}/render`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)
@@ -77,6 +142,7 @@ export function RenderDialog({ composition, projectName, onClose }: {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setUploadNote(null);
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     }
   }
@@ -112,9 +178,9 @@ export function RenderDialog({ composition, projectName, onClose }: {
         </Row>
 
         {blobLayers.length ? (
-          <div style={{ display: "flex", gap: 8, color: "var(--gold)", fontSize: 11.5, lineHeight: 1.5 }}>
-            <Icon name="warn" size={15} />
-            <span>{t("这些图层使用了本地 blob 素材，渲染服务读不到：{list}。请改用 http(s) URL、内嵌小图，或把文件放到服务器可访问的路径。", { list: blobLayers.join(t("、")) })}</span>
+          <div style={{ display: "flex", gap: 8, color: "var(--muted)", fontSize: 11.5, lineHeight: 1.5 }}>
+            <Icon name="check" size={14} />
+            <span>{t("本地素材（{list}）会在导出时自动上传给渲染服务。", { list: blobLayers.join(t("、")) })}</span>
           </div>
         ) : null}
 
@@ -124,7 +190,7 @@ export function RenderDialog({ composition, projectName, onClose }: {
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="btn" onClick={onClose} disabled={busy}>{t("关闭")}</button>
           <button className="btn btn-primary" onClick={render} disabled={busy || health !== "ok"}>
-            {busy ? <><span className="spinner" />{t("渲染中 {s}s…", { s: elapsed })}</> : <> <Icon name="export" size={14} />{t("渲染并下载 MP4")}</>}
+            {busy ? <><span className="spinner" />{uploadNote ?? t("渲染中 {s}s…", { s: elapsed })}</> : <> <Icon name="export" size={14} />{t("渲染并下载 MP4")}</>}
           </button>
         </div>
       </div>

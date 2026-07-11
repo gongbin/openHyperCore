@@ -126,7 +126,7 @@ export function LibraryPanel({ projectName, onProjectName, composition, selectio
                   onDragStart={(e) => { e.dataTransfer.setData("application/x-openhyper-asset", a.id); e.dataTransfer.effectAllowed = "copy"; }}
                   onClick={() => onAddAssetLayer(a)}
                   title={a.previewOnly
-                    ? t("{name}（blob 素材仅预览，导出请用 URL/内嵌） — 点击添加，或拖到画布", { name: a.name })
+                    ? t("{name}（本地素材，导出时自动上传给渲染服务） — 点击添加，或拖到画布", { name: a.name })
                     : t("{name} — 点击添加，或拖到画布", { name: a.name })}
                   style={{ borderRadius: 9, overflow: "hidden", border: "1px solid var(--border)", cursor: "grab", background: "var(--panel-2)" }}>
                   <div style={{ height: 64, display: "grid", placeItems: "center", background: "#0d1017", position: "relative" }}>
@@ -135,7 +135,7 @@ export function LibraryPanel({ projectName, onProjectName, composition, selectio
                       : a.kind === "video"
                         ? <video src={a.url} muted preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                         : <span style={{ color: "var(--cyan)" }}><Icon name="audio" size={26} /></span>}
-                    {a.previewOnly ? <span title={t("blob 素材：仅本地预览可见")} style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,.6)", color: "var(--gold)", borderRadius: 4, fontSize: 9, padding: "1px 4px" }}>{t("预览")}</span> : null}
+                    {a.previewOnly ? <span title={t("本地素材：导出时自动上传给渲染服务")} style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,.6)", color: "var(--gold)", borderRadius: 4, fontSize: 9, padding: "1px 4px" }}>{t("本地")}</span> : null}
                   </div>
                   <div style={{ padding: "4px 7px", fontSize: 10.5, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</div>
                 </div>

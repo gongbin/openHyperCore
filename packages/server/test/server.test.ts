@@ -96,3 +96,60 @@ test("GET /healthz reports ok", async () => {
     server.close();
   }
 });
+
+function sendRaw(port: number, method: string, path: string, body: Buffer, type: string): Promise<Res> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      { host: "127.0.0.1", port, path, method, headers: { connection: "close", "content-type": type, "content-length": body.length } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
+      }
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+test("POST /assets stores an upload; /render rewrites its URL to the local file", async () => {
+  const server = await startRenderServer(0);
+  const port = (server.address() as AddressInfo).port;
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+  try {
+    const up = await sendRaw(port, "POST", "/assets", png, "image/png");
+    assert.equal(up.status, 200);
+    const { id, url, size } = JSON.parse(up.body.toString()) as { id: string; url: string; size: number };
+    assert.equal(url, `/assets/${id}`);
+    assert.equal(size, png.length);
+
+    const got = await send(port, "GET", url);
+    assert.equal(got.status, 200);
+    assert.equal(got.headers["content-type"], "image/png");
+    assert.ok(got.body.equals(png), "round-trips the exact bytes");
+
+    // The IR references the uploaded asset by URL; the server must rewrite it
+    // to the temp file path so the render pipeline reads from disk.
+    const withImage = {
+      ...composition,
+      layers: [...composition.layers, { type: "image", src: `http://127.0.0.1:${port}${url}`, width: 16, height: 16 }]
+    };
+    const res = await send(port, "POST", "/render", withImage);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers["content-type"], "video/mp4");
+  } finally {
+    server.close();
+  }
+});
+
+test("GET /assets/<unknown> is 404", async () => {
+  const server = await startRenderServer(0);
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const res = await send(port, "GET", "/assets/deadbeef-0000-0000-0000-000000000000");
+    assert.equal(res.status, 404);
+  } finally {
+    server.close();
+  }
+});
