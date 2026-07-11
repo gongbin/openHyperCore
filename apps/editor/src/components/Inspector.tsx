@@ -10,7 +10,7 @@ const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "light
 
 export type KfSel = { path: SelPath; key: TKey; kfIdx: number } | null;
 
-export function Inspector({ composition, layer, selection, onSelect, timeMs, resolved, plugins, assets, selKf, recording, onToggleRecord, showJson, jsonText, jsonError, patchLayer, editTransform, toggleKey, setKfEasing, applyAnim, patchComposition, onJsonEdit }: {
+export function Inspector({ composition, layer, selection, onSelect, timeMs, resolved, plugins, assets, selKf, recording, onToggleRecord, showJson, jsonText, jsonError, patchLayer, editTransform, toggleKey, setKfEasing, applyAnim, previewAnim, endPreviewAnim, patchComposition, onJsonEdit }: {
   composition: Composition;
   layer: AnyLayer | undefined;
   selection: SelPath;
@@ -30,6 +30,8 @@ export function Inspector({ composition, layer, selection, onSelect, timeMs, res
   toggleKey: (key: TKey) => void;
   setKfEasing: (sel: NonNullable<KfSel>, easing: Bezier) => void;
   applyAnim: (name: string) => void;
+  previewAnim: (name: string) => void;
+  endPreviewAnim: () => void;
   patchComposition: (patch: Partial<Composition>) => void;
   onJsonEdit: (text: string) => void;
 }) {
@@ -81,9 +83,13 @@ export function Inspector({ composition, layer, selection, onSelect, timeMs, res
             </div>
 
             <Section title="入场 / 出场动画">
+              <div style={{ color: "var(--faint)", fontSize: 10.5 }}>鼠标划过 = 在画布上试播 · 点击 = 应用</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {["淡入", "淡出", "左滑入", "右滑入", "上滑入", "下滑入", "弹出", "缩放入", "左弧入", "右弧入"].map((a) => (
-                  <button key={a} className="chip" onClick={() => applyAnim(a)}>{a}</button>
+                {([["从左入", "→"], ["从右入", "←"], ["从上入", "↓"], ["从下入", "↑"], ["淡入", "◐"],
+                  ["弹出", "✺"], ["缩放入", "⤢"], ["左弧入", "⤾"], ["右弧入", "⤿"], ["淡出", "◑"]] as [string, string][]).map(([a, g]) => (
+                  <button key={a} className="chip chip-anim" title="划过试看 · 点击应用"
+                    onMouseEnter={() => previewAnim(a)} onMouseLeave={endPreviewAnim}
+                    onClick={() => applyAnim(a)}><em>{g}</em>{a}</button>
                 ))}
                 <button className="chip" style={{ color: "var(--danger)" }} onClick={() => applyAnim("清除")}>清除</button>
               </div>
@@ -96,7 +102,7 @@ export function Inspector({ composition, layer, selection, onSelect, timeMs, res
                 const KEY_NAMES: Record<string, string> = { x: "x 位移", y: "y 位移", scale: "缩放", rotate: "旋转", opacity: "不透明度" };
                 const tracks = TRANSFORM_KEYS.filter((k) => Array.isArray(trRaw[k]) && (trRaw[k] as Kf[]).length > 0);
                 if (!tracks.length) {
-                  return <div style={{ color: "var(--faint)", fontSize: 11 }}>此图层还没有关键帧动画 — 点上方预设，或在变换属性旁按 ◆。</div>;
+                  return <div style={{ color: "var(--faint)", fontSize: 11 }}>此图层还没有动画 — 划过上方按钮试看效果，或点画布上的「✦ 动一动」把它拖到想去的位置。</div>;
                 }
                 return (
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>

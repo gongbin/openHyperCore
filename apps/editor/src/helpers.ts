@@ -358,6 +358,117 @@ function pointToSegment(px: number, py: number, ax: number, ay: number, bx: numb
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
+// ---------------------------------------------------------------------------
+// Keyframe track editing utilities for canvas-first animation editing.
+export function upsertKfArr(track: unknown, timeMs: number, value: number, easing?: unknown): Kf[] {
+  const arr = Array.isArray(track) ? [...(track as Kf[])] : [];
+  const i = arr.findIndex((k) => Math.abs(k.timeMs - timeMs) <= KEY_EPS);
+  if (i >= 0) arr[i] = { ...arr[i]!, value, ...(easing !== undefined ? { easing } : {}) };
+  else arr.push({ timeMs, value, ...(easing !== undefined ? { easing } : {}) });
+  arr.sort((a, b) => a.timeMs - b.timeMs);
+  return arr;
+}
+
+export function retimeKfArr(track: unknown, fromMs: number, toMs: number): Kf[] {
+  const arr = Array.isArray(track) ? [...(track as Kf[])] : [];
+  const i = arr.findIndex((k) => Math.abs(k.timeMs - fromMs) <= KEY_EPS);
+  if (i >= 0) arr[i] = { ...arr[i]!, timeMs: toMs };
+  arr.sort((a, b) => a.timeMs - b.timeMs);
+  return arr;
+}
+
+export function easeKfArrAt(track: unknown, timeMs: number, easing: Bezier): Kf[] {
+  const arr = Array.isArray(track) ? [...(track as Kf[])] : [];
+  const i = arr.findIndex((k) => Math.abs(k.timeMs - timeMs) <= KEY_EPS);
+  if (i >= 0) arr[i] = { ...arr[i]!, easing };
+  return arr;
+}
+
+/** Remove keys at the given times; collapse to a static value when emptied. */
+export function removeKfTimes(track: unknown, times: number[]): Kf[] | number {
+  const src = Array.isArray(track) ? (track as Kf[]) : [];
+  const arr = src.filter((k) => !times.some((t) => Math.abs(k.timeMs - t) <= KEY_EPS));
+  if (arr.length) return arr;
+  return src.length ? src[0]!.value : 0;
+}
+
+/** Sorted unique keyframe times across a layer's x/y tracks (track-local clock). */
+export function xyKfTimes(tr: Record<string, unknown>): number[] {
+  const times = new Set<number>();
+  for (const k of ["x", "y"]) {
+    const v = tr[k];
+    if (Array.isArray(v)) for (const kf of v as Kf[]) times.add(Math.round(kf.timeMs));
+  }
+  return [...times].sort((a, b) => a - b);
+}
+
+// ---------------------------------------------------------------------------
+// "动一动" drag-to-animate bubble: a freshly created A→B move awaiting quick
+// tweaks. t0/t1 are on the layer's own track clock (see presetPatch note).
+export type AbEase = "linear" | "emph" | "back";
+export const AB_EASE_TUPLE: Record<AbEase, Bezier> = { linear: [0, 0, 1, 1], emph: EMPH, back: BACK };
+export const AB_EASE_LABEL: Record<AbEase, string> = { linear: "匀速", emph: "丝滑", back: "回弹" };
+export type AbBubble = { index: number; t0: number; t1: number; ease: AbEase };
+
+// ---------------------------------------------------------------------------
+// Preset entrance/exit animations, shared by "apply" and hover live-preview.
+// Returns the transform patch plus the global time range to replay.
+export type PresetResult = { patch: Record<string, unknown>; from: number; to: number };
+
+export function presetPatch(name: string, layer: AnyLayer | undefined, comp: Composition): PresetResult | undefined {
+  const tr = (layer?.transform as Record<string, unknown>) ?? {};
+  const base = (k: string, d: number): number => {
+    const v = tr[k];
+    return typeof v === "number" ? v : Array.isArray(v) && v.length ? (v[0] as Kf).value : d;
+  };
+  // Non-group layers keyframe on the composition clock — anchor the presets
+  // at the clip's own start/end instead of 0/duration.
+  const local = layer?.type === "group" || layer?.type === "plugin";
+  const startMs = (layer?.startMs as number) ?? 0;
+  const clipStart = local ? 0 : startMs;
+  const clipEnd = local
+    ? ((layer?.endMs as number) ?? comp.durationMs) - startMs
+    : ((layer?.endMs as number) ?? comp.durationMs);
+  const span = clipEnd - clipStart;
+  const enter = Math.min(700, Math.round(span * 0.4));
+  const leaveAt = Math.max(clipStart, clipEnd - Math.min(600, Math.round(span * 0.35)));
+  const bx = base("x", 0), by = base("y", 0), bs = base("scale", 1);
+  const g = (t: number): number => (local ? t + startMs : t); // track clock → comp clock
+  let patch: Record<string, unknown> | undefined;
+  let from = clipStart, to = clipStart + enter;
+  switch (name) {
+    case "左弧入": case "右弧入": {
+      // Arc Motion: curve in from off-screen through a raised midpoint
+      // (baked motion-path keyframes, HyperFrames-style).
+      const dir = name === "左弧入" ? -1 : 1;
+      const arcDur = Math.min(900, Math.round(span * 0.5));
+      const fromPt: [number, number] = [bx + dir * Math.round(comp.width * 0.36), by];
+      const mid: [number, number] = [(fromPt[0] + bx) / 2, by - Math.round(comp.height * 0.28)];
+      const arc = bakeMotionPath([fromPt, mid, [bx, by]], arcDur, clipStart, 1.2, 14);
+      patch = { x: arc.x, y: arc.y };
+      to = clipStart + arcDur;
+      break;
+    }
+    case "淡入": patch = { opacity: [{ timeMs: clipStart, value: 0 }, { timeMs: clipStart + enter, value: 1, easing: EMPH }] }; break;
+    case "淡出": patch = { opacity: [{ timeMs: leaveAt, value: 1 }, { timeMs: clipEnd, value: 0, easing: EMPH }] }; from = leaveAt; to = clipEnd; break;
+    case "从左入": patch = { x: [{ timeMs: clipStart, value: bx - 320 }, { timeMs: clipStart + enter, value: bx, easing: EMPH }] }; break;
+    case "从右入": patch = { x: [{ timeMs: clipStart, value: bx + 320 }, { timeMs: clipStart + enter, value: bx, easing: EMPH }] }; break;
+    case "从上入": patch = { y: [{ timeMs: clipStart, value: by - 220 }, { timeMs: clipStart + enter, value: by, easing: EMPH }] }; break;
+    case "从下入": patch = { y: [{ timeMs: clipStart, value: by + 220 }, { timeMs: clipStart + enter, value: by, easing: EMPH }] }; break;
+    case "弹出": patch = { scale: [{ timeMs: clipStart, value: 0.3 }, { timeMs: clipStart + enter, value: bs || 1, easing: BACK }] }; break;
+    case "缩放入": patch = { scale: [{ timeMs: clipStart, value: 0.7 }, { timeMs: clipStart + enter, value: bs || 1, easing: EMPH }] }; break;
+    case "清除": {
+      const c: Record<string, unknown> = {};
+      for (const k of TRANSFORM_KEYS) { const v = tr[k]; if (Array.isArray(v) && v.length) c[k] = (v[v.length - 1] as Kf).value; }
+      patch = c;
+      to = from;
+      break;
+    }
+  }
+  if (!patch) return undefined;
+  return { patch, from: g(from), to: g(to) };
+}
+
 export function fmtTime(ms: number): string {
   const s = Math.max(0, ms) / 1000;
   const m = Math.floor(s / 60);

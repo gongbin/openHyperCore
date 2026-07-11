@@ -7,10 +7,11 @@ import { PreviewRenderer } from "./preview.ts";
 import { sampleComposition } from "./sample.ts";
 import { useHistory } from "./history.ts";
 import {
-  BACK, EMPH, KEY_EPS, TRANSFORM_KEYS, bakeMotionPath, clamp, dfltVal, layerAtPath,
-  pluginDefaults, resolveLayerAt, simplifyPath, updateLayerAtPath
+  AB_EASE_TUPLE, EMPH, KEY_EPS, TRANSFORM_KEYS, clamp, dfltVal, easeKfArrAt, layerAtPath,
+  pluginDefaults, presetPatch, removeKfTimes, resolveLayerAt, retimeKfArr, simplifyPath,
+  updateLayerAtPath, upsertKfArr
 } from "./helpers.ts";
-import type { AnyLayer, Bezier, Kf, PathSample, SelPath, TKey } from "./helpers.ts";
+import type { AbBubble, AbEase, AnyLayer, Bezier, Kf, PathSample, SelPath, TKey } from "./helpers.ts";
 import { TopBar } from "./components/TopBar.tsx";
 import type { EditorView } from "./components/TopBar.tsx";
 import { PluginGallery } from "./components/PluginGallery.tsx";
@@ -22,6 +23,7 @@ import type { KfSel } from "./components/Inspector.tsx";
 import { TimelinePanel } from "./components/TimelinePanel.tsx";
 import { RenderDialog } from "./components/RenderDialog.tsx";
 import { AssistantPanel } from "./components/AssistantPanel.tsx";
+import { QuickStart } from "./components/QuickStart.tsx";
 
 const PLUGINS = listPlugins();
 const AUTOSAVE_KEY = "ohe.project.v1";
@@ -62,6 +64,12 @@ export function App() {
   const [status, setStatus] = useState("");
   const [theme, setTheme] = useState<"dark" | "light">(() => (localStorage.getItem("ohe.theme") === "light" ? "light" : "dark"));
   const [view, setView] = useState<EditorView>("editor");
+  const [animMode, setAnimMode] = useState(false);
+  const [abBubble, setAbBubble] = useState<AbBubble | null>(null);
+  // Temporary composition shown instead of the real one while hover-previewing
+  // a preset animation ("try before you buy"); never persisted.
+  const [ghost, setGhost] = useState<Composition | null>(null);
+  const [quickOpen, setQuickOpen] = useState(() => !restored);
   const fileRef = useRef<HTMLInputElement>(null);
   const filePurpose = useRef<{ mode: "layer" | "svg" | "project"; at?: [number, number] }>({ mode: "layer" });
 
@@ -71,10 +79,11 @@ export function App() {
   }, [theme]);
 
   // ---- plugin expansion (preview == server render) -----------------------
+  // The ghost comp (hover preset preview) takes over the display when set.
   const expansion = useMemo<{ comp: Composition | null; error: string | null }>(() => {
-    try { return { comp: expandComposition(composition), error: null }; }
+    try { return { comp: expandComposition(ghost ?? composition), error: null }; }
     catch (e) { return { comp: null, error: e instanceof Error ? e.message : String(e) }; }
-  }, [composition]);
+  }, [composition, ghost]);
 
   // ---- preview rendering --------------------------------------------------
   const renderBusy = useRef(false);
@@ -146,6 +155,32 @@ export function App() {
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
   }, [playing]);
+
+  // ---- segment preview -------------------------------------------------------
+  // Plays a short time range once (or looped) so every animation edit answers
+  // itself immediately on the canvas — the core of the "所见即所得" feedback loop.
+  const segRaf = useRef(0);
+  const stopSegment = useCallback(() => cancelAnimationFrame(segRaf.current), []);
+  const playSegment = useCallback((from: number, to: number, opts?: { restoreTo?: number; loop?: boolean }) => {
+    cancelAnimationFrame(segRaf.current);
+    setPlaying(false);
+    if (to <= from) { setTimeMs(from); return; }
+    const dur = to - from;
+    const hold = 280; // linger on the end state so the result registers
+    let start = performance.now();
+    const step = (now: number): void => {
+      let el = now - start;
+      if (el >= dur + hold) {
+        if (!opts?.loop) { setTimeMs(opts?.restoreTo ?? to); return; }
+        start = now;
+        el = 0;
+      }
+      setTimeMs(from + Math.min(dur, el));
+      segRaf.current = requestAnimationFrame(step);
+    };
+    segRaf.current = requestAnimationFrame(step);
+  }, []);
+  useEffect(() => { if (playing) cancelAnimationFrame(segRaf.current); }, [playing]);
 
   // ---- autosave -------------------------------------------------------------
   useEffect(() => {
@@ -262,56 +297,108 @@ export function App() {
     patchTransform(sel.path, { [sel.key]: arr }, "easing");
   }
 
-  // ---- preset animations -------------------------------------------------------
+  // ---- preset animations: hover = live try-on, click = apply --------------------
+  // Hovering a preset chip swaps in a ghost composition and loops the affected
+  // time range on the canvas; clicking commits and replays it once.
+  const previewRestore = useRef<number | null>(null);
+  function previewAnim(name: string): void {
+    if (!selection.length) return;
+    const r = presetPatch(name, layerAtPath(composition, selection), composition);
+    if (!r || r.to <= r.from) return;
+    if (previewRestore.current === null) previewRestore.current = timeMs;
+    const tr = transformOf(selection);
+    setGhost(updateLayerAtPath(composition, selection, (l) => ({ ...l, transform: { ...tr, ...r.patch } } as Layer)));
+    playSegment(r.from, r.to, { loop: true });
+  }
+  function endPreviewAnim(): void {
+    if (previewRestore.current === null && !ghost) return;
+    setGhost(null);
+    stopSegment();
+    if (previewRestore.current !== null) {
+      setTimeMs(previewRestore.current);
+      previewRestore.current = null;
+    }
+  }
   function applyAnim(name: string): void {
     const path = selection;
     if (!path.length) return;
-    const layer = layerAtPath(composition, path);
-    const tr = transformOf(path);
-    const base = (k: string, d: number): number => {
-      const v = tr[k];
-      return typeof v === "number" ? v : Array.isArray(v) && v.length ? (v[0] as Kf).value : d;
-    };
-    // Non-group layers keyframe on the composition clock — anchor the presets
-    // at the clip's own start/end instead of 0/duration.
-    const local = layer?.type === "group" || layer?.type === "plugin";
-    const clipStart = local ? 0 : ((layer?.startMs as number) ?? 0);
-    const clipEnd = local
-      ? ((layer?.endMs as number) ?? composition.durationMs) - ((layer?.startMs as number) ?? 0)
-      : ((layer?.endMs as number) ?? composition.durationMs);
-    const span = clipEnd - clipStart;
-    const enter = Math.min(700, Math.round(span * 0.4));
-    const leaveAt = Math.max(clipStart, clipEnd - Math.min(600, Math.round(span * 0.35)));
-    const bx = base("x", 0), by = base("y", 0), bs = base("scale", 1);
-    let patch: Record<string, unknown> | undefined;
-    switch (name) {
-      case "左弧入": case "右弧入": {
-        // Arc Motion: curve in from off-screen through a raised midpoint
-        // (baked motion-path keyframes, HyperFrames-style).
-        const dir = name === "左弧入" ? -1 : 1;
-        const from: [number, number] = [bx + dir * Math.round(composition.width * 0.36), by];
-        const mid: [number, number] = [(from[0] + bx) / 2, by - Math.round(composition.height * 0.28)];
-        const arc = bakeMotionPath([from, mid, [bx, by]], Math.min(900, Math.round(span * 0.5)), clipStart, 1.2, 14);
-        patch = { x: arc.x, y: arc.y };
-        break;
-      }
-      case "淡入": patch = { opacity: [{ timeMs: clipStart, value: 0 }, { timeMs: clipStart + enter, value: 1, easing: EMPH }] }; break;
-      case "淡出": patch = { opacity: [{ timeMs: leaveAt, value: 1 }, { timeMs: clipEnd, value: 0, easing: EMPH }] }; break;
-      case "左滑入": patch = { x: [{ timeMs: clipStart, value: bx + 320 }, { timeMs: clipStart + enter, value: bx, easing: EMPH }] }; break;
-      case "右滑入": patch = { x: [{ timeMs: clipStart, value: bx - 320 }, { timeMs: clipStart + enter, value: bx, easing: EMPH }] }; break;
-      case "上滑入": patch = { y: [{ timeMs: clipStart, value: by + 220 }, { timeMs: clipStart + enter, value: by, easing: EMPH }] }; break;
-      case "下滑入": patch = { y: [{ timeMs: clipStart, value: by - 220 }, { timeMs: clipStart + enter, value: by, easing: EMPH }] }; break;
-      case "弹出": patch = { scale: [{ timeMs: clipStart, value: 0.3 }, { timeMs: clipStart + enter, value: bs || 1, easing: BACK }] }; break;
-      case "缩放入": patch = { scale: [{ timeMs: clipStart, value: 0.7 }, { timeMs: clipStart + enter, value: bs || 1, easing: EMPH }] }; break;
-      case "清除": {
-        const c: Record<string, unknown> = {};
-        for (const k of TRANSFORM_KEYS) { const v = tr[k]; if (Array.isArray(v) && v.length) c[k] = (v[v.length - 1] as Kf).value; }
-        patch = c;
-        break;
-      }
-    }
-    if (patch) patchTransform(path, patch);
+    const r = presetPatch(name, layerAtPath(composition, path), composition);
+    if (!r) return;
+    setGhost(null);
+    const restore = previewRestore.current ?? timeMs;
+    previewRestore.current = null;
+    patchTransform(path, r.patch);
+    if (r.to > r.from) playSegment(r.from, r.to, { restoreTo: restore });
+    else stopSegment();
   }
+
+  // ---- 动一动: drag A→B on canvas → two-keyframe move + quick-config bubble -----
+  const trackToGlobal = (index: number, t: number): number => {
+    const l = layerAtPath(composition, [index]);
+    return l?.type === "group" || l?.type === "plugin" ? t + ((l.startMs as number) ?? 0) : t;
+  };
+  function abPlay(b: AbBubble): void {
+    playSegment(trackToGlobal(b.index, b.t0), trackToGlobal(b.index, b.t1), { restoreTo: trackToGlobal(b.index, b.t0) });
+  }
+  function animateMove(index: number, dx: number, dy: number): void {
+    const layer = layerAtPath(composition, [index]);
+    if (!layer || (!dx && !dy)) return;
+    const rl = expansion.comp ? resolveLayerAt(expansion.comp, [index], timeMs) : null;
+    const rt = rl?.transform as unknown as Record<string, number> | undefined;
+    const tr = transformOf([index]);
+    const num = (v: unknown, d: number): number => (typeof v === "number" ? v : d);
+    const fromX = rt?.x ?? num(tr.x, 0);
+    const fromY = rt?.y ?? num(tr.y, 0);
+    const local = layer.type === "group" || layer.type === "plugin";
+    const startMs = (layer.startMs as number) ?? 0;
+    const clipStart = local ? 0 : startMs;
+    const clipEnd = local
+      ? ((layer.endMs as number) ?? composition.durationMs) - startMs
+      : ((layer.endMs as number) ?? composition.durationMs);
+    let t0 = Math.round(local ? timeMs - startMs : timeMs);
+    t0 = clamp(clipStart, Math.max(clipStart, clipEnd - 300), t0);
+    const t1 = t0 + Math.min(800, Math.max(240, clipEnd - t0));
+    patchTransform([index], {
+      x: upsertKfArr(upsertKfArr(tr.x, t0, fromX), t1, fromX + dx, AB_EASE_TUPLE.emph),
+      y: upsertKfArr(upsertKfArr(tr.y, t0, fromY), t1, fromY + dy, AB_EASE_TUPLE.emph)
+    });
+    const b: AbBubble = { index, t0, t1, ease: "emph" };
+    setAbBubble(b);
+    abPlay(b);
+  }
+  function abRetime(durMs: number): void {
+    if (!abBubble) return;
+    const tr = transformOf([abBubble.index]);
+    const t1 = abBubble.t0 + Math.round(durMs);
+    patchTransform([abBubble.index], { x: retimeKfArr(tr.x, abBubble.t1, t1), y: retimeKfArr(tr.y, abBubble.t1, t1) }, "ab-dur");
+    const b = { ...abBubble, t1 };
+    setAbBubble(b);
+    abPlay(b);
+  }
+  function abSetEase(e: AbEase): void {
+    if (!abBubble) return;
+    const tr = transformOf([abBubble.index]);
+    patchTransform([abBubble.index], {
+      x: easeKfArrAt(tr.x, abBubble.t1, AB_EASE_TUPLE[e]),
+      y: easeKfArrAt(tr.y, abBubble.t1, AB_EASE_TUPLE[e])
+    }, "ab-ease");
+    const b = { ...abBubble, ease: e };
+    setAbBubble(b);
+    abPlay(b);
+  }
+  function abRemove(): void {
+    if (!abBubble) return;
+    const tr = transformOf([abBubble.index]);
+    patchTransform([abBubble.index], {
+      x: removeKfTimes(tr.x, [abBubble.t0, abBubble.t1]),
+      y: removeKfTimes(tr.y, [abBubble.t0, abBubble.t1])
+    });
+    setAbBubble(null);
+    stopSegment();
+  }
+  useEffect(() => {
+    if (abBubble && selection[0] !== abBubble.index) setAbBubble(null);
+  }, [selection, abBubble]);
 
   // ---- layer management ----------------------------------------------------------
   function addLayer(layer: Layer, select = true): void {
@@ -657,6 +744,7 @@ export function App() {
         canUndo={history.canUndo} canRedo={history.canRedo}
         onUndo={history.undo} onRedo={history.redo}
         onNew={newProject} onOpen={openProject} onSave={saveProject}
+        onQuickStart={() => setQuickOpen(true)}
         showJson={showJson}
         onToggleJson={() => { if (!showJson) syncJson(composition); setShowJson((s) => !s); }}
         canGroup={canGroup} canUngroup={canUngroup}
@@ -689,6 +777,14 @@ export function App() {
           recording={recording} onRecorded={onRecorded}
           mediaSize={(src) => rendererRef.current?.mediaSize(src)}
           onSelect={select}
+          animMode={animMode}
+          onToggleAnimMode={() => setAnimMode((m) => { if (m) setAbBubble(null); return !m; })}
+          onAnimateMove={animateMove}
+          abBubble={abBubble}
+          onAbDur={abRetime} onAbEase={abSetEase}
+          onAbReplay={() => { if (abBubble) abPlay(abBubble); }}
+          onAbRemove={abRemove}
+          onAbDone={() => { setAbBubble(null); setAnimMode(false); }}
           onGestureStart={history.begin}
           onLivePatchTransform={(patches) => {
             let next = composition;
@@ -722,6 +818,8 @@ export function App() {
           toggleKey={toggleKey}
           setKfEasing={setKfEasing}
           applyAnim={applyAnim}
+          previewAnim={previewAnim}
+          endPreviewAnim={endPreviewAnim}
           patchComposition={patchComposition}
           onJsonEdit={onJsonEdit}
         />
@@ -755,6 +853,22 @@ export function App() {
         />
       ) : null}
 
+      {quickOpen ? (
+        <QuickStart
+          plugins={PLUGINS}
+          onClose={() => setQuickOpen(false)}
+          onCreate={(comp, name, asset) => {
+            history.reset(defineComposition(comp));
+            setProjectName(name);
+            if (asset) setAssets((a) => [asset, ...a]);
+            setSelection([]); setMultiSel([]); setSelKf(null);
+            setQuickOpen(false);
+            setTimeMs(0);
+            setPlaying(true);
+            setStatus("已生成你的视频 — 空格暂停，点击画布上的物体继续编辑");
+          }}
+        />
+      ) : null}
       {renderOpen ? <RenderDialog composition={composition} projectName={projectName} onClose={() => setRenderOpen(false)} /> : null}
       <AssistantPanel open={aiOpen} onClose={() => setAiOpen(false)} composition={composition} plugins={PLUGINS} onApply={applyAiComposition} />
     </div>

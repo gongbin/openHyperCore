@@ -2,7 +2,7 @@ import { Icon } from "../icons.tsx";
 
 export type EditorView = "editor" | "plugins";
 
-export function TopBar({ view, onView, projectName, onProjectName, canUndo, canRedo, onUndo, onRedo, onNew, onOpen, onSave, showJson, onToggleJson, canGroup, canUngroup, onGroup, onUngroup, aiOpen, onToggleAi, theme, onToggleTheme, onExport, status }: {
+export function TopBar({ view, onView, projectName, onProjectName, canUndo, canRedo, onUndo, onRedo, onNew, onOpen, onSave, onQuickStart, showJson, onToggleJson, canGroup, canUngroup, onGroup, onUngroup, aiOpen, onToggleAi, theme, onToggleTheme, onExport, status }: {
   view: EditorView;
   onView: (v: EditorView) => void;
   projectName: string;
@@ -10,6 +10,7 @@ export function TopBar({ view, onView, projectName, onProjectName, canUndo, canR
   canUndo: boolean; canRedo: boolean;
   onUndo: () => void; onRedo: () => void;
   onNew: () => void; onOpen: () => void; onSave: () => void;
+  onQuickStart: () => void;
   showJson: boolean; onToggleJson: () => void;
   canGroup: boolean; canUngroup: boolean;
   onGroup: () => void; onUngroup: () => void;
@@ -44,6 +45,7 @@ export function TopBar({ view, onView, projectName, onProjectName, canUndo, canR
           <button className="icon-btn" title="重做 (⇧⌘Z)" disabled={!canRedo} onClick={onRedo}><Icon name="redo" /></button>
 
           <div className="divider" />
+          <button className="btn btn-ghost" title="三步做出你的视频：选片头 → 写标题 → 放入素材" onClick={onQuickStart}><Icon name="sparkle" size={14} />快速开始</button>
           <button className="btn btn-ghost" onClick={onNew}><Icon name="file" size={14} />新建</button>
           <button className="btn btn-ghost" onClick={onOpen}><Icon name="open" size={14} />打开</button>
           <button className="btn btn-ghost" title="保存工程 JSON (⌘S)" onClick={onSave}><Icon name="save" size={14} />保存</button>

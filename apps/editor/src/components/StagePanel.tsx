@@ -1,22 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Composition } from "openhypercore";
 import {
-  boxCorners, layerAtPath, localBox, localToParent, parentToLocal,
-  pointInBox, resolveLayerAt, xfOf
+  AB_EASE_LABEL, boxCorners, clamp, layerAtPath, localBox, localToParent, parentToLocal,
+  pointInBox, resolveLayerAt, upsertKfArr, xfOf, xyKfTimes
 } from "../helpers.ts";
-import type { AnyLayer, Kf, PathSample, SelPath } from "../helpers.ts";
+import type { AbBubble, AbEase, AnyLayer, Kf, PathSample, SelPath } from "../helpers.ts";
 
 type Gesture =
   | { kind: "move"; startX: number; startY: number; targets: { index: number; origX: unknown; origY: unknown }[] }
   | { kind: "scale"; index: number; originX: number; originY: number; startDist: number; origScale: unknown }
-  | { kind: "rotate"; index: number; originX: number; originY: number; startAngle: number; origRotate: unknown };
+  | { kind: "rotate"; index: number; originX: number; originY: number; startAngle: number; origRotate: unknown }
+  // Dragging a keyframe dot on the motion path: reposition that keyframe in space.
+  | { kind: "kfdot"; index: number; timeTrack: number; startX: number; startY: number; baseX: number; baseY: number; origX: unknown; origY: unknown };
+
+// "动一动" drag in progress: object stays put, a ghost + arrow follow the cursor.
+type AbDrag = { index: number; sx: number; sy: number; pcx: number; pcy: number; dx: number; dy: number; pts: [number, number][] | null };
 
 const shiftTrack = (v: unknown, d: number, dflt: number): unknown =>
   Array.isArray(v) ? (v as Kf[]).map((k) => ({ ...k, value: k.value + d })) : (typeof v === "number" ? v : dflt) + d;
 const scaleTrack = (v: unknown, f: number, dflt: number): unknown =>
   Array.isArray(v) ? (v as Kf[]).map((k) => ({ ...k, value: k.value * f })) : (typeof v === "number" ? v : dflt) * f;
 
-export function StagePanel({ canvasRef, composition, expanded, timeMs, selection, multiSel, error, recording, onRecorded, mediaSize, onSelect, onGestureStart, onLivePatchTransform, onDropAsset, onDropFiles }: {
+export function StagePanel({ canvasRef, composition, expanded, timeMs, selection, multiSel, error, recording, onRecorded, mediaSize, onSelect, animMode, onToggleAnimMode, onAnimateMove, abBubble, onAbDur, onAbEase, onAbReplay, onAbRemove, onAbDone, onGestureStart, onLivePatchTransform, onDropAsset, onDropFiles }: {
   canvasRef: React.RefObject<HTMLCanvasElement>;
   composition: Composition;
   expanded: Composition | null;
@@ -28,6 +33,15 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
   onRecorded: (index: number, samples: PathSample[]) => void;
   mediaSize: (src: string) => { w: number; h: number } | undefined;
   onSelect: (path: SelPath, toggle?: boolean) => void;
+  animMode: boolean;
+  onToggleAnimMode: () => void;
+  onAnimateMove: (index: number, dx: number, dy: number) => void;
+  abBubble: AbBubble | null;
+  onAbDur: (durMs: number) => void;
+  onAbEase: (ease: AbEase) => void;
+  onAbReplay: () => void;
+  onAbRemove: () => void;
+  onAbDone: () => void;
   onGestureStart: () => void;
   onLivePatchTransform: (patches: { index: number; patch: Record<string, unknown> }[]) => void;
   onDropAsset: (assetId: string, x: number, y: number) => void;
@@ -37,6 +51,7 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
   const svgRef = useRef<SVGSVGElement>(null);
   const gestureRef = useRef<Gesture | null>(null);
   const recordRef = useRef<{ index: number; startCx: number; startCy: number; baseX: number; baseY: number; startedAt: number; samples: PathSample[] } | null>(null);
+  const [abDrag, setAbDrag] = useState<AbDrag | null>(null);
   const [displayW, setDisplayW] = useState(1);
   const [safeGuides, setSafeGuides] = useState(() => localStorage.getItem("ohe.safeGuides") === "1");
 
@@ -80,6 +95,48 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
     return null;
   }
 
+  // ---- motion path of the selected layer (visible + directly editable) ------
+  // Any x/y keyframe animation shows as a golden trail with draggable keyframe
+  // dots and dashed ghosts at the start/end poses — "从哪来、到哪去" at a glance.
+  const motion = useMemo(() => {
+    if (selTop === undefined || !expanded) return null;
+    const raw = layerAtPath(composition, [selTop]);
+    if (!raw) return null;
+    const tr = (raw.transform as Record<string, unknown>) ?? {};
+    const times = xyKfTimes(tr);
+    if (times.length < 2) return null;
+    const local = raw.type === "group" || raw.type === "plugin";
+    const startMs = (raw.startMs as number) ?? 0;
+    const g = (t: number): number => (local ? t + startMs : t);
+    const centerAt = (t: number): [number, number] | null => {
+      const rl = resolveLayerAt(expanded, [selTop], g(t));
+      if (!rl) return null;
+      const box = localBox(rl, mediaSize);
+      const xf = xfOf(rl);
+      return box ? localToParent(xf, box.x + box.w / 2, box.y + box.h / 2) : [xf.x, xf.y];
+    };
+    const ghostAt = (t: number): [number, number][] | null => {
+      const rl = resolveLayerAt(expanded, [selTop], g(t));
+      if (!rl) return null;
+      const box = localBox(rl, mediaSize);
+      if (!box) return null;
+      const xf = xfOf(rl);
+      return boxCorners(box).map(([px, py]) => localToParent(xf, px, py));
+    };
+    const t0 = times[0]!, t1 = times[times.length - 1]!;
+    const pts: [number, number][] = [];
+    const N = 48;
+    for (let i = 0; i <= N; i += 1) {
+      const c = centerAt(t0 + ((t1 - t0) * i) / N);
+      if (c) pts.push(c);
+    }
+    if (pts.length < 2) return null;
+    const dots = times
+      .map((t) => ({ t, c: centerAt(t) }))
+      .filter((d): d is { t: number; c: [number, number] } => d.c !== null);
+    return { pts, dots, gA: ghostAt(t0), gB: ghostAt(t1) };
+  }, [expanded, selTop, composition]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function beginMove(indices: number[], cx: number, cy: number): void {
     const targets = indices.map((index) => {
       const tr = (layerAtPath(composition, [index])?.transform as Record<string, unknown>) ?? {};
@@ -93,8 +150,26 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
     if (e.button !== 0) return;
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     const [cx, cy] = toComp(e);
-    const handle = (e.target as Element).getAttribute?.("data-handle");
 
+    // Motion-path keyframe dot — drag it to reposition that keyframe in space.
+    const dotAttr = (e.target as Element).getAttribute?.("data-kfdot");
+    if (dotAttr != null && selTop !== undefined && expanded) {
+      const t = Number(dotAttr);
+      const raw = layerAtPath(composition, [selTop]);
+      const tr = (raw?.transform as Record<string, unknown>) ?? {};
+      const local = raw?.type === "group" || raw?.type === "plugin";
+      const gT = local ? t + ((raw?.startMs as number) ?? 0) : t;
+      const rl = resolveLayerAt(expanded, [selTop], gT);
+      const rt = rl?.transform as unknown as Record<string, number> | undefined;
+      onGestureStart();
+      gestureRef.current = {
+        kind: "kfdot", index: selTop, timeTrack: t, startX: cx, startY: cy,
+        baseX: rt?.x ?? 0, baseY: rt?.y ?? 0, origX: tr.x, origY: tr.y
+      };
+      return;
+    }
+
+    const handle = !animMode && (e.target as Element).getAttribute?.("data-handle");
     if (handle && selTop !== undefined && selXf) {
       const raw = layerAtPath(composition, [selTop]);
       const tr = (raw?.transform as Record<string, unknown>) ?? {};
@@ -125,6 +200,19 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
       recordRef.current = { index: hit, startCx: cx, startCy: cy, baseX, baseY, startedAt: performance.now(), samples: [{ t: 0, x: baseX, y: baseY }] };
       return;
     }
+    if (animMode) {
+      // 动一动: the object stays at its start pose; a ghost + arrow follow the
+      // cursor, and releasing turns the displacement into a two-keyframe move.
+      if (hit === null) { onSelect([]); return; }
+      onSelect([hit]);
+      const rl = expanded ? resolveLayerAt(expanded, [hit], timeMs) : null;
+      const box = rl ? localBox(rl, mediaSize) : null;
+      const xf = rl ? xfOf(rl) : null;
+      const c: [number, number] = box && xf ? localToParent(xf, box.x + box.w / 2, box.y + box.h / 2) : [cx, cy];
+      const pts = box && xf ? boxCorners(box).map(([px, py]) => localToParent(xf, px, py)) : null;
+      setAbDrag({ index: hit, sx: c[0], sy: c[1], pcx: cx, pcy: cy, dx: 0, dy: 0, pts });
+      return;
+    }
     if (e.shiftKey || e.metaKey) {
       if (hit !== null) onSelect([hit], true);
       return;
@@ -145,6 +233,11 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
       onLivePatchTransform([{ index: rec.index, patch: { x: nx, y: ny } }]);
       return;
     }
+    if (abDrag && e.buttons) {
+      const [cx, cy] = toComp(e);
+      setAbDrag({ ...abDrag, dx: cx - abDrag.pcx, dy: cy - abDrag.pcy });
+      return;
+    }
     const g = gestureRef.current;
     if (!g || !e.buttons) return;
     const [cx, cy] = toComp(e);
@@ -156,6 +249,14 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
           y: shiftTrack(t.origY, cy - g.startY, 0)
         }
       })));
+    } else if (g.kind === "kfdot") {
+      onLivePatchTransform([{
+        index: g.index,
+        patch: {
+          x: upsertKfArr(g.origX, g.timeTrack, g.baseX + (cx - g.startX)),
+          y: upsertKfArr(g.origY, g.timeTrack, g.baseY + (cy - g.startY))
+        }
+      }]);
     } else if (g.kind === "scale") {
       const f = Math.max(0.02, Math.hypot(cx - g.originX, cy - g.originY) / g.startDist);
       onLivePatchTransform([{ index: g.index, patch: { scale: scaleTrack(g.origScale, f, 1) } }]);
@@ -170,6 +271,10 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
     if (rec) {
       recordRef.current = null;
       onRecorded(rec.index, rec.samples);
+    }
+    if (abDrag) {
+      if (Math.hypot(abDrag.dx, abDrag.dy) > 6 * k) onAnimateMove(abDrag.index, abDrag.dx, abDrag.dy);
+      setAbDrag(null);
     }
     gestureRef.current = null;
   }
@@ -222,6 +327,33 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
   const selLayer = selTop !== undefined ? (layerAtPath(composition, [selTop]) as AnyLayer | undefined) : undefined;
   const selIsAudio = selLayer?.type === "audio";
 
+  // ---- 动一动 quick-config bubble position (over the end pose) ---------------
+  const bubblePos = useMemo(() => {
+    if (!abBubble || !expanded) return null;
+    const raw = layerAtPath(composition, [abBubble.index]);
+    if (!raw) return null;
+    const local = raw.type === "group" || raw.type === "plugin";
+    const gT = local ? abBubble.t1 + ((raw.startMs as number) ?? 0) : abBubble.t1;
+    const rl = resolveLayerAt(expanded, [abBubble.index], gT);
+    if (!rl) return null;
+    const box = localBox(rl, mediaSize);
+    const xf = xfOf(rl);
+    const [bx, by] = box ? localToParent(xf, box.x + box.w / 2, box.y) : [xf.x, xf.y];
+    return { left: clamp(9, 91, (bx / W) * 100), top: clamp(6, 88, (by / H) * 100) };
+  }, [abBubble, expanded, composition]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // arrowhead for the live A→B drag
+  const abArrow = abDrag && Math.hypot(abDrag.dx, abDrag.dy) > 2 * k ? (() => {
+    const ex = abDrag.sx + abDrag.dx, ey = abDrag.sy + abDrag.dy;
+    const ang = Math.atan2(abDrag.dy, abDrag.dx);
+    const L = 15 * k;
+    return {
+      ex, ey,
+      a1: [ex - L * Math.cos(ang - 0.42), ey - L * Math.sin(ang - 0.42)] as [number, number],
+      a2: [ex - L * Math.cos(ang + 0.42), ey - L * Math.sin(ang + 0.42)] as [number, number]
+    };
+  })() : null;
+
   return (
     <div className="stage">
       <div className="stage-center"
@@ -243,20 +375,53 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
             style={{ bottom: 12, right: 12, pointerEvents: "auto", cursor: "pointer", background: safeGuides ? "var(--accent-soft)" : "rgba(6,10,16,.66)", color: safeGuides ? "var(--accent)" : undefined }}
             onClick={() => setSafeGuides((s) => { localStorage.setItem("ohe.safeGuides", s ? "0" : "1"); return !s; })}>▦ 安全区</button>
           <svg ref={svgRef} className="stage-overlay" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
+            style={animMode ? { cursor: "crosshair" } : undefined}
             onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onDoubleClick={onDoubleClick}>
             {extraOutlines.map((o) => (
               <polygon key={o.i} points={o.pts.map((p) => p.join(",")).join(" ")}
                 fill="none" stroke="var(--accent)" strokeWidth={1.2 * k} strokeDasharray={`${5 * k} ${4 * k}`} />
             ))}
+
+            {/* motion path: golden trail + start/end ghosts + draggable keyframe dots */}
+            {motion ? (
+              <g>
+                {motion.gA ? (
+                  <polygon points={motion.gA.map((p) => p.join(",")).join(" ")} pointerEvents="none"
+                    fill="none" stroke="#8a93a6" strokeOpacity={0.55} strokeWidth={1.2 * k} strokeDasharray={`${4 * k} ${4 * k}`} />
+                ) : null}
+                {motion.gB ? (
+                  <polygon points={motion.gB.map((p) => p.join(",")).join(" ")} pointerEvents="none"
+                    fill="none" stroke="var(--gold)" strokeOpacity={0.5} strokeWidth={1.2 * k} strokeDasharray={`${4 * k} ${4 * k}`} />
+                ) : null}
+                <polyline points={motion.pts.map((p) => p.join(",")).join(" ")} pointerEvents="none"
+                  fill="none" stroke="var(--gold)" strokeWidth={1.8 * k} strokeLinecap="round"
+                  strokeDasharray={`${2.5 * k} ${6 * k}`} opacity={0.95} />
+                {motion.dots.length ? (
+                  <>
+                    <text x={motion.dots[0]!.c[0]} y={motion.dots[0]!.c[1] - 12 * k} pointerEvents="none"
+                      fontSize={12 * k} fill="#8a93a6" textAnchor="middle">起点</text>
+                    <text x={motion.dots[motion.dots.length - 1]!.c[0]} y={motion.dots[motion.dots.length - 1]!.c[1] - 12 * k} pointerEvents="none"
+                      fontSize={12 * k} fill="var(--gold)" textAnchor="middle">终点</text>
+                  </>
+                ) : null}
+                {motion.dots.map((d) => (
+                  <circle key={d.t} data-kfdot={d.t} cx={d.c[0]} cy={d.c[1]} r={5.5 * k}
+                    fill="var(--gold)" stroke="#141821" strokeWidth={1.4 * k} style={{ cursor: "grab" }}>
+                    <title>关键帧 @ {Math.round(d.t)}ms — 拖动改变位置</title>
+                  </circle>
+                ))}
+              </g>
+            ) : null}
+
             {outline ? (
               <g>
                 <polygon points={outline.map((p) => p.join(",")).join(" ")}
                   fill="none" stroke="var(--accent)" strokeWidth={1.6 * k} />
-                {outline.map(([hx, hy], i) => (
+                {!animMode ? outline.map(([hx, hy], i) => (
                   <rect key={i} data-handle={`corner-${i}`} x={hx - 5 * k} y={hy - 5 * k} width={10 * k} height={10 * k}
                     fill="#fff" stroke="var(--accent)" strokeWidth={1.2 * k} style={{ cursor: "nwse-resize" }} />
-                ))}
-                {rotateHandle ? (
+                )) : null}
+                {!animMode && rotateHandle ? (
                   <>
                     <line x1={(outline[0]![0] + outline[1]![0]) / 2} y1={(outline[0]![1] + outline[1]![1]) / 2}
                       x2={rotateHandle[0]} y2={rotateHandle[1]} stroke="var(--accent)" strokeWidth={1 * k} />
@@ -266,13 +431,63 @@ export function StagePanel({ canvasRef, composition, expanded, timeMs, selection
                 ) : null}
               </g>
             ) : null}
+
+            {/* 动一动 live drag: ghost of the target pose + A→B arrow */}
+            {abDrag && abArrow ? (
+              <g pointerEvents="none">
+                {abDrag.pts ? (
+                  <polygon points={abDrag.pts.map(([px, py]) => `${px + abDrag.dx},${py + abDrag.dy}`).join(" ")}
+                    fill="var(--accent)" fillOpacity={0.13} stroke="var(--accent)" strokeWidth={1.4 * k}
+                    strokeDasharray={`${6 * k} ${4 * k}`} />
+                ) : null}
+                <line x1={abDrag.sx} y1={abDrag.sy} x2={abArrow.ex} y2={abArrow.ey}
+                  stroke="var(--gold)" strokeWidth={2.4 * k} strokeDasharray={`${9 * k} ${6 * k}`} strokeLinecap="round" />
+                <circle cx={abDrag.sx} cy={abDrag.sy} r={5 * k} fill="var(--gold)" />
+                <polygon points={`${abArrow.ex},${abArrow.ey} ${abArrow.a1.join(",")} ${abArrow.a2.join(",")}`} fill="var(--gold)" />
+              </g>
+            ) : null}
           </svg>
+
+          {/* 动一动 quick-config bubble — every change replays instantly */}
+          {abBubble && bubblePos ? (
+            <div className="ab-bubble" style={{ left: `${bubblePos.left}%`, top: `${bubblePos.top}%` }}
+              onPointerDown={(e) => e.stopPropagation()}>
+              <div className="ab-title">移动动画已生成<span>调节即回放</span></div>
+              <label className="ab-row">
+                <span>时长</span>
+                <input type="range" min={200} max={3000} step={100}
+                  value={abBubble.t1 - abBubble.t0} onChange={(e) => onAbDur(Number(e.target.value))} />
+                <b>{((abBubble.t1 - abBubble.t0) / 1000).toFixed(1)}s</b>
+              </label>
+              <div className="ab-row">
+                <span>节奏</span>
+                {(["linear", "emph", "back"] as AbEase[]).map((ez) => (
+                  <button key={ez} className={`ab-chip${abBubble.ease === ez ? " active" : ""}`}
+                    onClick={() => onAbEase(ez)}>{AB_EASE_LABEL[ez]}</button>
+                ))}
+              </div>
+              <div className="ab-row">
+                <button className="ab-chip" onClick={onAbReplay}>↺ 重播</button>
+                <button className="ab-chip danger" onClick={onAbRemove}>删除</button>
+                <span style={{ flex: 1 }} />
+                <button className="ab-done" onClick={onAbDone}>完成 ✓</button>
+              </div>
+            </div>
+          ) : null}
+
+          {selTop !== undefined && !selIsAudio ? (
+            <button className={`stage-fab${animMode ? " active" : ""}`} onClick={onToggleAnimMode}
+              title="动一动：把选中的物体拖到它要去的位置，松手即生成移动动画">
+              {animMode ? "✕ 退出动一动" : "✦ 动一动"}
+            </button>
+          ) : null}
         </div>
-        <div className="stage-hint" style={recording ? { color: "var(--danger)" } : undefined}>
+        <div className="stage-hint" style={recording ? { color: "var(--danger)" } : animMode ? { color: "var(--gold)" } : undefined}>
           {recording ? "● 录制中：按住图层拖出运动轨迹，松开生成关键帧"
-            : selIsAudio ? "音频图层没有画面 — 在时间轴/检查器中编辑"
-              : selTop !== undefined ? "拖动移动 · 角点缩放 · 顶部圆点旋转 · ⇧点选多选 · 双击进组"
-                : "点击图层选中 · 拖入文件添加素材 · 空格播放"}
+            : animMode ? "✦ 动一动：把物体拖到它要去的位置，松手即生成动画（当前位置 = 起点）"
+              : selIsAudio ? "音频图层没有画面 — 在时间轴/检查器中编辑"
+                : selTop !== undefined ? "拖动移动 · 角点缩放 · 顶部圆点旋转 · 金色圆点 = 可拖的动画关键帧 · 双击进组"
+                  : "点击图层选中 · 拖入文件添加素材 · 空格播放"}
         </div>
       </div>
     </div>
