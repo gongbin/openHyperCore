@@ -1,35 +1,11 @@
-import { useEffect, useRef, useState } from "react";
 import { Icon } from "../icons.tsx";
 import { getLang, t } from "../i18n.ts";
 
 export type EditorView = "editor" | "plugins";
 
-/** Project title lives top-left as plain text; the input only appears on demand. */
-function ProjectTitle({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const [editing, setEditing] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
-  if (editing) {
-    return (
-      <input ref={inputRef} className="project-name" autoFocus value={value} spellCheck={false}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={() => setEditing(false)}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") setEditing(false); }} />
-    );
-  }
-  return (
-    <button className="project-title" title={t("重命名项目")} onClick={() => setEditing(true)}>
-      <span>{value || t("未命名项目")}</span>
-      <Icon name="pencil" size={12} />
-    </button>
-  );
-}
-
-export function TopBar({ view, onView, projectName, onProjectName, canUndo, canRedo, onUndo, onRedo, onNew, onOpen, onSave, onQuickStart, showJson, onToggleJson, canGroup, canUngroup, onGroup, onUngroup, aiOpen, onToggleAi, theme, onToggleTheme, onToggleLang, onExport, status }: {
+export function TopBar({ view, onView, canUndo, canRedo, onUndo, onRedo, onNew, onOpen, onSave, onQuickStart, showJson, onToggleJson, canGroup, canUngroup, onGroup, onUngroup, aiOpen, onToggleAi, theme, onToggleTheme, onToggleLang, onExport, status }: {
   view: EditorView;
   onView: (v: EditorView) => void;
-  projectName: string;
-  onProjectName: (v: string) => void;
   canUndo: boolean; canRedo: boolean;
   onUndo: () => void; onRedo: () => void;
   onNew: () => void; onOpen: () => void; onSave: () => void;
@@ -54,9 +30,6 @@ export function TopBar({ view, onView, projectName, onProjectName, canUndo, canR
         </div>
       </div>
 
-      <ProjectTitle value={projectName} onChange={onProjectName} />
-
-      <div className="divider" />
       <nav className="nav-pills">
         <button className={`nav-pill${inEditor ? " active" : ""}`} onClick={() => onView("editor")}><em>01</em>{t("编辑器")}</button>
         <button className={`nav-pill${view === "plugins" ? " active" : ""}`} onClick={() => onView("plugins")}><em>02</em>{t("插件库")}</button>

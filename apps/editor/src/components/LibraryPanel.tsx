@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Composition, Layer } from "openhypercore";
 import type { PluginDefinition } from "openhypercore/plugins";
 import { Icon, pluginIcon } from "../icons.tsx";
@@ -47,7 +47,30 @@ export async function importFile(f: File): Promise<EditorAsset | null> {
   return { id, name: f.name, kind, url: URL.createObjectURL(f), previewOnly: true };
 }
 
-export function LibraryPanel({ composition, selection, multiSel, assets, plugins, onImportFiles, onAddAssetLayer, onAddFactory, onAddPlugin, onSelect, onMove, onDuplicate, onRemove }: {
+/** Project title: plain text with a pencil on hover; the input only appears on demand. */
+function ProjectTitle({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
+  if (editing) {
+    return (
+      <input ref={inputRef} className="project-name" autoFocus value={value} spellCheck={false}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => setEditing(false)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") setEditing(false); }} />
+    );
+  }
+  return (
+    <button className="project-title" title={t("重命名项目")} onClick={() => setEditing(true)}>
+      <span>{value || t("未命名项目")}</span>
+      <Icon name="pencil" size={12} />
+    </button>
+  );
+}
+
+export function LibraryPanel({ projectName, onProjectName, composition, selection, multiSel, assets, plugins, onImportFiles, onAddAssetLayer, onAddFactory, onAddPlugin, onSelect, onMove, onDuplicate, onRemove }: {
+  projectName: string;
+  onProjectName: (v: string) => void;
   composition: Composition;
   selection: SelPath;
   multiSel: number[];
@@ -62,14 +85,17 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
   onDuplicate: (index: number) => void;
   onRemove: (path: SelPath) => void;
 }) {
-  const [tab, setTab] = useState<"media" | "add" | "fx" | "layers">("media");
+  const [tab, setTab] = useState<"media" | "add" | "fx" | "layers">("add");
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
   return (
     <aside className="library">
+      <div className="project-row">
+        <ProjectTitle value={projectName} onChange={onProjectName} />
+      </div>
       <div className="tabs">
-        {([["media", "素材"], ["add", "组件"], ["fx", "特效"], ["layers", "图层"]] as const).map(([k, name]) => (
+        {([["add", "组件"], ["media", "素材"], ["fx", "特效"], ["layers", "图层"]] as const).map(([k, name]) => (
           <button key={k} className={`tab${tab === k ? " active" : ""}`} onClick={() => setTab(k)}>{t(name)}</button>
         ))}
       </div>

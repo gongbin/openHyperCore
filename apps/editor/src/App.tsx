@@ -747,7 +747,6 @@ export function App() {
 
       <TopBar
         view={view} onView={setView}
-        projectName={projectName} onProjectName={setProjectName}
         canUndo={history.canUndo} canRedo={history.canRedo}
         onUndo={history.undo} onRedo={history.redo}
         onNew={newProject} onOpen={openProject} onSave={saveProject}
@@ -768,6 +767,7 @@ export function App() {
       <div style={{ display: view === "editor" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <div className="body">
         <LibraryPanel
+          projectName={projectName} onProjectName={setProjectName}
           composition={composition} selection={selection} assets={assets} plugins={PLUGINS}
           onImportFiles={(files) => void importFiles(files)}
           onAddAssetLayer={(a) => addAssetLayer(a)}
