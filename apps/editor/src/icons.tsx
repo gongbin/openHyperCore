@@ -23,6 +23,10 @@ const P: Record<string, JSX.Element> = {
   json: <><path d="M9 4c-2 0-2.5 1-2.5 2.5S7 9 5.5 9.5C7 10 6.5 11.5 6.5 13S7 15.5 9 15.5" transform="translate(0 2.2)" /><path d="M15 4c2 0 2.5 1 2.5 2.5S17 9 18.5 9.5C17 10 17.5 11.5 17.5 13s-.5 2.5-2.5 2.5" transform="translate(0 2.2)" /></>,
   rect: <rect x="4" y="6.5" width="16" height="11" rx="1.5" />,
   circle: <circle cx="12" cy="12" r="8" />,
+  line: <><path d="M5 19 19 5" /><circle cx="5" cy="19" r="1.6" fill="currentColor" stroke="none" /><circle cx="19" cy="5" r="1.6" fill="currentColor" stroke="none" /></>,
+  star: <path d="M12 3.2 14.3 8.9l6 .4-4.6 3.9 1.5 5.9L12 16l-5.2 3.1 1.5-5.9L3.7 9.3l6-.4Z" />,
+  polygon: <path d="M12 3 19.5 7.4v8.9L12 21 4.5 16.3V7.4Z" />,
+  blob: <path d="M12.5 4c4.4-.5 7.8 3.2 7.3 7.6-.4 3.8-3.6 8-8 7.4-4.3-.6-7.6-3.9-7.2-8.3C5 6.6 8.2 4.5 12.5 4Z" />,
   text: <><path d="M5 6V4h14v2" /><path d="M12 4v16" /><path d="M9 20h6" /></>,
   image: <><rect x="3.5" y="5" width="17" height="14" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="M4 17.5 9.5 13l3.5 3 3-2.5 4 4" /></>,
   video: <><rect x="3" y="6" width="13" height="12" rx="2" /><path d="M16 10.5 21 7.5v9l-5-3" /></>,
@@ -41,6 +45,7 @@ const P: Record<string, JSX.Element> = {
   diamond: <rect x="8" y="8" width="8" height="8" transform="rotate(45 12 12)" fill="currentColor" stroke="none" />,
   caption: <><rect x="3.5" y="5" width="17" height="14" rx="2" /><path d="M7 15h6" /><path d="M15.5 15H17" /></>,
   svgFile: <><path d="M4 12c2-5 6-5 8 0s6 5 8 0" /><circle cx="4" cy="12" r="1.4" /><circle cx="20" cy="12" r="1.4" /></>,
+  pencil: <><path d="M4.5 19.5l1-4L16.6 4.4a2 2 0 0 1 2.8 0l.2.2a2 2 0 0 1 0 2.8L8.5 18.5l-4 1Z" /><path d="M14.5 6.5l3 3" /></>,
   sun: <><circle cx="12" cy="12" r="4.2" /><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7" /></>,
   moon: <path d="M20 13.5A8.5 8.5 0 0 1 10.5 4 7.5 7.5 0 1 0 20 13.5Z" />
 };

@@ -4,13 +4,15 @@ import type { Composition, Layer } from "openhypercore";
 import { expandComposition, listPlugins } from "openhypercore/plugins";
 import type { PluginDefinition } from "openhypercore/plugins";
 import { PreviewRenderer } from "./preview.ts";
+import { getLang, setLang, t as tr } from "./i18n.ts";
 import { sampleComposition } from "./sample.ts";
 import { useHistory } from "./history.ts";
 import {
-  BACK, EMPH, KEY_EPS, TRANSFORM_KEYS, bakeMotionPath, clamp, dfltVal, layerAtPath,
-  pluginDefaults, resolveLayerAt, simplifyPath, updateLayerAtPath
+  AB_EASE_TUPLE, BLOB_PATH, EMPH, KEY_EPS, TRANSFORM_KEYS, clamp, dfltVal, easeKfArrAt, layerAtPath,
+  pluginDefaults, polygonPath, presetPatch, removeKfTimes, resolveLayerAt, retimeKfArr, simplifyPath,
+  starPath, updateLayerAtPath, upsertKfArr
 } from "./helpers.ts";
-import type { AnyLayer, Bezier, Kf, PathSample, SelPath, TKey } from "./helpers.ts";
+import type { AbBubble, AbEase, AnyLayer, Bezier, Kf, PathSample, SelPath, TKey } from "./helpers.ts";
 import { TopBar } from "./components/TopBar.tsx";
 import type { EditorView } from "./components/TopBar.tsx";
 import { PluginGallery } from "./components/PluginGallery.tsx";
@@ -22,6 +24,7 @@ import type { KfSel } from "./components/Inspector.tsx";
 import { TimelinePanel } from "./components/TimelinePanel.tsx";
 import { RenderDialog } from "./components/RenderDialog.tsx";
 import { AssistantPanel } from "./components/AssistantPanel.tsx";
+import { QuickStart } from "./components/QuickStart.tsx";
 
 const PLUGINS = listPlugins();
 const AUTOSAVE_KEY = "ohe.project.v1";
@@ -31,7 +34,7 @@ function loadAutosaved(): { name: string; composition: Composition } | null {
     const raw = localStorage.getItem(AUTOSAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw) as { name?: string; composition?: unknown };
-    return { name: data.name ?? "未命名项目", composition: defineComposition(data.composition as Composition) };
+    return { name: data.name ?? tr("未命名项目"), composition: defineComposition(data.composition as Composition) };
   } catch {
     return null;
   }
@@ -45,7 +48,7 @@ export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<PreviewRenderer | null>(null);
   const [ready, setReady] = useState(false);
-  const [projectName, setProjectName] = useState(restored?.name ?? "未命名项目");
+  const [projectName, setProjectName] = useState(restored?.name ?? tr("未命名项目"));
   const [selection, setSelection] = useState<SelPath>([]);
   const [multiSel, setMultiSel] = useState<number[]>([]);
   const [selKf, setSelKf] = useState<KfSel>(null);
@@ -61,7 +64,20 @@ export function App() {
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState("");
   const [theme, setTheme] = useState<"dark" | "light">(() => (localStorage.getItem("ohe.theme") === "light" ? "light" : "dark"));
+  // Language lives in the i18n module; this state only exists to re-render the tree.
+  const [, setLangTick] = useState(0);
+  const toggleLang = useCallback(() => {
+    setLang(getLang() === "zh" ? "en" : "zh");
+    setLangTick((n) => n + 1);
+  }, []);
   const [view, setView] = useState<EditorView>("editor");
+  const [animMode, setAnimMode] = useState(false);
+  const [pathEdit, setPathEdit] = useState(false);
+  const [abBubble, setAbBubble] = useState<AbBubble | null>(null);
+  // Temporary composition shown instead of the real one while hover-previewing
+  // a preset animation ("try before you buy"); never persisted.
+  const [ghost, setGhost] = useState<Composition | null>(null);
+  const [quickOpen, setQuickOpen] = useState(() => !restored);
   const fileRef = useRef<HTMLInputElement>(null);
   const filePurpose = useRef<{ mode: "layer" | "svg" | "project"; at?: [number, number] }>({ mode: "layer" });
 
@@ -71,10 +87,11 @@ export function App() {
   }, [theme]);
 
   // ---- plugin expansion (preview == server render) -----------------------
+  // The ghost comp (hover preset preview) takes over the display when set.
   const expansion = useMemo<{ comp: Composition | null; error: string | null }>(() => {
-    try { return { comp: expandComposition(composition), error: null }; }
+    try { return { comp: expandComposition(ghost ?? composition), error: null }; }
     catch (e) { return { comp: null, error: e instanceof Error ? e.message : String(e) }; }
-  }, [composition]);
+  }, [composition, ghost]);
 
   // ---- preview rendering --------------------------------------------------
   const renderBusy = useRef(false);
@@ -85,7 +102,7 @@ export function App() {
     if (renderBusy.current) { renderPending.current = { comp, t }; return; }
     renderBusy.current = true;
     r.renderFrame(comp, t)
-      .catch((e: unknown) => { console.error("preview render failed at t=", t, e); setStatus(`预览错误: ${String(e)}`); })
+      .catch((e: unknown) => { console.error("preview render failed at t=", t, e); setStatus(tr("预览错误: {e}", { e: String(e) })); })
       .finally(() => {
         renderBusy.current = false;
         const p = renderPending.current;
@@ -103,10 +120,11 @@ export function App() {
         if (cancelled) return;
         // Redraw the current frame once the full CJK font finishes loading.
         r.onFontUpgrade = () => setFontTick((t) => t + 1);
+        r.onVideoIssue = () => setStatus(tr("该视频浏览器无法解码，预览用灰色占位显示 — 导出渲染不受影响"));
         rendererRef.current = r;
         setReady(true);
       })
-      .catch((e: unknown) => setStatus(`预览初始化失败: ${String(e)}`));
+      .catch((e: unknown) => setStatus(tr("预览初始化失败: {e}", { e: String(e) })));
     return () => { cancelled = true; };
   }, []);
 
@@ -146,6 +164,32 @@ export function App() {
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
   }, [playing]);
+
+  // ---- segment preview -------------------------------------------------------
+  // Plays a short time range once (or looped) so every animation edit answers
+  // itself immediately on the canvas — the core of the "所见即所得" feedback loop.
+  const segRaf = useRef(0);
+  const stopSegment = useCallback(() => cancelAnimationFrame(segRaf.current), []);
+  const playSegment = useCallback((from: number, to: number, opts?: { restoreTo?: number; loop?: boolean }) => {
+    cancelAnimationFrame(segRaf.current);
+    setPlaying(false);
+    if (to <= from) { setTimeMs(from); return; }
+    const dur = to - from;
+    const hold = 280; // linger on the end state so the result registers
+    let start = performance.now();
+    const step = (now: number): void => {
+      let el = now - start;
+      if (el >= dur + hold) {
+        if (!opts?.loop) { setTimeMs(opts?.restoreTo ?? to); return; }
+        start = now;
+        el = 0;
+      }
+      setTimeMs(from + Math.min(dur, el));
+      segRaf.current = requestAnimationFrame(step);
+    };
+    segRaf.current = requestAnimationFrame(step);
+  }, []);
+  useEffect(() => { if (playing) cancelAnimationFrame(segRaf.current); }, [playing]);
 
   // ---- autosave -------------------------------------------------------------
   useEffect(() => {
@@ -262,56 +306,111 @@ export function App() {
     patchTransform(sel.path, { [sel.key]: arr }, "easing");
   }
 
-  // ---- preset animations -------------------------------------------------------
+  // ---- preset animations: hover = live try-on, click = apply --------------------
+  // Hovering a preset chip swaps in a ghost composition and loops the affected
+  // time range on the canvas; clicking commits and replays it once.
+  const previewRestore = useRef<number | null>(null);
+  function previewAnim(name: string): void {
+    if (!selection.length) return;
+    const r = presetPatch(name, layerAtPath(composition, selection), composition);
+    if (!r || r.to <= r.from) return;
+    if (previewRestore.current === null) previewRestore.current = timeMs;
+    const tr = transformOf(selection);
+    setGhost(updateLayerAtPath(composition, selection, (l) => ({ ...l, transform: { ...tr, ...r.patch } } as Layer)));
+    playSegment(r.from, r.to, { loop: true });
+  }
+  function endPreviewAnim(): void {
+    if (previewRestore.current === null && !ghost) return;
+    setGhost(null);
+    stopSegment();
+    if (previewRestore.current !== null) {
+      setTimeMs(previewRestore.current);
+      previewRestore.current = null;
+    }
+  }
   function applyAnim(name: string): void {
     const path = selection;
     if (!path.length) return;
-    const layer = layerAtPath(composition, path);
-    const tr = transformOf(path);
-    const base = (k: string, d: number): number => {
-      const v = tr[k];
-      return typeof v === "number" ? v : Array.isArray(v) && v.length ? (v[0] as Kf).value : d;
-    };
-    // Non-group layers keyframe on the composition clock — anchor the presets
-    // at the clip's own start/end instead of 0/duration.
-    const local = layer?.type === "group" || layer?.type === "plugin";
-    const clipStart = local ? 0 : ((layer?.startMs as number) ?? 0);
-    const clipEnd = local
-      ? ((layer?.endMs as number) ?? composition.durationMs) - ((layer?.startMs as number) ?? 0)
-      : ((layer?.endMs as number) ?? composition.durationMs);
-    const span = clipEnd - clipStart;
-    const enter = Math.min(700, Math.round(span * 0.4));
-    const leaveAt = Math.max(clipStart, clipEnd - Math.min(600, Math.round(span * 0.35)));
-    const bx = base("x", 0), by = base("y", 0), bs = base("scale", 1);
-    let patch: Record<string, unknown> | undefined;
-    switch (name) {
-      case "左弧入": case "右弧入": {
-        // Arc Motion: curve in from off-screen through a raised midpoint
-        // (baked motion-path keyframes, HyperFrames-style).
-        const dir = name === "左弧入" ? -1 : 1;
-        const from: [number, number] = [bx + dir * Math.round(composition.width * 0.36), by];
-        const mid: [number, number] = [(from[0] + bx) / 2, by - Math.round(composition.height * 0.28)];
-        const arc = bakeMotionPath([from, mid, [bx, by]], Math.min(900, Math.round(span * 0.5)), clipStart, 1.2, 14);
-        patch = { x: arc.x, y: arc.y };
-        break;
-      }
-      case "淡入": patch = { opacity: [{ timeMs: clipStart, value: 0 }, { timeMs: clipStart + enter, value: 1, easing: EMPH }] }; break;
-      case "淡出": patch = { opacity: [{ timeMs: leaveAt, value: 1 }, { timeMs: clipEnd, value: 0, easing: EMPH }] }; break;
-      case "左滑入": patch = { x: [{ timeMs: clipStart, value: bx + 320 }, { timeMs: clipStart + enter, value: bx, easing: EMPH }] }; break;
-      case "右滑入": patch = { x: [{ timeMs: clipStart, value: bx - 320 }, { timeMs: clipStart + enter, value: bx, easing: EMPH }] }; break;
-      case "上滑入": patch = { y: [{ timeMs: clipStart, value: by + 220 }, { timeMs: clipStart + enter, value: by, easing: EMPH }] }; break;
-      case "下滑入": patch = { y: [{ timeMs: clipStart, value: by - 220 }, { timeMs: clipStart + enter, value: by, easing: EMPH }] }; break;
-      case "弹出": patch = { scale: [{ timeMs: clipStart, value: 0.3 }, { timeMs: clipStart + enter, value: bs || 1, easing: BACK }] }; break;
-      case "缩放入": patch = { scale: [{ timeMs: clipStart, value: 0.7 }, { timeMs: clipStart + enter, value: bs || 1, easing: EMPH }] }; break;
-      case "清除": {
-        const c: Record<string, unknown> = {};
-        for (const k of TRANSFORM_KEYS) { const v = tr[k]; if (Array.isArray(v) && v.length) c[k] = (v[v.length - 1] as Kf).value; }
-        patch = c;
-        break;
-      }
-    }
-    if (patch) patchTransform(path, patch);
+    const r = presetPatch(name, layerAtPath(composition, path), composition);
+    if (!r) return;
+    setGhost(null);
+    const restore = previewRestore.current ?? timeMs;
+    previewRestore.current = null;
+    patchTransform(path, r.patch);
+    if (r.to > r.from) playSegment(r.from, r.to, { restoreTo: restore });
+    else stopSegment();
   }
+
+  // ---- 动一动: drag A→B on canvas → two-keyframe move + quick-config bubble -----
+  const trackToGlobal = (index: number, t: number): number => {
+    const l = layerAtPath(composition, [index]);
+    return l?.type === "group" || l?.type === "plugin" ? t + ((l.startMs as number) ?? 0) : t;
+  };
+  function abPlay(b: AbBubble): void {
+    playSegment(trackToGlobal(b.index, b.t0), trackToGlobal(b.index, b.t1), { restoreTo: trackToGlobal(b.index, b.t0) });
+  }
+  function animateMove(index: number, dx: number, dy: number): void {
+    const layer = layerAtPath(composition, [index]);
+    if (!layer || (!dx && !dy)) return;
+    const rl = expansion.comp ? resolveLayerAt(expansion.comp, [index], timeMs) : null;
+    const rt = rl?.transform as unknown as Record<string, number> | undefined;
+    const tr = transformOf([index]);
+    const num = (v: unknown, d: number): number => (typeof v === "number" ? v : d);
+    const fromX = rt?.x ?? num(tr.x, 0);
+    const fromY = rt?.y ?? num(tr.y, 0);
+    const local = layer.type === "group" || layer.type === "plugin";
+    const startMs = (layer.startMs as number) ?? 0;
+    const clipStart = local ? 0 : startMs;
+    const clipEnd = local
+      ? ((layer.endMs as number) ?? composition.durationMs) - startMs
+      : ((layer.endMs as number) ?? composition.durationMs);
+    let t0 = Math.round(local ? timeMs - startMs : timeMs);
+    t0 = clamp(clipStart, Math.max(clipStart, clipEnd - 300), t0);
+    const t1 = t0 + Math.min(800, Math.max(240, clipEnd - t0));
+    patchTransform([index], {
+      x: upsertKfArr(upsertKfArr(tr.x, t0, fromX), t1, fromX + dx, AB_EASE_TUPLE.emph),
+      y: upsertKfArr(upsertKfArr(tr.y, t0, fromY), t1, fromY + dy, AB_EASE_TUPLE.emph)
+    });
+    const b: AbBubble = { index, t0, t1, ease: "emph" };
+    setAbBubble(b);
+    abPlay(b);
+  }
+  function abRetime(durMs: number): void {
+    if (!abBubble) return;
+    const tr = transformOf([abBubble.index]);
+    const t1 = abBubble.t0 + Math.round(durMs);
+    patchTransform([abBubble.index], { x: retimeKfArr(tr.x, abBubble.t1, t1), y: retimeKfArr(tr.y, abBubble.t1, t1) }, "ab-dur");
+    const b = { ...abBubble, t1 };
+    setAbBubble(b);
+    abPlay(b);
+  }
+  function abSetEase(e: AbEase): void {
+    if (!abBubble) return;
+    const tr = transformOf([abBubble.index]);
+    patchTransform([abBubble.index], {
+      x: easeKfArrAt(tr.x, abBubble.t1, AB_EASE_TUPLE[e]),
+      y: easeKfArrAt(tr.y, abBubble.t1, AB_EASE_TUPLE[e])
+    }, "ab-ease");
+    const b = { ...abBubble, ease: e };
+    setAbBubble(b);
+    abPlay(b);
+  }
+  function abRemove(): void {
+    if (!abBubble) return;
+    const tr = transformOf([abBubble.index]);
+    patchTransform([abBubble.index], {
+      x: removeKfTimes(tr.x, [abBubble.t0, abBubble.t1]),
+      y: removeKfTimes(tr.y, [abBubble.t0, abBubble.t1])
+    });
+    setAbBubble(null);
+    stopSegment();
+  }
+  useEffect(() => {
+    if (abBubble && selection[0] !== abBubble.index) setAbBubble(null);
+  }, [selection, abBubble]);
+  // Node editing is bound to the selected layer — selection change exits it.
+  const pathEditSel = selection[0];
+  useEffect(() => { setPathEdit(false); }, [pathEditSel]);
 
   // ---- layer management ----------------------------------------------------------
   function addLayer(layer: Layer, select = true): void {
@@ -325,9 +424,13 @@ export function App() {
     switch (kind) {
       case "rect": addLayer({ type: "shape", shape: "rect", width: 320, height: 180, fill: "#4d8dff", transform: { x: cx - 160, y: cy - 90 } }); return;
       case "circle": addLayer({ type: "shape", shape: "circle", radius: 90, fill: "#f2c94c", transform: { x: cx - 90, y: cy - 90 } }); return;
-      case "text": addLayer({ type: "text", text: "双击右侧编辑文字", size: 72, color: "#ffffff", align: "center", transform: { x: cx, y: cy } }); return;
+      case "line": addLayer({ type: "shape", shape: "path", path: "M 0 4 L 320 4", width: 320, height: 8, stroke: "#e9ecf5", strokeWidth: 6, transform: { x: cx - 160, y: cy - 4 } } as Layer); return;
+      case "star": addLayer({ type: "shape", shape: "path", path: starPath(5, 110, 44), width: 220, height: 220, fill: "#f2c94c", transform: { x: cx - 110, y: cy - 110 } } as Layer); return;
+      case "polygon": addLayer({ type: "shape", shape: "path", path: polygonPath(6, 100), width: 200, height: 200, fill: "#4d8dff", transform: { x: cx - 100, y: cy - 100 } } as Layer); return;
+      case "blob": addLayer({ type: "shape", shape: "path", path: BLOB_PATH, width: 240, height: 240, fill: "#9a6ee8", transform: { x: cx - 120, y: cy - 120 } } as Layer); return;
+      case "text": addLayer({ type: "text", text: tr("双击右侧编辑文字"), size: 72, color: "#ffffff", align: "center", transform: { x: cx, y: cy } }); return;
       case "caption": addLayer({
-        type: "caption", text: "这里是字幕", size: Math.round(H * 0.05), color: "#ffffff",
+        type: "caption", text: tr("这里是字幕"), size: Math.round(H * 0.05), color: "#ffffff",
         backgroundColor: "rgba(0,0,0,0.55)", padding: 10, align: "center",
         transform: { x: cx, y: Math.round(H * 0.9) }
       }); return;
@@ -360,11 +463,15 @@ export function App() {
     const [cx, cy] = at ?? [W / 2, H / 2];
     if (asset.kind === "audio") {
       addLayer({ type: "audio", src: asset.url } as Layer);
-      setStatus(`已添加音频「${asset.name}」（导出时混音）`);
+      setStatus(tr("已添加音频「{name}」（导出时混音）", { name: asset.name }));
       return;
     }
-    const w = Math.round(W * (asset.kind === "video" ? 0.62 : 0.5));
-    const h = Math.round((w * 9) / 16);
+    // Size the box to the source aspect (probed on import) — a hardcoded 16:9
+    // box distorts/letterboxes portrait footage.
+    const aspect = asset.width && asset.height ? asset.height / asset.width : 9 / 16;
+    const base = Math.round(W * (asset.kind === "video" ? 0.62 : 0.5));
+    const w = aspect > 1 ? Math.max(120, Math.round((H * 0.72) / aspect)) : base;
+    const h = Math.round(w * aspect);
     addLayer({
       type: asset.kind, src: asset.url, fit: "contain", width: w, height: h,
       transform: { x: Math.round(cx - w / 2), y: Math.round(cy - h / 2) }
@@ -379,10 +486,10 @@ export function App() {
         continue;
       }
       const asset = await importFile(f);
-      if (!asset) { setStatus(`不支持的文件类型: ${f.name}`); continue; }
+      if (!asset) { setStatus(tr("不支持的文件类型: {name}", { name: f.name })); continue; }
       setAssets((a) => [asset, ...a]);
       if (addAt && first) { addAssetLayer(asset, addAt); first = false; }
-      else if (!addAt) setStatus(`已导入「${asset.name}」— 点击素材添加到画布`);
+      else if (!addAt) setStatus(tr("已导入「{name}」— 点击素材添加到画布", { name: asset.name }));
     }
   }
 
@@ -392,7 +499,7 @@ export function App() {
       const doc = new DOMParser().parseFromString(text, "image/svg+xml");
       const svg = doc.querySelector("svg");
       const paths = [...doc.querySelectorAll("path")];
-      if (!svg || !paths.length) { setStatus(`SVG 中没有 <path>：${file.name}（可先在矢量工具中转换为路径）`); return; }
+      if (!svg || !paths.length) { setStatus(tr("SVG 中没有 <path>：{name}（可先在矢量工具中转换为路径）", { name: file.name })); return; }
       const vb = (svg.getAttribute("viewBox") ?? "").split(/[\s,]+/).map(Number);
       const [vx, vy, vw, vh] = vb.length === 4 && vb.every(Number.isFinite)
         ? (vb as [number, number, number, number])
@@ -419,9 +526,9 @@ export function App() {
         transform: { x: Math.round(cx - (vw * scale) / 2), y: Math.round(cy - (vh * scale) / 2), scale },
         layers: children
       } as Layer);
-      setStatus(`已导入 SVG「${file.name}」（${children.length} 条路径）`);
+      setStatus(tr("已导入 SVG「{name}」（{n} 条路径）", { name: file.name, n: children.length }));
     } catch (e) {
-      setStatus(`SVG 解析失败: ${e instanceof Error ? e.message : String(e)}`);
+      setStatus(tr("SVG 解析失败: {e}", { e: e instanceof Error ? e.message : String(e) }));
     }
   }
 
@@ -442,7 +549,7 @@ export function App() {
     const src = composition.layers[i];
     if (!src) return;
     const copy = structuredClone(src) as AnyLayer;
-    if (typeof copy.id === "string" && copy.id) copy.id = `${copy.id}-副本`;
+    if (typeof copy.id === "string" && copy.id) copy.id = tr("{id}-副本", { id: copy.id });
     const layers = [...composition.layers];
     layers.splice(i + 1, 0, copy as Layer);
     apply({ ...composition, layers });
@@ -458,7 +565,7 @@ export function App() {
     a.download = `${projectName || "openhyper"}.ohproj.json`;
     a.click();
     URL.revokeObjectURL(url);
-    setStatus("已保存工程文件");
+    setStatus(tr("已保存工程文件"));
   }
   function openProject(): void {
     filePurpose.current = { mode: "project" };
@@ -475,15 +582,15 @@ export function App() {
       setProjectName(data.name ?? f.name.replace(/\.(ohproj\.)?json$/i, ""));
       setSelection([]); setSelKf(null); setTimeMs(0);
       if (showJson) syncJson(comp);
-      setStatus(`已打开「${f.name}」`);
+      setStatus(tr("已打开「{name}」", { name: f.name }));
     } catch (e) {
-      setStatus(`打开失败: ${e instanceof Error ? e.message : String(e)}`);
+      setStatus(tr("打开失败: {e}", { e: e instanceof Error ? e.message : String(e) }));
     }
   }
   function newProject(): void {
-    if (!window.confirm("新建项目？当前项目请先保存。")) return;
+    if (!window.confirm(tr("新建项目？当前项目请先保存。"))) return;
     history.reset(sampleComposition);
-    setProjectName("未命名项目");
+    setProjectName(tr("未命名项目"));
     setSelection([]); setSelKf(null); setTimeMs(0);
   }
 
@@ -514,7 +621,11 @@ export function App() {
         if (e.shiftKey) ungroupSelected();
         else groupSelected();
       }
+      else if (e.key === "Escape") {
+        if (pathEdit) setPathEdit(false);
+      }
       else if (e.key === "Backspace" || e.key === "Delete") {
+        if (pathEdit) return; // the node editor consumes ⌫ (delete anchor)
         if (multiSel.length > 1) {
           e.preventDefault();
           apply({ ...composition, layers: composition.layers.filter((_, i) => !multiSel.includes(i)) });
@@ -548,22 +659,22 @@ export function App() {
   // ---- group / ungroup ---------------------------------------------------------
   function groupSelected(): void {
     const idx = [...new Set(multiSel)].sort((a, b) => a - b);
-    if (idx.length < 2) { setStatus("按住 ⇧/⌘ 点选多个图层后再成组"); return; }
+    if (idx.length < 2) { setStatus(tr("按住 ⇧/⌘ 点选多个图层后再成组")); return; }
     const members = idx.map((i) => composition.layers[i]!).filter(Boolean);
     const layers = composition.layers.filter((_, i) => !idx.includes(i));
     // startMs stays 0 so children keep their own global clocks — grouping is
     // visually lossless; the group then moves/animates as one unit.
-    layers.splice(idx[0]!, 0, { type: "group", id: "组", layers: members } as Layer);
+    layers.splice(idx[0]!, 0, { type: "group", id: tr("组"), layers: members } as Layer);
     apply({ ...composition, layers });
     select([idx[0]!]);
-    setStatus(`已将 ${members.length} 个图层成组（⌘G）`);
+    setStatus(tr("已将 {n} 个图层成组（⌘G）", { n: members.length }));
   }
 
   function ungroupSelected(): void {
     if (selection.length !== 1) return;
     const i = selection[0]!;
     const g = composition.layers[i] as AnyLayer | undefined;
-    if (!g || g.type !== "group" || !Array.isArray(g.layers)) { setStatus("请选中一个顶层组再解组"); return; }
+    if (!g || g.type !== "group" || !Array.isArray(g.layers)) { setStatus(tr("请选中一个顶层组再解组")); return; }
     const gs = (g.startMs as number) ?? 0;
     const ge = g.endMs as number | undefined;
     const gt = (g.transform as Record<string, unknown>) ?? {};
@@ -597,7 +708,7 @@ export function App() {
     apply({ ...composition, layers });
     select(children.length ? [i] : []);
     const lossy = Array.isArray(gt.x) || Array.isArray(gt.y) || (typeof gt.scale === "number" && gt.scale !== 1) || Array.isArray(gt.scale) || gt.rotate || gt.opacity !== undefined || g.reveal || g.clip;
-    setStatus(lossy ? "已解组 — 组上的缩放/旋转/透明度/动画/裁剪未合并到子图层，请检查" : `已解组为 ${children.length} 个图层`);
+    setStatus(lossy ? tr("已解组 — 组上的缩放/旋转/透明度/动画/裁剪未合并到子图层，请检查") : tr("已解组为 {n} 个图层", { n: children.length }));
   }
 
   const canGroup = multiSel.length >= 2;
@@ -606,7 +717,7 @@ export function App() {
   // ---- gesture recording (drag a path → baked keyframes) ----------------------
   function onRecorded(index: number, samples: PathSample[]): void {
     setRecording(false);
-    if (samples.length < 3) { setStatus("录制太短，未生成关键帧"); return; }
+    if (samples.length < 3) { setStatus(tr("录制太短，未生成关键帧")); return; }
     let simplified = simplifyPath(samples, composition.width * 0.008);
     if (simplified.length > 16) {
       const step = (simplified.length - 1) / 15;
@@ -621,7 +732,7 @@ export function App() {
       ...l,
       transform: { ...(((l as AnyLayer).transform as Record<string, unknown>) ?? {}), x, y }
     } as Layer)));
-    setStatus(`已录制运动路径：${simplified.length} 个关键帧（${startAt}→${end}ms）`);
+    setStatus(tr("已录制运动路径：{n} 个关键帧（{from}→{to}ms）", { n: simplified.length, from: startAt, to: end }));
   }
 
   // ---- AI assistant applies a full composition (undoable) ----------------------
@@ -653,16 +764,17 @@ export function App() {
 
       <TopBar
         view={view} onView={setView}
-        projectName={projectName} onProjectName={setProjectName}
         canUndo={history.canUndo} canRedo={history.canRedo}
         onUndo={history.undo} onRedo={history.redo}
         onNew={newProject} onOpen={openProject} onSave={saveProject}
+        onQuickStart={() => setQuickOpen(true)}
         showJson={showJson}
         onToggleJson={() => { if (!showJson) syncJson(composition); setShowJson((s) => !s); }}
         canGroup={canGroup} canUngroup={canUngroup}
         onGroup={groupSelected} onUngroup={ungroupSelected}
         aiOpen={aiOpen} onToggleAi={() => setAiOpen((s) => !s)}
         theme={theme} onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        onToggleLang={toggleLang}
         onExport={() => setRenderOpen(true)}
         status={status}
       />
@@ -672,6 +784,7 @@ export function App() {
       <div style={{ display: view === "editor" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <div className="body">
         <LibraryPanel
+          projectName={projectName} onProjectName={setProjectName}
           composition={composition} selection={selection} assets={assets} plugins={PLUGINS}
           onImportFiles={(files) => void importFiles(files)}
           onAddAssetLayer={(a) => addAssetLayer(a)}
@@ -689,6 +802,18 @@ export function App() {
           recording={recording} onRecorded={onRecorded}
           mediaSize={(src) => rendererRef.current?.mediaSize(src)}
           onSelect={select}
+          animMode={animMode}
+          onToggleAnimMode={() => { setPathEdit(false); setAnimMode((m) => { if (m) setAbBubble(null); return !m; }); }}
+          onAnimateMove={animateMove}
+          abBubble={abBubble}
+          onAbDur={abRetime} onAbEase={abSetEase}
+          onAbReplay={() => { if (abBubble) abPlay(abBubble); }}
+          onAbRemove={abRemove}
+          onAbDone={() => { setAbBubble(null); setAnimMode(false); }}
+          pathEdit={pathEdit}
+          onTogglePathEdit={() => { setAnimMode(false); setAbBubble(null); setPathEdit((p) => !p); }}
+          onLivePatchLayer={(index, patch) => patchLayerLive([index], patch)}
+          onCommitLayer={(index, patch, tag) => patchLayer([index], patch, tag)}
           onGestureStart={history.begin}
           onLivePatchTransform={(patches) => {
             let next = composition;
@@ -722,6 +847,8 @@ export function App() {
           toggleKey={toggleKey}
           setKfEasing={setKfEasing}
           applyAnim={applyAnim}
+          previewAnim={previewAnim}
+          endPreviewAnim={endPreviewAnim}
           patchComposition={patchComposition}
           onJsonEdit={onJsonEdit}
         />
@@ -750,11 +877,27 @@ export function App() {
           onAddToTimeline={(def, params) => {
             addPlugin(def, params);
             setView("editor");
-            setStatus(`已添加插件「${def.displayName ?? def.name}」到时间线`);
+            setStatus(tr("已添加插件「{name}」到时间线", { name: def.displayName ?? def.name }));
           }}
         />
       ) : null}
 
+      {quickOpen ? (
+        <QuickStart
+          plugins={PLUGINS}
+          onClose={() => setQuickOpen(false)}
+          onCreate={(comp, name, asset) => {
+            history.reset(defineComposition(comp));
+            setProjectName(name);
+            if (asset) setAssets((a) => [asset, ...a]);
+            setSelection([]); setMultiSel([]); setSelKf(null);
+            setQuickOpen(false);
+            setTimeMs(0);
+            setPlaying(true);
+            setStatus(tr("已生成你的视频 — 空格暂停，点击画布上的物体继续编辑"));
+          }}
+        />
+      ) : null}
       {renderOpen ? <RenderDialog composition={composition} projectName={projectName} onClose={() => setRenderOpen(false)} /> : null}
       <AssistantPanel open={aiOpen} onClose={() => setAiOpen(false)} composition={composition} plugins={PLUGINS} onApply={applyAiComposition} />
     </div>

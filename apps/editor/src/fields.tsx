@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { clamp, composeCssColor, parseCssColor, r2, toHexColor } from "./helpers.ts";
 import type { Bezier } from "./helpers.ts";
+import { t } from "./i18n.ts";
 
 export function Col({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -30,7 +31,7 @@ export function KfNum({ label, value, step, animated, hasKey, onChange, onToggle
     <Col label={label}>
       <div style={{ display: "flex", gap: 4 }}>
         <input className="input" type="number" value={r2(value)} step={step ?? 1} onChange={(e) => onChange(Number(e.target.value))} />
-        <button className={`kf-btn${animated ? " animated" : ""}${hasKey ? " has-key" : ""}`} title="在播放头处打关键帧" onClick={onToggle}>◆</button>
+        <button className={`kf-btn${animated ? " animated" : ""}${hasKey ? " has-key" : ""}`} title={t("在播放头处打关键帧")} onClick={onToggle}>◆</button>
       </div>
     </Col>
   );
@@ -44,7 +45,7 @@ export function KfRange({ label, value, animated, hasKey, onChange, onToggle }: 
     <Col label={`${label} · ${r2(value)}`}>
       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
         <input type="range" min={0} max={1} step={0.01} value={value} onChange={(e) => onChange(Number(e.target.value))} style={{ flex: 1 }} />
-        <button className={`kf-btn${animated ? " animated" : ""}${hasKey ? " has-key" : ""}`} title="在播放头处打关键帧" onClick={onToggle}>◆</button>
+        <button className={`kf-btn${animated ? " animated" : ""}${hasKey ? " has-key" : ""}`} title={t("在播放头处打关键帧")} onClick={onToggle}>◆</button>
       </div>
     </Col>
   );
@@ -73,7 +74,7 @@ export function ColorField({ label, value, onChange }: { label: string; value: s
       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
         <input type="color" value={hex} style={{ width: 46, flexShrink: 0 }}
           onChange={(e) => onChange(composeCssColor(e.target.value, parsed.a))} />
-        <input type="range" min={0} max={1} step={0.01} value={parsed.a} title="不透明度"
+        <input type="range" min={0} max={1} step={0.01} value={parsed.a} title={t("不透明度")}
           style={{ flex: 1, minWidth: 0 }}
           onChange={(e) => onChange(composeCssColor(hex, Number(e.target.value)))} />
       </div>

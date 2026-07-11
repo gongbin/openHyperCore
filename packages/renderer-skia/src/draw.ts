@@ -19,6 +19,11 @@ export type AssetProvider = {
   loadDefaultTypeface(CanvasKit: CanvasKit): Promise<Typeface | null>;
   loadImage(CanvasKit: CanvasKit, src: string): Promise<Image | null>;
   loadVideoImage(CanvasKit: CanvasKit, layer: ResolvedVideoLayer, frameTimeMs: number): Promise<Image | null>;
+  // When true the provider caches and reuses the Images it hands out, so the
+  // draw tree must NOT delete them after drawing (browser preview provider).
+  // Default (absent/false): each loadVideoImage result is caller-owned and
+  // deleted after the draw (node provider decodes a fresh frame per call).
+  retainsVideoFrames?: boolean;
 };
 
 // Everything the draw tree needs at render time. The host supplies the asset
@@ -1169,7 +1174,9 @@ async function drawVideo(CanvasKit: CanvasKit, canvas: Canvas, layer: Extract<Re
     canvas.drawImageRect(image, CanvasKit.XYWHRect(s.x, s.y, s.w, s.h), CanvasKit.XYWHRect(d.x, d.y, d.w, d.h), paint, false);
   } finally {
     paint.delete();
-    image.delete();
+    if (!options.assetProvider!.retainsVideoFrames) {
+      image.delete();
+    }
   }
 }
 

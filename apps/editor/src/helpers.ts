@@ -1,6 +1,7 @@
 import { motionPathKeyframes, resolveFrame } from "openhypercore";
 import type { Composition, Layer, ResolvedLayer } from "openhypercore";
 import type { PluginDefinition } from "openhypercore/plugins";
+import { t } from "./i18n.ts";
 
 export type Bezier = [number, number, number, number];
 export type Kf = { timeMs: number; value: number; easing?: unknown };
@@ -242,11 +243,11 @@ export function layerLabel(l: AnyLayer): string {
     case "shape": return String(l.shape ?? "shape");
     case "text": case "caption": return String(l.text ?? "text").split("\n")[0]!.slice(0, 14) || "text";
     case "plugin": return String(l.plugin);
-    case "image": return "图片";
-    case "video": return "视频";
-    case "audio": return "音频";
-    case "group": return "组";
-    case "globe": return "地球仪";
+    case "image": return t("图片");
+    case "video": return t("视频");
+    case "audio": return t("音频");
+    case "group": return t("组");
+    case "globe": return t("地球仪");
     default: return String((l as { type?: string }).type ?? "layer");
   }
 }
@@ -257,7 +258,7 @@ export function pluginDefaults(def: PluginDefinition): Record<string, unknown> {
     if (spec.default !== undefined) params[key] = spec.default;
     else if (spec.required) {
       if (spec.type === "asset") params[key] = spec.placeholder ?? (spec.kind === "image" || spec.kind === undefined ? "https://picsum.photos/seed/openhyper/1280/720" : "");
-      else if (spec.type === "string") params[key] = "你的标题";
+      else if (spec.type === "string") params[key] = t("你的标题");
       else if (spec.type === "number") params[key] = 0;
       else if (spec.type === "latlng") params[key] = [39.9, 116.4];
     }
@@ -356,6 +357,257 @@ function pointToSegment(px: number, py: number, ax: number, ay: number, bx: numb
   const len2 = dx * dx + dy * dy;
   const t = len2 ? clamp(0, 1, ((px - ax) * dx + (py - ay) * dy) / len2) : 0;
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+// ---------------------------------------------------------------------------
+// Keyframe track editing utilities for canvas-first animation editing.
+export function upsertKfArr(track: unknown, timeMs: number, value: number, easing?: unknown): Kf[] {
+  const arr = Array.isArray(track) ? [...(track as Kf[])] : [];
+  const i = arr.findIndex((k) => Math.abs(k.timeMs - timeMs) <= KEY_EPS);
+  if (i >= 0) arr[i] = { ...arr[i]!, value, ...(easing !== undefined ? { easing } : {}) };
+  else arr.push({ timeMs, value, ...(easing !== undefined ? { easing } : {}) });
+  arr.sort((a, b) => a.timeMs - b.timeMs);
+  return arr;
+}
+
+export function retimeKfArr(track: unknown, fromMs: number, toMs: number): Kf[] {
+  const arr = Array.isArray(track) ? [...(track as Kf[])] : [];
+  const i = arr.findIndex((k) => Math.abs(k.timeMs - fromMs) <= KEY_EPS);
+  if (i >= 0) arr[i] = { ...arr[i]!, timeMs: toMs };
+  arr.sort((a, b) => a.timeMs - b.timeMs);
+  return arr;
+}
+
+export function easeKfArrAt(track: unknown, timeMs: number, easing: Bezier): Kf[] {
+  const arr = Array.isArray(track) ? [...(track as Kf[])] : [];
+  const i = arr.findIndex((k) => Math.abs(k.timeMs - timeMs) <= KEY_EPS);
+  if (i >= 0) arr[i] = { ...arr[i]!, easing };
+  return arr;
+}
+
+/** Remove keys at the given times; collapse to a static value when emptied. */
+export function removeKfTimes(track: unknown, times: number[]): Kf[] | number {
+  const src = Array.isArray(track) ? (track as Kf[]) : [];
+  const arr = src.filter((k) => !times.some((t) => Math.abs(k.timeMs - t) <= KEY_EPS));
+  if (arr.length) return arr;
+  return src.length ? src[0]!.value : 0;
+}
+
+/** Sorted unique keyframe times across a layer's x/y tracks (track-local clock). */
+export function xyKfTimes(tr: Record<string, unknown>): number[] {
+  const times = new Set<number>();
+  for (const k of ["x", "y"]) {
+    const v = tr[k];
+    if (Array.isArray(v)) for (const kf of v as Kf[]) times.add(Math.round(kf.timeMs));
+  }
+  return [...times].sort((a, b) => a - b);
+}
+
+// ---------------------------------------------------------------------------
+// "动一动" drag-to-animate bubble: a freshly created A→B move awaiting quick
+// tweaks. t0/t1 are on the layer's own track clock (see presetPatch note).
+export type AbEase = "linear" | "emph" | "back";
+export const AB_EASE_TUPLE: Record<AbEase, Bezier> = { linear: [0, 0, 1, 1], emph: EMPH, back: BACK };
+export const AB_EASE_LABEL: Record<AbEase, string> = { linear: "匀速", emph: "丝滑", back: "回弹" };
+export type AbBubble = { index: number; t0: number; t1: number; ease: AbEase };
+
+// ---------------------------------------------------------------------------
+// Preset entrance/exit animations, shared by "apply" and hover live-preview.
+// Returns the transform patch plus the global time range to replay.
+export type PresetResult = { patch: Record<string, unknown>; from: number; to: number };
+
+export function presetPatch(name: string, layer: AnyLayer | undefined, comp: Composition): PresetResult | undefined {
+  const tr = (layer?.transform as Record<string, unknown>) ?? {};
+  const base = (k: string, d: number): number => {
+    const v = tr[k];
+    return typeof v === "number" ? v : Array.isArray(v) && v.length ? (v[0] as Kf).value : d;
+  };
+  // Non-group layers keyframe on the composition clock — anchor the presets
+  // at the clip's own start/end instead of 0/duration.
+  const local = layer?.type === "group" || layer?.type === "plugin";
+  const startMs = (layer?.startMs as number) ?? 0;
+  const clipStart = local ? 0 : startMs;
+  const clipEnd = local
+    ? ((layer?.endMs as number) ?? comp.durationMs) - startMs
+    : ((layer?.endMs as number) ?? comp.durationMs);
+  const span = clipEnd - clipStart;
+  const enter = Math.min(700, Math.round(span * 0.4));
+  const leaveAt = Math.max(clipStart, clipEnd - Math.min(600, Math.round(span * 0.35)));
+  const bx = base("x", 0), by = base("y", 0), bs = base("scale", 1);
+  const g = (t: number): number => (local ? t + startMs : t); // track clock → comp clock
+  let patch: Record<string, unknown> | undefined;
+  let from = clipStart, to = clipStart + enter;
+  switch (name) {
+    case "左弧入": case "右弧入": {
+      // Arc Motion: curve in from off-screen through a raised midpoint
+      // (baked motion-path keyframes, HyperFrames-style).
+      const dir = name === "左弧入" ? -1 : 1;
+      const arcDur = Math.min(900, Math.round(span * 0.5));
+      const fromPt: [number, number] = [bx + dir * Math.round(comp.width * 0.36), by];
+      const mid: [number, number] = [(fromPt[0] + bx) / 2, by - Math.round(comp.height * 0.28)];
+      const arc = bakeMotionPath([fromPt, mid, [bx, by]], arcDur, clipStart, 1.2, 14);
+      patch = { x: arc.x, y: arc.y };
+      to = clipStart + arcDur;
+      break;
+    }
+    case "淡入": patch = { opacity: [{ timeMs: clipStart, value: 0 }, { timeMs: clipStart + enter, value: 1, easing: EMPH }] }; break;
+    case "淡出": patch = { opacity: [{ timeMs: leaveAt, value: 1 }, { timeMs: clipEnd, value: 0, easing: EMPH }] }; from = leaveAt; to = clipEnd; break;
+    case "从左入": patch = { x: [{ timeMs: clipStart, value: bx - 320 }, { timeMs: clipStart + enter, value: bx, easing: EMPH }] }; break;
+    case "从右入": patch = { x: [{ timeMs: clipStart, value: bx + 320 }, { timeMs: clipStart + enter, value: bx, easing: EMPH }] }; break;
+    case "从上入": patch = { y: [{ timeMs: clipStart, value: by - 220 }, { timeMs: clipStart + enter, value: by, easing: EMPH }] }; break;
+    case "从下入": patch = { y: [{ timeMs: clipStart, value: by + 220 }, { timeMs: clipStart + enter, value: by, easing: EMPH }] }; break;
+    case "弹出": patch = { scale: [{ timeMs: clipStart, value: 0.3 }, { timeMs: clipStart + enter, value: bs || 1, easing: BACK }] }; break;
+    case "缩放入": patch = { scale: [{ timeMs: clipStart, value: 0.7 }, { timeMs: clipStart + enter, value: bs || 1, easing: EMPH }] }; break;
+    case "清除": {
+      const c: Record<string, unknown> = {};
+      for (const k of TRANSFORM_KEYS) { const v = tr[k]; if (Array.isArray(v) && v.length) c[k] = (v[v.length - 1] as Kf).value; }
+      patch = c;
+      to = from;
+      break;
+    }
+  }
+  if (!patch) return undefined;
+  return { patch, from: g(from), to: g(to) };
+}
+
+// ---- geometry path generators (line/star/polygon/blob elements) --------------
+// All emit SVG path `d` strings in a (0,0)-(size,size) box so they plug into
+// the existing `shape: "path"` layer with width/height = size.
+
+/** Regular polygon with `sides` vertices, centred in a box of 2*radius. */
+export function polygonPath(sides: number, radius: number): string {
+  const c = radius;
+  const pts: string[] = [];
+  for (let i = 0; i < sides; i += 1) {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / sides;
+    pts.push(`${(c + radius * Math.cos(a)).toFixed(2)} ${(c + radius * Math.sin(a)).toFixed(2)}`);
+  }
+  return `M ${pts.join(" L ")} Z`;
+}
+
+/** Star with `points` tips alternating outer/inner radius, box of 2*outerR. */
+export function starPath(points: number, outerR: number, innerR: number): string {
+  const c = outerR;
+  const pts: string[] = [];
+  for (let i = 0; i < points * 2; i += 1) {
+    const r = i % 2 === 0 ? outerR : innerR;
+    const a = -Math.PI / 2 + (i * Math.PI) / points;
+    pts.push(`${(c + r * Math.cos(a)).toFixed(2)} ${(c + r * Math.sin(a)).toFixed(2)}`);
+  }
+  return `M ${pts.join(" L ")} Z`;
+}
+
+/** Organic closed cubic-bezier blob in a 240×240 box — a friendly starting
+ *  shape whose anchors/handles stay editable as raw path `d`. */
+export const BLOB_PATH = "M 128 12 C 196 4 236 66 228 128 C 221 184 172 236 112 228 C 52 220 8 172 14 110 C 20 52 66 20 128 12 Z";
+
+// ---- editable path model (canvas node editor) --------------------------------
+// A path is a list of anchors; the segment INTO anchor i+1 is a cubic when
+// either anchors[i].out or anchors[i+1].in exists, else a straight line.
+// Only single-subpath absolute M/L/C/Z is supported — exactly what the shape
+// generators and the editor itself emit; anything else returns null and the
+// node editor stays unavailable for that layer.
+export type PathAnchor = { x: number; y: number; in?: [number, number]; out?: [number, number] };
+export type ParsedPath = { anchors: PathAnchor[]; closed: boolean };
+
+export function parsePathD(d: string): ParsedPath | null {
+  const tokens = d.trim().match(/[MLCZmlcz]|-?\d*\.?\d+(?:e-?\d+)?/g);
+  if (!tokens || tokens.length === 0) return null;
+  const anchors: PathAnchor[] = [];
+  let closed = false;
+  let i = 0;
+  const num = (): number => Number(tokens[i++]);
+  while (i < tokens.length) {
+    const cmd = tokens[i++];
+    if (cmd === "M") {
+      if (anchors.length) return null; // one subpath only
+      anchors.push({ x: num(), y: num() });
+    } else if (cmd === "L") {
+      anchors.push({ x: num(), y: num() });
+    } else if (cmd === "C") {
+      const prev = anchors[anchors.length - 1];
+      if (!prev) return null;
+      const c1: [number, number] = [num(), num()];
+      const c2: [number, number] = [num(), num()];
+      const x = num(), y = num();
+      // A closing curve back to the first anchor folds into that anchor's `in`.
+      const first = anchors[0]!;
+      if (anchors.length > 1 && Math.hypot(x - first.x, y - first.y) < 0.75 && tokens[i] === "Z") {
+        prev.out = c1;
+        first.in = c2;
+        closed = true;
+        i += 1;
+      } else {
+        prev.out = c1;
+        anchors.push({ x, y, in: c2 });
+      }
+    } else if (cmd === "Z" || cmd === "z") {
+      closed = true;
+    } else {
+      return null;
+    }
+    if (anchors.some((a) => !Number.isFinite(a.x) || !Number.isFinite(a.y))) return null;
+  }
+  return anchors.length >= 2 ? { anchors, closed } : null;
+}
+
+const fmt = (v: number): string => String(Math.round(v * 100) / 100);
+
+export function anchorsToD(p: ParsedPath): string {
+  const { anchors, closed } = p;
+  const parts: string[] = [`M ${fmt(anchors[0]!.x)} ${fmt(anchors[0]!.y)}`];
+  const seg = (a: PathAnchor, b: PathAnchor): string => {
+    if (a.out || b.in) {
+      const c1 = a.out ?? [a.x, a.y];
+      const c2 = b.in ?? [b.x, b.y];
+      return `C ${fmt(c1[0])} ${fmt(c1[1])} ${fmt(c2[0])} ${fmt(c2[1])} ${fmt(b.x)} ${fmt(b.y)}`;
+    }
+    return `L ${fmt(b.x)} ${fmt(b.y)}`;
+  };
+  for (let i = 1; i < anchors.length; i += 1) parts.push(seg(anchors[i - 1]!, anchors[i]!));
+  if (closed) {
+    const back = seg(anchors[anchors.length - 1]!, anchors[0]!);
+    if (back.startsWith("C")) parts.push(back);
+    parts.push("Z");
+  }
+  return parts.join(" ");
+}
+
+/** Sample the segment leaving anchors[i] (into the next/first anchor). */
+export function sampleSegment(a: PathAnchor, b: PathAnchor, steps = 24): [number, number][] {
+  if (!a.out && !b.in) return [[a.x, a.y], [b.x, b.y]];
+  const c1 = a.out ?? [a.x, a.y];
+  const c2 = b.in ?? [b.x, b.y];
+  const pts: [number, number][] = [];
+  for (let s = 0; s <= steps; s += 1) {
+    const u = s / steps, v = 1 - u;
+    pts.push([
+      v * v * v * a.x + 3 * v * v * u * c1[0] + 3 * v * u * u * c2[0] + u * u * u * b.x,
+      v * v * v * a.y + 3 * v * v * u * c1[1] + 3 * v * u * u * c2[1] + u * u * u * b.y
+    ]);
+  }
+  return pts;
+}
+
+/** Split the segment a→b at parameter u, returning the midpoint anchor and
+ *  updated handles for a and b (de Casteljau — the shape is preserved). */
+export function splitSegment(a: PathAnchor, b: PathAnchor, u: number): { a: PathAnchor; mid: PathAnchor; b: PathAnchor } {
+  if (!a.out && !b.in) {
+    return { a, mid: { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u }, b };
+  }
+  const p0: [number, number] = [a.x, a.y];
+  const p1 = a.out ?? p0;
+  const p2 = b.in ?? [b.x, b.y];
+  const p3: [number, number] = [b.x, b.y];
+  const lerp = (m: [number, number], n: [number, number]): [number, number] => [m[0] + (n[0] - m[0]) * u, m[1] + (n[1] - m[1]) * u];
+  const q0 = lerp(p0, p1), q1 = lerp(p1, p2), q2 = lerp(p2, p3);
+  const r0 = lerp(q0, q1), r1 = lerp(q1, q2);
+  const s = lerp(r0, r1);
+  return {
+    a: { ...a, out: q0 },
+    mid: { x: s[0], y: s[1], in: r0, out: r1 },
+    b: { ...b, in: q2 }
+  };
 }
 
 export function fmtTime(ms: number): string {

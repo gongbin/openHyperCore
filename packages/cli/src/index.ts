@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { availableParallelism, freemem, totalmem } from "node:os";
 import { join, resolve } from "node:path";
@@ -646,6 +647,9 @@ export async function renderVideo(composition: Composition, options: RenderOptio
     fps: composition.fps,
     width: composition.width,
     height: composition.height,
+    // Frame-exact output bound — lets the encoder avoid `-shortest` (see
+    // ImagePipeArgsOptions.durationSeconds).
+    durationSeconds: frameCount(composition) / composition.fps,
     outFile: options.out,
     ffmpegArgsPrefix: options.ffmpegArgsPrefix
   };
@@ -1261,7 +1265,19 @@ function videoFrameCacheOptions(ffmpegPath?: string, diskCacheDir?: string): { f
   return options;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// npm/pnpm invoke the `openhyper` bin through symlinks, so argv[1] is the
+// link path while import.meta.url is the realpath — compare realpaths, or the
+// guard never matches and the CLI exits silently doing nothing.
+const invokedAsBin = ((): boolean => {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+})();
+
+if (invokedAsBin) {
   runCli(process.argv.slice(2)).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

@@ -32,6 +32,12 @@ type VideoEntry = {
   ready: Promise<boolean>;
   lastTimeMs: number;
   lastImage: Image | null;
+  // Previous frame, kept alive one swap longer — draw code (and cached
+  // pictures) may still reference it when the next frame lands.
+  retired: Image | null;
+  // Grabs for one src are chained: interleaved seeks otherwise hand out an
+  // image another call is about to delete ("Image instance already deleted").
+  job: Promise<Image | null> | null;
 };
 
 export class PreviewRenderer {
@@ -43,6 +49,12 @@ export class PreviewRenderer {
   #videos = new Map<string, VideoEntry>();
   #typefaces = new Map<string, Promise<Typeface | null>>();
   #images = new Map<string, Promise<Image | null>>();
+  #videoFallback: Image | null = null;
+  #videoIssues = new Set<string>();
+
+  /** Fired once per video src the browser cannot decode/grab — the preview
+   *  shows a dark placeholder instead of failing the whole frame. */
+  onVideoIssue: ((src: string) => void) | null = null;
 
   constructor(ck: CanvasKit, surface: Surface) {
     this.#ck = ck;
@@ -134,14 +146,20 @@ export class PreviewRenderer {
         }, { once: true });
         el.addEventListener("error", () => resolve(false), { once: true });
       });
-      entry = { el, ready, lastTimeMs: -1, lastImage: null };
+      entry = { el, ready, lastTimeMs: -1, lastImage: null, retired: null, job: null };
       this.#videos.set(src, entry);
     }
     return entry;
   }
 
-  async #grabVideoFrame(src: string, sourceTimeMs: number): Promise<Image | null> {
+  #grabVideoFrame(src: string, sourceTimeMs: number): Promise<Image | null> {
     const entry = this.#videoEntry(src);
+    const run = (): Promise<Image | null> => this.#grabVideoFrameNow(entry, sourceTimeMs);
+    entry.job = entry.job ? entry.job.then(run, run) : run();
+    return entry.job;
+  }
+
+  async #grabVideoFrameNow(entry: VideoEntry, sourceTimeMs: number): Promise<Image | null> {
     if (!(await entry.ready)) return null;
     const el = entry.el;
     const durMs = Number.isFinite(el.duration) ? el.duration * 1000 : 0;
@@ -160,7 +178,10 @@ export class PreviewRenderer {
       const bmp = await createImageBitmap(el);
       const img = this.#ck.MakeImageFromCanvasImageSource(bmp);
       bmp.close();
-      entry.lastImage?.delete();
+      // Retire the previous frame instead of deleting it right away — the
+      // current draw may still be holding it.
+      entry.retired?.delete();
+      entry.retired = entry.lastImage;
       entry.lastImage = img;
       entry.lastTimeMs = quantized;
       return img;
@@ -169,8 +190,22 @@ export class PreviewRenderer {
     }
   }
 
+  #videoPlaceholder(): Image | null {
+    if (!this.#videoFallback) {
+      const px = new Uint8Array([24, 28, 38, 255, 30, 35, 47, 255, 30, 35, 47, 255, 24, 28, 38, 255]);
+      this.#videoFallback = this.#ck.MakeImage(
+        { width: 2, height: 2, colorType: this.#ck.ColorType.RGBA_8888, alphaType: this.#ck.AlphaType.Opaque, colorSpace: this.#ck.ColorSpace.SRGB },
+        px, 8
+      );
+    }
+    return this.#videoFallback;
+  }
+
   #createProvider(): AssetProvider {
     return {
+      // Video frames are cached and reused across draws — the draw tree must
+      // not delete them (that's this class's job via retire-then-delete).
+      retainsVideoFrames: true,
       loadTypeface: (_ck, font) => (typeof font === "string" && isAssetUrl(font)
         ? this.#fetchTypeface(font).then((tf) => tf ?? this.#defaultTypeface())
         : this.#defaultTypeface()),
@@ -194,9 +229,18 @@ export class PreviewRenderer {
       },
       loadVideoImage: async (_ck, layer: ResolvedVideoLayer, frameTimeMs: number) => {
         const src = layer.src;
-        if (!isAssetUrl(src)) return null;
+        if (!isAssetUrl(src)) return this.#videoPlaceholder();
         const sourceMs = videoSourceTimeMs(layer as unknown as AnyLayer, frameTimeMs);
-        return this.#grabVideoFrame(src, sourceMs);
+        const img = await this.#grabVideoFrame(src, sourceMs);
+        if (img) return img;
+        // Undecodable codec / frame not ready yet: show a placeholder rather
+        // than failing the whole preview frame (export is unaffected — the
+        // server decodes with ffmpeg).
+        if (!this.#videoIssues.has(src)) {
+          this.#videoIssues.add(src);
+          this.onVideoIssue?.(src);
+        }
+        return this.#videoPlaceholder();
       }
     };
   }

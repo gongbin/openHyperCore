@@ -1,6 +1,6 @@
 {
   "name": "openhypercore",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "description": "Lightweight, GPU-free video composition + rendering engine: a JSON scene-graph IR, CanvasKit/Skia (wasm) or native (Rust + skia-safe) renderer, and an FFmpeg encoder — with a CLI for scripted/agent use.",
   "type": "module",
   "packageManager": "pnpm@10.30.1",

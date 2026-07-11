@@ -1,7 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Composition, Layer } from "openhypercore";
 import type { PluginDefinition } from "openhypercore/plugins";
 import { Icon, pluginIcon } from "../icons.tsx";
+import { t } from "../i18n.ts";
 import { layerLabel, typeColor } from "../helpers.ts";
 import type { AnyLayer, SelPath } from "../helpers.ts";
 
@@ -13,7 +14,29 @@ export type EditorAsset = {
   url: string;
   /** blob: URLs only live in this browser session — MP4 render can't read them. */
   previewOnly: boolean;
+  /** Natural pixel size (probed on import) so layers keep the source aspect. */
+  width?: number;
+  height?: number;
 };
+
+// Natural dimensions — <video> reports rotation-corrected videoWidth/Height.
+function probeSize(url: string, kind: EditorAsset["kind"]): Promise<{ width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    const bail = setTimeout(() => resolve(null), 4000);
+    if (kind === "image") {
+      const img = new Image();
+      img.onload = () => { clearTimeout(bail); resolve({ width: img.naturalWidth, height: img.naturalHeight }); };
+      img.onerror = () => { clearTimeout(bail); resolve(null); };
+      img.src = url;
+    } else {
+      const v = document.createElement("video");
+      v.preload = "metadata";
+      v.onloadedmetadata = () => { clearTimeout(bail); resolve(v.videoWidth ? { width: v.videoWidth, height: v.videoHeight } : null); };
+      v.onerror = () => { clearTimeout(bail); resolve(null); };
+      v.src = url;
+    }
+  });
+}
 
 export const ASSET_MIME: Record<EditorAsset["kind"], string> = {
   image: "image/*",
@@ -34,6 +57,7 @@ export async function importFile(f: File): Promise<EditorAsset | null> {
   const kind = fileKind(f);
   if (!kind) return null;
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  let asset: EditorAsset;
   if (kind === "image" && f.size <= EMBED_LIMIT) {
     const url = await new Promise<string>((resolve, reject) => {
       const r = new FileReader();
@@ -41,12 +65,41 @@ export async function importFile(f: File): Promise<EditorAsset | null> {
       r.onerror = () => reject(r.error);
       r.readAsDataURL(f);
     });
-    return { id, name: f.name, kind, url, previewOnly: false };
+    asset = { id, name: f.name, kind, url, previewOnly: false };
+  } else {
+    asset = { id, name: f.name, kind, url: URL.createObjectURL(f), previewOnly: true };
   }
-  return { id, name: f.name, kind, url: URL.createObjectURL(f), previewOnly: true };
+  if (kind !== "audio") {
+    const size = await probeSize(asset.url, kind);
+    if (size) { asset.width = size.width; asset.height = size.height; }
+  }
+  return asset;
 }
 
-export function LibraryPanel({ composition, selection, multiSel, assets, plugins, onImportFiles, onAddAssetLayer, onAddFactory, onAddPlugin, onSelect, onMove, onDuplicate, onRemove }: {
+/** Project title: plain text with a pencil on hover; the input only appears on demand. */
+function ProjectTitle({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
+  if (editing) {
+    return (
+      <input ref={inputRef} className="project-name" autoFocus value={value} spellCheck={false}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => setEditing(false)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") setEditing(false); }} />
+    );
+  }
+  return (
+    <button className="project-title" title={t("重命名项目")} onClick={() => setEditing(true)}>
+      <span>{value || t("未命名项目")}</span>
+      <Icon name="pencil" size={12} />
+    </button>
+  );
+}
+
+export function LibraryPanel({ projectName, onProjectName, composition, selection, multiSel, assets, plugins, onImportFiles, onAddAssetLayer, onAddFactory, onAddPlugin, onSelect, onMove, onDuplicate, onRemove }: {
+  projectName: string;
+  onProjectName: (v: string) => void;
   composition: Composition;
   selection: SelPath;
   multiSel: number[];
@@ -61,15 +114,18 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
   onDuplicate: (index: number) => void;
   onRemove: (path: SelPath) => void;
 }) {
-  const [tab, setTab] = useState<"media" | "add" | "fx" | "layers">("media");
+  const [tab, setTab] = useState<"media" | "add" | "fx" | "layers">("add");
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
   return (
     <aside className="library">
+      <div className="project-row">
+        <ProjectTitle value={projectName} onChange={onProjectName} />
+      </div>
       <div className="tabs">
-        {([["media", "素材"], ["add", "组件"], ["fx", "特效"], ["layers", "图层"]] as const).map(([k, name]) => (
-          <button key={k} className={`tab${tab === k ? " active" : ""}`} onClick={() => setTab(k)}>{name}</button>
+        {([["add", "组件"], ["media", "素材"], ["fx", "特效"], ["layers", "图层"]] as const).map(([k, name]) => (
+          <button key={k} className={`tab${tab === k ? " active" : ""}`} onClick={() => setTab(k)}>{t(name)}</button>
         ))}
       </div>
 
@@ -90,15 +146,17 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
                 color: "var(--muted)", fontSize: 12, marginBottom: 10, transition: "all .13s"
               }}>
               <div style={{ color: "var(--accent)", marginBottom: 6 }}><Icon name="plus" size={20} /></div>
-              点击导入 或 拖入图片 / 视频 / 音频
+              {t("点击导入 或 拖入图片 / 视频 / 音频")}
             </div>
-            {assets.length === 0 ? <div className="empty-hint">还没有素材。<br />导入后点击即可添加到画布，也可直接拖到画布上。</div> : null}
+            {assets.length === 0 ? <div className="empty-hint">{t("还没有素材。")}<br />{t("导入后点击即可添加到画布，也可直接拖到画布上。")}</div> : null}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               {assets.map((a) => (
                 <div key={a.id} draggable
                   onDragStart={(e) => { e.dataTransfer.setData("application/x-openhyper-asset", a.id); e.dataTransfer.effectAllowed = "copy"; }}
                   onClick={() => onAddAssetLayer(a)}
-                  title={`${a.name}${a.previewOnly ? "（blob 素材仅预览，导出请用 URL/内嵌）" : ""} — 点击添加，或拖到画布`}
+                  title={a.previewOnly
+                    ? t("{name}（本地素材，导出时自动上传给渲染服务） — 点击添加，或拖到画布", { name: a.name })
+                    : t("{name} — 点击添加，或拖到画布", { name: a.name })}
                   style={{ borderRadius: 9, overflow: "hidden", border: "1px solid var(--border)", cursor: "grab", background: "var(--panel-2)" }}>
                   <div style={{ height: 64, display: "grid", placeItems: "center", background: "#0d1017", position: "relative" }}>
                     {a.kind === "image"
@@ -106,7 +164,7 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
                       : a.kind === "video"
                         ? <video src={a.url} muted preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                         : <span style={{ color: "var(--cyan)" }}><Icon name="audio" size={26} /></span>}
-                    {a.previewOnly ? <span title="blob 素材：仅本地预览可见" style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,.6)", color: "var(--gold)", borderRadius: 4, fontSize: 9, padding: "1px 4px" }}>预览</span> : null}
+                    {a.previewOnly ? <span title={t("本地素材：导出时自动上传给渲染服务")} style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,.6)", color: "var(--gold)", borderRadius: 4, fontSize: 9, padding: "1px 4px" }}>{t("本地")}</span> : null}
                   </div>
                   <div style={{ padding: "4px 7px", fontSize: 10.5, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</div>
                 </div>
@@ -117,12 +175,14 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
 
         {tab === "add" ? (
           <div className="card-grid">
-            {[["rect", "矩形", "rect"], ["circle", "圆形", "circle"], ["text", "文字", "text"],
+            {[["rect", "矩形", "rect"], ["circle", "圆形", "circle"], ["line", "线条", "line"],
+              ["star", "星形", "star"], ["polygon", "多边形", "polygon"], ["blob", "贝塞尔形", "blob"],
+              ["text", "文字", "text"],
               ["caption", "字幕", "caption"], ["image", "图片", "image"], ["video", "视频", "video"],
               ["audio", "音频", "audio"], ["svg", "SVG 图案", "svgFile"], ["group", "组", "group"]].map(([kind, name, icon]) => (
               <button key={kind} className="add-card" onClick={() => onAddFactory(kind!)}>
                 <Icon name={icon!} size={22} />
-                {name}
+                {t(name!)}
               </button>
             ))}
           </div>
@@ -147,9 +207,9 @@ export function LibraryPanel({ composition, selection, multiSel, assets, plugins
 
         {tab === "layers" ? (
           composition.layers.length === 0
-            ? <div className="empty-hint">还没有图层，从素材/组件/特效添加。</div>
+            ? <div className="empty-hint">{t("还没有图层，从素材/组件/特效添加。")}</div>
             : <>
-                <div style={{ color: "var(--faint)", fontSize: 10.5, marginBottom: 6 }}>⇧/⌘ 点选多个 → 顶栏「成组」(⌘G)</div>
+                <div style={{ color: "var(--faint)", fontSize: 10.5, marginBottom: 6 }}>{t("⇧/⌘ 点选多个 → 顶栏「成组」(⌘G)")}</div>
                 <LayerTree layers={composition.layers} selection={selection} multiSel={multiSel} onSelect={onSelect} onMove={onMove} onDuplicate={onDuplicate} onRemove={onRemove} />
               </>
         ) : null}
@@ -194,11 +254,11 @@ function LayerNode({ layer, path, selection, multiSel, onSelect, onMove, onDupli
         <span className="layer-name">{layerLabel(layer)}</span>
         <span className="actions">
           {top ? <>
-            <button className="icon-btn" title="上移" onClick={(e) => { e.stopPropagation(); onMove(path[0]!, -1); }}><Icon name="up" size={12} /></button>
-            <button className="icon-btn" title="下移" onClick={(e) => { e.stopPropagation(); onMove(path[0]!, 1); }}><Icon name="down" size={12} /></button>
-            <button className="icon-btn" title="复制 (⌘D)" onClick={(e) => { e.stopPropagation(); onDuplicate(path[0]!); }}><Icon name="dup" size={12} /></button>
+            <button className="icon-btn" title={t("上移")} onClick={(e) => { e.stopPropagation(); onMove(path[0]!, -1); }}><Icon name="up" size={12} /></button>
+            <button className="icon-btn" title={t("下移")} onClick={(e) => { e.stopPropagation(); onMove(path[0]!, 1); }}><Icon name="down" size={12} /></button>
+            <button className="icon-btn" title={t("复制 (⌘D)")} onClick={(e) => { e.stopPropagation(); onDuplicate(path[0]!); }}><Icon name="dup" size={12} /></button>
           </> : null}
-          <button className="icon-btn danger" title="删除" onClick={(e) => { e.stopPropagation(); onRemove(path); }}><Icon name="trash" size={12} /></button>
+          <button className="icon-btn danger" title={t("删除")} onClick={(e) => { e.stopPropagation(); onRemove(path); }}><Icon name="trash" size={12} /></button>
         </span>
       </div>
       {open ? children.map((c, i) => (

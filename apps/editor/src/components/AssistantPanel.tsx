@@ -3,6 +3,7 @@ import type { Composition } from "openhypercore";
 import type { PluginDefinition } from "openhypercore/plugins";
 import { Icon } from "../icons.tsx";
 import { Col, Row, Sel } from "../fields.tsx";
+import { t } from "../i18n.ts";
 
 // LLM copilot: multi-turn chat that reads the current composition IR and
 // returns a full updated composition as a ```json block, which the editor
@@ -180,38 +181,38 @@ export function AssistantPanel({ open, onClose, composition, plugins, onApply }:
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
         <Icon name="sparkle" size={16} />
-        <b style={{ fontSize: 13 }}>AI 动画助手</b>
-        <span style={{ color: "var(--faint)", fontSize: 10.5 }}>密钥仅存本机浏览器</span>
+        <b style={{ fontSize: 13 }}>{t("AI 动画助手")}</b>
+        <span style={{ color: "var(--faint)", fontSize: 10.5 }}>{t("密钥仅存本机浏览器")}</span>
         <span style={{ flex: 1 }} />
-        <button className="icon-btn" title="清空对话" onClick={() => setMessages([])}><Icon name="trash" size={13} /></button>
-        <button className={`icon-btn${showConfig ? " active" : ""}`} title="模型设置" onClick={() => setShowConfig((s) => !s)}><Icon name="sweep" size={14} /></button>
+        <button className="icon-btn" title={t("清空对话")} onClick={() => setMessages([])}><Icon name="trash" size={13} /></button>
+        <button className={`icon-btn${showConfig ? " active" : ""}`} title={t("模型设置")} onClick={() => setShowConfig((s) => !s)}><Icon name="sweep" size={14} /></button>
         <button className="icon-btn" onClick={onClose}><Icon name="close" size={13} /></button>
       </div>
 
       {showConfig ? (
         <div style={{ padding: 12, borderBottom: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 8 }}>
           <Row>
-            <Sel label="接口类型" value={config.provider} options={["openai", "anthropic"]}
-              labels={{ openai: "OpenAI 兼容（含 DeepSeek/中转）", anthropic: "Anthropic Claude" }}
+            <Sel label={t("接口类型")} value={config.provider} options={["openai", "anthropic"]}
+              labels={{ openai: t("OpenAI 兼容（含 DeepSeek/中转）"), anthropic: "Anthropic Claude" }}
               onChange={(v) => setProvider(v as AiConfig["provider"])} />
           </Row>
           <Col label="Base URL"><input className="input" value={config.baseUrl} onChange={(e) => setConfig((c) => ({ ...c, baseUrl: e.target.value }))} /></Col>
           <Row>
-            <Col label="模型"><input className="input" value={config.model} placeholder="gpt-4o / deepseek-chat / claude-sonnet-4-5" onChange={(e) => setConfig((c) => ({ ...c, model: e.target.value }))} /></Col>
+            <Col label={t("模型")}><input className="input" value={config.model} placeholder="gpt-4o / deepseek-chat / claude-sonnet-4-5" onChange={(e) => setConfig((c) => ({ ...c, model: e.target.value }))} /></Col>
           </Row>
-          <Col label="API Key（仅保存在浏览器 localStorage）">
+          <Col label={t("API Key（仅保存在浏览器 localStorage）")}>
             <input className="input" type="password" value={config.apiKey} placeholder="sk-…" onChange={(e) => setConfig((c) => ({ ...c, apiKey: e.target.value }))} />
           </Col>
-          <div style={{ color: "var(--faint)", fontSize: 10.5 }}>浏览器直连需要服务端允许 CORS；如被拦截可使用支持 CORS 的中转 Base URL。</div>
+          <div style={{ color: "var(--faint)", fontSize: 10.5 }}>{t("浏览器直连需要服务端允许 CORS；如被拦截可使用支持 CORS 的中转 Base URL。")}</div>
         </div>
       ) : null}
 
       <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
         {messages.length === 0 ? (
           <div className="empty-hint">
-            用自然语言描述想要的动画，AI 会直接修改画布（可 ⌘Z 撤销）。<br /><br />
-            试试：<br />
-            {["加一个金色标题从下方弹入", "给所有图层加交错淡入", "做一个 3 秒倒计时开场", "把背景改成深蓝到紫的渐变"].map((s) => (
+            {t("用自然语言描述想要的动画，AI 会直接修改画布（可 ⌘Z 撤销）。")}<br /><br />
+            {t("试试：")}<br />
+            {[t("加一个金色标题从下方弹入"), t("给所有图层加交错淡入"), t("做一个 3 秒倒计时开场"), t("把背景改成深蓝到紫的渐变")].map((s) => (
               <button key={s} className="chip" style={{ margin: 3 }} onClick={() => void send(s)}>{s}</button>
             ))}
           </div>
@@ -225,28 +226,28 @@ export function AssistantPanel({ open, onClose, composition, plugins, onApply }:
             whiteSpace: "pre-wrap", wordBreak: "break-word"
           }}>
             {m.role === "assistant"
-              ? m.content.replace(/```(?:json)?[\s\S]*?```/g, "").trim() || (m.error ? "" : "（空回复）")
+              ? m.content.replace(/```(?:json)?[\s\S]*?```/g, "").trim() || (m.error ? "" : t("（空回复）"))
               : m.content.replace(/^需求：/, "")}
-            {m.applied ? <div style={{ color: "var(--ok)", fontSize: 11, marginTop: 5, display: "flex", gap: 5, alignItems: "center" }}><Icon name="check" size={12} />已应用到画布（⌘Z 可撤销）</div> : null}
+            {m.applied ? <div style={{ color: "var(--ok)", fontSize: 11, marginTop: 5, display: "flex", gap: 5, alignItems: "center" }}><Icon name="check" size={12} />{t("已应用到画布（⌘Z 可撤销）")}</div> : null}
             {m.error ? (
               <div style={{ color: "var(--danger)", fontSize: 11, marginTop: 5 }}>
-                {m.applied === false && m.content ? "应用失败：" : ""}{m.error}
+                {m.applied === false && m.content ? t("应用失败：") : ""}{m.error}
                 {m.content && extractJson(m.content) ? (
-                  <button className="chip" style={{ marginLeft: 6 }} onClick={() => void send(`你上次输出的 JSON 应用失败：${m.error}。请修正后重新输出完整 JSON。`)}>发回修正</button>
+                  <button className="chip" style={{ marginLeft: 6 }} onClick={() => void send(`你上次输出的 JSON 应用失败：${m.error}。请修正后重新输出完整 JSON。`)}>{t("发回修正")}</button>
                 ) : null}
               </div>
             ) : null}
           </div>
         ))}
-        {busy ? <div style={{ display: "flex", gap: 8, alignItems: "center", color: "var(--muted)", fontSize: 12 }}><span className="spinner" />思考中…</div> : null}
+        {busy ? <div style={{ display: "flex", gap: 8, alignItems: "center", color: "var(--muted)", fontSize: 12 }}><span className="spinner" />{t("思考中…")}</div> : null}
       </div>
 
       <div style={{ padding: 10, borderTop: "1px solid var(--border)", display: "flex", gap: 8 }}>
-        <textarea className="input" rows={2} value={input} placeholder="描述想要的动画…（Enter 发送，⇧Enter 换行）"
+        <textarea className="input" rows={2} value={input} placeholder={t("描述想要的动画…（Enter 发送，⇧Enter 换行）")}
           style={{ resize: "none" }}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} />
-        <button className="btn btn-primary" style={{ alignSelf: "flex-end" }} disabled={busy || !input.trim()} onClick={() => void send()}>发送</button>
+        <button className="btn btn-primary" style={{ alignSelf: "flex-end" }} disabled={busy || !input.trim()} onClick={() => void send()}>{t("发送")}</button>
       </div>
     </div>
   );

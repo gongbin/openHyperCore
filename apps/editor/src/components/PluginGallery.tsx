@@ -7,6 +7,7 @@ import { PreviewRenderer } from "../preview.ts";
 import { pluginDefaults } from "../helpers.ts";
 import { ParamField } from "./Inspector.tsx";
 import type { EditorAsset } from "./LibraryPanel.tsx";
+import { t } from "../i18n.ts";
 
 // The plugin gallery ("插件库") — a Studio-style full-page browser over the
 // plugin registry: poster-frame cards for every plugin, a live looping hero
@@ -44,29 +45,40 @@ function previewComposition(def: PluginDefinition, params: Record<string, unknow
   }
 }
 
-// Serialize poster rendering: cards enqueue, one frame renders at a time.
+// ALL rendering on the shared surface (posters AND the hero loop) must go
+// through this mutex — render + blit are one critical section, otherwise a
+// poster blit can copy whatever frame the hero loop just drew (cards showing
+// the wrong plugin's cover). renderSeq additionally guards against a
+// timed-out render resolving late: only the newest render may blit.
+let renderChain: Promise<unknown> = Promise.resolve();
+let renderSeq = 0;
+function exclusiveRender<T>(fn: () => Promise<T>): Promise<T> {
+  const p = renderChain.then(fn, fn);
+  renderChain = p.catch(() => { /* keep the chain alive */ });
+  return p;
+}
+
 // Plugins that need remote assets (globe textures, photos) can stall for the
 // network — they queue LAST and each render is raced against a timeout so one
-// slow download never blocks the rest; a late render still blits its own
-// poster when the asset finally arrives.
-let posterQueue: Promise<void> = Promise.resolve();
+// slow download never blocks the rest.
 const needsAssets = (def: PluginDefinition): boolean => Object.values(def.params).some((p) => p.type === "asset");
 function renderPoster(def: PluginDefinition, target: HTMLCanvasElement): Promise<void> {
-  const run = async (): Promise<void> => {
+  const run = (): Promise<void> => exclusiveRender(async () => {
     if (!target.isConnected) return;
     const { renderer, canvas } = await sharedRenderer();
     const { comp, dur } = previewComposition(def, pluginDefaults(def));
     if (!comp) return;
-    const render = renderer.renderFrame(comp, dur * 0.62).then(() => {
-      target.getContext("2d")?.drawImage(canvas, 0, 0, target.width, target.height);
-    });
-    await Promise.race([render, new Promise((r) => setTimeout(r, 8000))]);
-  };
-  const enqueue = (): Promise<void> => (posterQueue = posterQueue.then(run).catch(() => { /* keep the chain alive */ }));
-  if (!needsAssets(def)) return enqueue();
+    const seq = ++renderSeq;
+    const ok = await Promise.race([
+      renderer.renderFrame(comp, dur * 0.62).then(() => true),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 8000))
+    ]);
+    if (ok && seq === renderSeq) target.getContext("2d")?.drawImage(canvas, 0, 0, target.width, target.height);
+  });
+  if (!needsAssets(def)) return run();
   // Asset-dependent posters enqueue on a macrotask, i.e. after every
   // asset-free card mounted in the same commit has already queued.
-  return new Promise((resolve) => { setTimeout(() => { void enqueue().then(resolve); }, 0); });
+  return new Promise((resolve) => { setTimeout(() => { void run().then(resolve); }, 0); });
 }
 
 function PluginCard({ def, active, tick, onSelect }: { def: PluginDefinition; active: boolean; tick: number; onSelect: () => void }) {
@@ -138,15 +150,16 @@ export function PluginGallery({ plugins, assets, onAddToTimeline }: {
       raf = requestAnimationFrame(tick);
       if (busy) return;
       busy = true;
-      void (async () => {
+      void exclusiveRender(async () => {
         try {
           const { renderer, canvas } = await sharedRenderer();
           if (!alive || !preview.comp) return;
+          const seq = ++renderSeq;
           const render = renderer.renderFrame(preview.comp, (performance.now() - started) % preview.dur).then(() => true);
           // A frame stuck on a slow remote asset must not freeze the loop —
           // skip it and retry; the pending asset fetch resolves eventually.
           const done = await Promise.race([render, new Promise<boolean>((r) => setTimeout(() => r(false), 2500))]);
-          if (!alive || !done) return;
+          if (!alive || !done || seq !== renderSeq) return;
           const ctx = target.getContext("2d");
           if (ctx) {
             ctx.drawImage(canvas, 0, 0, target.width, target.height);
@@ -160,25 +173,25 @@ export function PluginGallery({ plugins, assets, onAddToTimeline }: {
         } finally {
           busy = false;
         }
-      })();
+      });
     };
     raf = requestAnimationFrame(tick);
     return () => { alive = false; cancelAnimationFrame(raf); };
   }, [preview]);
 
-  if (!def) return <div className="gallery"><div className="gallery-main"><h1>插件库</h1><p className="gallery-sub">没有已注册的插件。</p></div></div>;
+  if (!def) return <div className="gallery"><div className="gallery-main"><h1>{t("插件库")}</h1><p className="gallery-sub">{t("没有已注册的插件。")}</p></div></div>;
 
   const irNode = { type: "plugin", plugin: def.name, startMs: 0, endMs: def.defaultDurationMs ?? 3000, params };
 
   return (
     <div className="gallery">
       <div className="gallery-main">
-        <h1>从插件生成</h1>
-        <p className="gallery-sub">往时间线放一个 <code>{"{ type: \"plugin\" }"}</code> 节点 — 参数保持可编辑、非破坏性。点击卡片选择，右侧实时预览。</p>
+        <h1>{t("从插件生成")}</h1>
+        <p className="gallery-sub">{t("往时间线放一个")} <code>{"{ type: \"plugin\" }"}</code> {t("节点 — 参数保持可编辑、非破坏性。点击卡片选择，右侧实时预览。")}</p>
         <div className="cat-chips">
           {CATEGORIES.filter(([k]) => k === "all" || plugins.some((p) => (p.category ?? "opener") === k)).map(([k, label]) => (
             <button key={k} className="chip" style={cat === k ? { color: "var(--accent)", borderColor: "var(--accent)", background: "var(--accent-soft)" } : undefined}
-              onClick={() => setCat(k)}>{label}</button>
+              onClick={() => setCat(k)}>{t(label)}</button>
           ))}
         </div>
         <div className="gallery-grid">
@@ -207,7 +220,7 @@ export function PluginGallery({ plugins, assets, onAddToTimeline }: {
         </div>
         <div className="gallery-side-scroll">
           <div className="section-title" style={{ display: "flex", justifyContent: "space-between" }}>
-            <span>参数</span>
+            <span>{t("参数")}</span>
             <span style={{ fontFamily: "var(--mono)", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>auto-form</span>
           </div>
           {Object.entries(def.params).map(([key, spec]) => (
@@ -221,14 +234,14 @@ export function PluginGallery({ plugins, assets, onAddToTimeline }: {
           {showIr ? <pre className="ir-pre">{JSON.stringify(irNode, null, 2)}</pre> : null}
         </div>
         <div className="gallery-side-foot">
-          <button className="btn btn-primary" style={{ justifyContent: "center", width: "100%" }} onClick={() => onAddToTimeline(def, params)}>添加到时间线</button>
+          <button className="btn btn-primary" style={{ justifyContent: "center", width: "100%" }} onClick={() => onAddToTimeline(def, params)}>{t("添加到时间线")}</button>
           <button className="btn" style={{ justifyContent: "center", width: "100%" }}
             onClick={() => {
               void navigator.clipboard.writeText(JSON.stringify(irNode, null, 2)).then(() => {
                 setCopied(true);
                 setTimeout(() => setCopied(false), 1200);
               });
-            }}>{copied ? "✓ 已复制" : "复制插件 JSON"}</button>
+            }}>{copied ? t("✓ 已复制") : t("复制插件 JSON")}</button>
         </div>
       </aside>
     </div>

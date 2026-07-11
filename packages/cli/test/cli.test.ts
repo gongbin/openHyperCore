@@ -605,11 +605,16 @@ export default defineComposition({
     { stdout: () => undefined }
   );
 
+  // Audio renders in two stages (piped video-only encode, then a disk-based
+  // mux) — argsFile holds the second, muxing invocation.
   const args = JSON.parse(await readFile(argsFile, "utf8"));
   assert.ok(args.includes(audioFile));
   assert.ok(args.includes("-c:a"));
   assert.ok(args.includes("aac"));
-  assert.ok(args.includes("-shortest"));
+  assert.ok(args.includes("copy"), "video stream is copied, not re-encoded");
+  const t = args.indexOf("-t");
+  assert.ok(t >= 0, "output bounded with an explicit -t instead of -shortest");
+  assert.equal(args[t + 1], "1");
 });
 
 test("runCli render maps multiple AudioLayers with start, end, and volume into ffmpeg filters", async () => {
