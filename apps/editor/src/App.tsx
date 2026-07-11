@@ -120,6 +120,7 @@ export function App() {
         if (cancelled) return;
         // Redraw the current frame once the full CJK font finishes loading.
         r.onFontUpgrade = () => setFontTick((t) => t + 1);
+        r.onVideoIssue = () => setStatus(tr("该视频浏览器无法解码，预览用灰色占位显示 — 导出渲染不受影响"));
         rendererRef.current = r;
         setReady(true);
       })
@@ -465,8 +466,12 @@ export function App() {
       setStatus(tr("已添加音频「{name}」（导出时混音）", { name: asset.name }));
       return;
     }
-    const w = Math.round(W * (asset.kind === "video" ? 0.62 : 0.5));
-    const h = Math.round((w * 9) / 16);
+    // Size the box to the source aspect (probed on import) — a hardcoded 16:9
+    // box distorts/letterboxes portrait footage.
+    const aspect = asset.width && asset.height ? asset.height / asset.width : 9 / 16;
+    const base = Math.round(W * (asset.kind === "video" ? 0.62 : 0.5));
+    const w = aspect > 1 ? Math.max(120, Math.round((H * 0.72) / aspect)) : base;
+    const h = Math.round(w * aspect);
     addLayer({
       type: asset.kind, src: asset.url, fit: "contain", width: w, height: h,
       transform: { x: Math.round(cx - w / 2), y: Math.round(cy - h / 2) }

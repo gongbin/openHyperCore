@@ -70,6 +70,7 @@ const EN: Record<string, string> = {
 
   // ---- App status messages ----
   "预览错误: {e}": "Preview error: {e}",
+  "该视频浏览器无法解码，预览用灰色占位显示 — 导出渲染不受影响": "This video can't be decoded by the browser; the preview shows a gray placeholder — the exported render is unaffected",
   "预览初始化失败: {e}": "Preview failed to initialize: {e}",
   "双击右侧编辑文字": "Edit this text in the inspector",
   "这里是字幕": "Caption text here",

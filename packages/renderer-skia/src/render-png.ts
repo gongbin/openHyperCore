@@ -987,10 +987,18 @@ function parseVideoFrameSize(stderr: string): VideoFrameSize | undefined {
     return undefined;
   }
 
-  const width = Number(match[1]);
-  const height = Number(match[2]);
+  let width = Number(match[1]);
+  let height = Number(match[2]);
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
     return undefined;
+  }
+  // Phone footage stores rotation as metadata; ffmpeg auto-rotates decoded
+  // frames, so a 90°/270° stream delivers swapped dimensions. Ignoring that
+  // squeezed portrait videos into landscape.
+  const rotate = stderr.match(/rotate\s*:\s*(-?\d+)/) ?? stderr.match(/rotation of (-?\d+(?:\.\d+)?) degrees/);
+  const deg = rotate ? Math.abs(Math.round(Number(rotate[1]))) % 360 : 0;
+  if (deg === 90 || deg === 270) {
+    [width, height] = [height, width];
   }
   return { width, height };
 }

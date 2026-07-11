@@ -14,7 +14,29 @@ export type EditorAsset = {
   url: string;
   /** blob: URLs only live in this browser session — MP4 render can't read them. */
   previewOnly: boolean;
+  /** Natural pixel size (probed on import) so layers keep the source aspect. */
+  width?: number;
+  height?: number;
 };
+
+// Natural dimensions — <video> reports rotation-corrected videoWidth/Height.
+function probeSize(url: string, kind: EditorAsset["kind"]): Promise<{ width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    const bail = setTimeout(() => resolve(null), 4000);
+    if (kind === "image") {
+      const img = new Image();
+      img.onload = () => { clearTimeout(bail); resolve({ width: img.naturalWidth, height: img.naturalHeight }); };
+      img.onerror = () => { clearTimeout(bail); resolve(null); };
+      img.src = url;
+    } else {
+      const v = document.createElement("video");
+      v.preload = "metadata";
+      v.onloadedmetadata = () => { clearTimeout(bail); resolve(v.videoWidth ? { width: v.videoWidth, height: v.videoHeight } : null); };
+      v.onerror = () => { clearTimeout(bail); resolve(null); };
+      v.src = url;
+    }
+  });
+}
 
 export const ASSET_MIME: Record<EditorAsset["kind"], string> = {
   image: "image/*",
@@ -35,6 +57,7 @@ export async function importFile(f: File): Promise<EditorAsset | null> {
   const kind = fileKind(f);
   if (!kind) return null;
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  let asset: EditorAsset;
   if (kind === "image" && f.size <= EMBED_LIMIT) {
     const url = await new Promise<string>((resolve, reject) => {
       const r = new FileReader();
@@ -42,9 +65,15 @@ export async function importFile(f: File): Promise<EditorAsset | null> {
       r.onerror = () => reject(r.error);
       r.readAsDataURL(f);
     });
-    return { id, name: f.name, kind, url, previewOnly: false };
+    asset = { id, name: f.name, kind, url, previewOnly: false };
+  } else {
+    asset = { id, name: f.name, kind, url: URL.createObjectURL(f), previewOnly: true };
   }
-  return { id, name: f.name, kind, url: URL.createObjectURL(f), previewOnly: true };
+  if (kind !== "audio") {
+    const size = await probeSize(asset.url, kind);
+    if (size) { asset.width = size.width; asset.height = size.height; }
+  }
+  return asset;
 }
 
 /** Project title: plain text with a pencil on hover; the input only appears on demand. */

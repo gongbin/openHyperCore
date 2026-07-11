@@ -49,6 +49,12 @@ export class PreviewRenderer {
   #videos = new Map<string, VideoEntry>();
   #typefaces = new Map<string, Promise<Typeface | null>>();
   #images = new Map<string, Promise<Image | null>>();
+  #videoFallback: Image | null = null;
+  #videoIssues = new Set<string>();
+
+  /** Fired once per video src the browser cannot decode/grab — the preview
+   *  shows a dark placeholder instead of failing the whole frame. */
+  onVideoIssue: ((src: string) => void) | null = null;
 
   constructor(ck: CanvasKit, surface: Surface) {
     this.#ck = ck;
@@ -184,6 +190,17 @@ export class PreviewRenderer {
     }
   }
 
+  #videoPlaceholder(): Image | null {
+    if (!this.#videoFallback) {
+      const px = new Uint8Array([24, 28, 38, 255, 30, 35, 47, 255, 30, 35, 47, 255, 24, 28, 38, 255]);
+      this.#videoFallback = this.#ck.MakeImage(
+        { width: 2, height: 2, colorType: this.#ck.ColorType.RGBA_8888, alphaType: this.#ck.AlphaType.Opaque, colorSpace: this.#ck.ColorSpace.SRGB },
+        px, 8
+      );
+    }
+    return this.#videoFallback;
+  }
+
   #createProvider(): AssetProvider {
     return {
       // Video frames are cached and reused across draws — the draw tree must
@@ -212,9 +229,18 @@ export class PreviewRenderer {
       },
       loadVideoImage: async (_ck, layer: ResolvedVideoLayer, frameTimeMs: number) => {
         const src = layer.src;
-        if (!isAssetUrl(src)) return null;
+        if (!isAssetUrl(src)) return this.#videoPlaceholder();
         const sourceMs = videoSourceTimeMs(layer as unknown as AnyLayer, frameTimeMs);
-        return this.#grabVideoFrame(src, sourceMs);
+        const img = await this.#grabVideoFrame(src, sourceMs);
+        if (img) return img;
+        // Undecodable codec / frame not ready yet: show a placeholder rather
+        // than failing the whole preview frame (export is unaffected — the
+        // server decodes with ffmpeg).
+        if (!this.#videoIssues.has(src)) {
+          this.#videoIssues.add(src);
+          this.onVideoIssue?.(src);
+        }
+        return this.#videoPlaceholder();
       }
     };
   }
