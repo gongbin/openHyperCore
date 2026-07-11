@@ -8,9 +8,9 @@ import { getLang, setLang, t as tr } from "./i18n.ts";
 import { sampleComposition } from "./sample.ts";
 import { useHistory } from "./history.ts";
 import {
-  AB_EASE_TUPLE, EMPH, KEY_EPS, TRANSFORM_KEYS, clamp, dfltVal, easeKfArrAt, layerAtPath,
-  pluginDefaults, presetPatch, removeKfTimes, resolveLayerAt, retimeKfArr, simplifyPath,
-  updateLayerAtPath, upsertKfArr
+  AB_EASE_TUPLE, BLOB_PATH, EMPH, KEY_EPS, TRANSFORM_KEYS, clamp, dfltVal, easeKfArrAt, layerAtPath,
+  pluginDefaults, polygonPath, presetPatch, removeKfTimes, resolveLayerAt, retimeKfArr, simplifyPath,
+  starPath, updateLayerAtPath, upsertKfArr
 } from "./helpers.ts";
 import type { AbBubble, AbEase, AnyLayer, Bezier, Kf, PathSample, SelPath, TKey } from "./helpers.ts";
 import { TopBar } from "./components/TopBar.tsx";
@@ -419,6 +419,10 @@ export function App() {
     switch (kind) {
       case "rect": addLayer({ type: "shape", shape: "rect", width: 320, height: 180, fill: "#4d8dff", transform: { x: cx - 160, y: cy - 90 } }); return;
       case "circle": addLayer({ type: "shape", shape: "circle", radius: 90, fill: "#f2c94c", transform: { x: cx - 90, y: cy - 90 } }); return;
+      case "line": addLayer({ type: "shape", shape: "path", path: "M 0 4 L 320 4", width: 320, height: 8, stroke: "#e9ecf5", strokeWidth: 6, transform: { x: cx - 160, y: cy - 4 } } as Layer); return;
+      case "star": addLayer({ type: "shape", shape: "path", path: starPath(5, 110, 44), width: 220, height: 220, fill: "#f2c94c", transform: { x: cx - 110, y: cy - 110 } } as Layer); return;
+      case "polygon": addLayer({ type: "shape", shape: "path", path: polygonPath(6, 100), width: 200, height: 200, fill: "#4d8dff", transform: { x: cx - 100, y: cy - 100 } } as Layer); return;
+      case "blob": addLayer({ type: "shape", shape: "path", path: BLOB_PATH, width: 240, height: 240, fill: "#9a6ee8", transform: { x: cx - 120, y: cy - 120 } } as Layer); return;
       case "text": addLayer({ type: "text", text: tr("双击右侧编辑文字"), size: 72, color: "#ffffff", align: "center", transform: { x: cx, y: cy } }); return;
       case "caption": addLayer({
         type: "caption", text: tr("这里是字幕"), size: Math.round(H * 0.05), color: "#ffffff",

@@ -470,6 +470,37 @@ export function presetPatch(name: string, layer: AnyLayer | undefined, comp: Com
   return { patch, from: g(from), to: g(to) };
 }
 
+// ---- geometry path generators (line/star/polygon/blob elements) --------------
+// All emit SVG path `d` strings in a (0,0)-(size,size) box so they plug into
+// the existing `shape: "path"` layer with width/height = size.
+
+/** Regular polygon with `sides` vertices, centred in a box of 2*radius. */
+export function polygonPath(sides: number, radius: number): string {
+  const c = radius;
+  const pts: string[] = [];
+  for (let i = 0; i < sides; i += 1) {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / sides;
+    pts.push(`${(c + radius * Math.cos(a)).toFixed(2)} ${(c + radius * Math.sin(a)).toFixed(2)}`);
+  }
+  return `M ${pts.join(" L ")} Z`;
+}
+
+/** Star with `points` tips alternating outer/inner radius, box of 2*outerR. */
+export function starPath(points: number, outerR: number, innerR: number): string {
+  const c = outerR;
+  const pts: string[] = [];
+  for (let i = 0; i < points * 2; i += 1) {
+    const r = i % 2 === 0 ? outerR : innerR;
+    const a = -Math.PI / 2 + (i * Math.PI) / points;
+    pts.push(`${(c + r * Math.cos(a)).toFixed(2)} ${(c + r * Math.sin(a)).toFixed(2)}`);
+  }
+  return `M ${pts.join(" L ")} Z`;
+}
+
+/** Organic closed cubic-bezier blob in a 240×240 box — a friendly starting
+ *  shape whose anchors/handles stay editable as raw path `d`. */
+export const BLOB_PATH = "M 128 12 C 196 4 236 66 228 128 C 221 184 172 236 112 228 C 52 220 8 172 14 110 C 20 52 66 20 128 12 Z";
+
 export function fmtTime(ms: number): string {
   const s = Math.max(0, ms) / 1000;
   const m = Math.floor(s / 60);

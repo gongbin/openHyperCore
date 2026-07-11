@@ -146,7 +146,9 @@ export function LibraryPanel({ projectName, onProjectName, composition, selectio
 
         {tab === "add" ? (
           <div className="card-grid">
-            {[["rect", "矩形", "rect"], ["circle", "圆形", "circle"], ["text", "文字", "text"],
+            {[["rect", "矩形", "rect"], ["circle", "圆形", "circle"], ["line", "线条", "line"],
+              ["star", "星形", "star"], ["polygon", "多边形", "polygon"], ["blob", "贝塞尔形", "blob"],
+              ["text", "文字", "text"],
               ["caption", "字幕", "caption"], ["image", "图片", "image"], ["video", "视频", "video"],
               ["audio", "音频", "audio"], ["svg", "SVG 图案", "svgFile"], ["group", "组", "group"]].map(([kind, name, icon]) => (
               <button key={kind} className="add-card" onClick={() => onAddFactory(kind!)}>

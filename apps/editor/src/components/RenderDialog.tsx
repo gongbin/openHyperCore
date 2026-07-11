@@ -59,6 +59,7 @@ async function uploadBlobAsset(base: string, blobUrl: string): Promise<string> {
     headers: { "content-type": blob.type || "application/octet-stream" },
     body: blob
   });
+  if (res.status === 404) throw new Error(t("渲染服务版本过旧，不支持素材上传 — 请重启 npx openhyper serve（0.6.1+）"));
   if (!res.ok) throw new Error(`${res.status}: ${(await res.text()).slice(0, 200)}`);
   const { url } = (await res.json()) as { url: string };
   const absolute = `${base}${url}`;
