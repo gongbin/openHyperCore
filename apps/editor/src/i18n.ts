@@ -36,8 +36,9 @@ export function t(key: string, params?: Record<string, string | number>): string
 const EN: Record<string, string> = {
   // ---- TopBar ----
   "编辑器": "Editor",
-  "插件库": "Plugin Library",
+  "插件库": "Plugins",
   "未命名项目": "Untitled Project",
+  "重命名项目": "Rename project",
   "撤销 (⌘Z)": "Undo (⌘Z)",
   "重做 (⇧⌘Z)": "Redo (⇧⌘Z)",
   "三步做出你的视频：选片头 → 写标题 → 放入素材": "Make your video in three steps: pick an opener → write a title → add your footage",

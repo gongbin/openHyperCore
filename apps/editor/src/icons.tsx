@@ -41,6 +41,7 @@ const P: Record<string, JSX.Element> = {
   diamond: <rect x="8" y="8" width="8" height="8" transform="rotate(45 12 12)" fill="currentColor" stroke="none" />,
   caption: <><rect x="3.5" y="5" width="17" height="14" rx="2" /><path d="M7 15h6" /><path d="M15.5 15H17" /></>,
   svgFile: <><path d="M4 12c2-5 6-5 8 0s6 5 8 0" /><circle cx="4" cy="12" r="1.4" /><circle cx="20" cy="12" r="1.4" /></>,
+  pencil: <><path d="M4.5 19.5l1-4L16.6 4.4a2 2 0 0 1 2.8 0l.2.2a2 2 0 0 1 0 2.8L8.5 18.5l-4 1Z" /><path d="M14.5 6.5l3 3" /></>,
   sun: <><circle cx="12" cy="12" r="4.2" /><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7" /></>,
   moon: <path d="M20 13.5A8.5 8.5 0 0 1 10.5 4 7.5 7.5 0 1 0 20 13.5Z" />
 };
