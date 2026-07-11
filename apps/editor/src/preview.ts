@@ -32,6 +32,12 @@ type VideoEntry = {
   ready: Promise<boolean>;
   lastTimeMs: number;
   lastImage: Image | null;
+  // Previous frame, kept alive one swap longer — draw code (and cached
+  // pictures) may still reference it when the next frame lands.
+  retired: Image | null;
+  // Grabs for one src are chained: interleaved seeks otherwise hand out an
+  // image another call is about to delete ("Image instance already deleted").
+  job: Promise<Image | null> | null;
 };
 
 export class PreviewRenderer {
@@ -134,14 +140,20 @@ export class PreviewRenderer {
         }, { once: true });
         el.addEventListener("error", () => resolve(false), { once: true });
       });
-      entry = { el, ready, lastTimeMs: -1, lastImage: null };
+      entry = { el, ready, lastTimeMs: -1, lastImage: null, retired: null, job: null };
       this.#videos.set(src, entry);
     }
     return entry;
   }
 
-  async #grabVideoFrame(src: string, sourceTimeMs: number): Promise<Image | null> {
+  #grabVideoFrame(src: string, sourceTimeMs: number): Promise<Image | null> {
     const entry = this.#videoEntry(src);
+    const run = (): Promise<Image | null> => this.#grabVideoFrameNow(entry, sourceTimeMs);
+    entry.job = entry.job ? entry.job.then(run, run) : run();
+    return entry.job;
+  }
+
+  async #grabVideoFrameNow(entry: VideoEntry, sourceTimeMs: number): Promise<Image | null> {
     if (!(await entry.ready)) return null;
     const el = entry.el;
     const durMs = Number.isFinite(el.duration) ? el.duration * 1000 : 0;
@@ -160,7 +172,10 @@ export class PreviewRenderer {
       const bmp = await createImageBitmap(el);
       const img = this.#ck.MakeImageFromCanvasImageSource(bmp);
       bmp.close();
-      entry.lastImage?.delete();
+      // Retire the previous frame instead of deleting it right away — the
+      // current draw may still be holding it.
+      entry.retired?.delete();
+      entry.retired = entry.lastImage;
       entry.lastImage = img;
       entry.lastTimeMs = quantized;
       return img;
@@ -171,6 +186,9 @@ export class PreviewRenderer {
 
   #createProvider(): AssetProvider {
     return {
+      // Video frames are cached and reused across draws — the draw tree must
+      // not delete them (that's this class's job via retire-then-delete).
+      retainsVideoFrames: true,
       loadTypeface: (_ck, font) => (typeof font === "string" && isAssetUrl(font)
         ? this.#fetchTypeface(font).then((tf) => tf ?? this.#defaultTypeface())
         : this.#defaultTypeface()),
