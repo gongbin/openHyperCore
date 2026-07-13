@@ -169,10 +169,17 @@ async function encodeFramesWithArgs(frames: AsyncIterable<Uint8Array> | Iterable
     // args/inputs — wait for it below and prefer its stderr over the
     // unhelpful pipe error.
     writeError = error;
+    // ffmpeg blocked in a stdin read() survives SIGTERM: the handler only
+    // sets a flag and SA_RESTART re-enters the read, so the signal alone
+    // never unblocks it. Destroy stdin first so the read returns EOF.
+    child.stdin.destroy();
     child.kill("SIGTERM");
   }
 
+  // Escalate to SIGKILL if ffmpeg still hasn't exited after an aborted write.
+  const killTimer = writeError ? setTimeout(() => child.kill("SIGKILL"), 5000) : undefined;
   const [exitCode, signal] = await once(child, "close") as [number | null, NodeJS.Signals | null];
+  if (killTimer) clearTimeout(killTimer);
   if (exitCode !== 0 || writeError) {
     const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
     const tail = stderr.split("\n").slice(-6).join("\n");
