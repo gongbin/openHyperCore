@@ -847,8 +847,16 @@ async function extractVideoFramesPng(src: string, timeMsList: number[], options:
   }
 
   const frames = splitPngStream(Buffer.concat(stdoutChunks));
-  if (frames.length !== timeMsList.length) {
-    throw new Error(`ffmpeg returned ${frames.length} video frames, expected ${timeMsList.length}`);
+  if (frames.length > timeMsList.length) {
+    throw new Error(`ffmpeg returned ${frames.length} video frames, expected at most ${timeMsList.length}`);
+  }
+  if (frames.length === 0) {
+    throw new Error(`ffmpeg returned no video frames at ${formatSeconds(timeMsList[0]! / 1000)}s (past end of ${src}?)`);
+  }
+  // Freeze the last decoded frame when the window straddles the end of the
+  // source (see extractRgbaFrameSequence).
+  while (frames.length < timeMsList.length) {
+    frames.push(frames[frames.length - 1]!);
   }
   return frames;
 }
@@ -929,17 +937,28 @@ async function extractRgbaFrameSequence(
   const frameBytes = width * height * 4;
   const raw = Buffer.concat(stdoutChunks);
   const expectedBytes = frameBytes * count;
-  if (raw.length !== expectedBytes) {
-    throw new Error(`ffmpeg returned ${raw.length} raw video bytes, expected ${expectedBytes}`);
+  if (raw.length > expectedBytes) {
+    throw new Error(`ffmpeg returned ${raw.length} raw video bytes, expected at most ${expectedBytes}`);
+  }
+
+  // A window that straddles the end of the source yields fewer frames than
+  // requested (ffmpeg just stops at EOF). Freeze the last decoded frame for
+  // the remainder — matching preview semantics — instead of failing the render.
+  const decoded = Math.floor(raw.length / frameBytes);
+  if (decoded === 0) {
+    throw new Error(`ffmpeg returned no raw video frames at ${formatSeconds(startTimeMs / 1000)}s (past end of ${src}?)`);
   }
 
   const frames: RgbaVideoFrame[] = [];
-  for (let index = 0; index < count; index += 1) {
+  for (let index = 0; index < decoded; index += 1) {
     frames.push({
       width,
       height,
       pixels: Buffer.from(raw.subarray(index * frameBytes, (index + 1) * frameBytes))
     });
+  }
+  while (frames.length < count) {
+    frames.push(frames[frames.length - 1]!);
   }
   return frames;
 }
